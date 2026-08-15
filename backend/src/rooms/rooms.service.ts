@@ -331,10 +331,27 @@ export class RoomsService {
 
   async getImages(roomId: string): Promise<RoomImage[]> {
     this.assertValidId(roomId);
-    return await this.roomImagesRepository.find({
+    let images = await this.roomImagesRepository.find({
       where: { roomId },
       order: { sortOrder: 'ASC', id: 'ASC' },
     });
+
+    if (images.length === 0) {
+      const room = await this.roomsRepository.findOne({ where: { id: roomId } });
+      if (room?.coverImageUrl && room.coverImageUrl.trim()) {
+        const initialImg = this.roomImagesRepository.create({
+          roomId: room.id,
+          imageUrl: room.coverImageUrl.trim(),
+          caption: 'Ảnh đại diện chính',
+          sortOrder: 0,
+          isPrimary: 1,
+        });
+        const saved = await this.roomImagesRepository.save(initialImg);
+        images = [saved];
+      }
+    }
+
+    return images;
   }
 
   async setPrimaryImage(roomId: string, imageId: string): Promise<Room> {

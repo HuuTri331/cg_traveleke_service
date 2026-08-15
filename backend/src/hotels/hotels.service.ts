@@ -282,10 +282,27 @@ export class HotelsService {
 
   async getImages(hotelId: string): Promise<HotelImage[]> {
     this.assertValidId(hotelId);
-    return await this.hotelImagesRepository.find({
+    let images = await this.hotelImagesRepository.find({
       where: { hotelId },
       order: { sortOrder: 'ASC', id: 'ASC' },
     });
+
+    if (images.length === 0) {
+      const hotel = await this.hotelsRepository.findOne({ where: { id: hotelId } });
+      if (hotel?.coverImageUrl && hotel.coverImageUrl.trim()) {
+        const initialImg = this.hotelImagesRepository.create({
+          hotelId: hotel.id,
+          imageUrl: hotel.coverImageUrl.trim(),
+          caption: 'Ảnh đại diện chính',
+          sortOrder: 0,
+          isPrimary: 1,
+        });
+        const saved = await this.hotelImagesRepository.save(initialImg);
+        images = [saved];
+      }
+    }
+
+    return images;
   }
 
   async setPrimaryImage(hotelId: string, imageId: string): Promise<Hotel> {
