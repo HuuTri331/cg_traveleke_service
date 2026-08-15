@@ -1,0 +1,90 @@
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UploadedFiles,
+  UseInterceptors,
+} from '@nestjs/common';
+import { AnyFilesInterceptor } from '@nestjs/platform-express';
+
+import { AddHotelImageDto } from './dto/add-hotel-image.dto';
+import { CreateHotelDto } from './dto/create-hotel.dto';
+import { QueryHotelDto } from './dto/query-hotel.dto';
+import { UpdateHotelDto } from './dto/update-hotel.dto';
+import { HotelsService } from './hotels.service';
+import { createMulterOptions } from './upload-image.config';
+
+@Controller('hotels')
+export class HotelsController {
+  constructor(private readonly hotelsService: HotelsService) {}
+
+  @Post()
+  create(@Body() dto: CreateHotelDto) {
+    return this.hotelsService.create(dto);
+  }
+
+  @Get()
+  findAll(@Query() query: QueryHotelDto) {
+    return this.hotelsService.findAll(query);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.hotelsService.findOne(id);
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() dto: UpdateHotelDto) {
+    return this.hotelsService.update(id, dto);
+  }
+
+  // ============================================================
+  // ALBUM ẢNH KHÁCH SẠN (HỖ TRỢ UPLOAD CÙNG LÚC NHIỀU FILE ẢNH, TỐI ĐA 6 ẢNH)
+  // ============================================================
+
+  @Post(':id/images/upload')
+  @UseInterceptors(AnyFilesInterceptor(createMulterOptions('hotels')))
+  uploadImages(
+    @Param('id') id: string,
+    @UploadedFiles() files?: Express.Multer.File[],
+    @Body('caption') caption?: string,
+  ) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('Vui lòng đính kèm ít nhất 1 file ảnh.');
+    }
+
+    const dtos: AddHotelImageDto[] = files.map((file, index) => ({
+      imageUrl: `/uploads/hotels/${file.filename}`,
+      caption: caption ?? file.originalname,
+      sortOrder: index,
+    }));
+
+    return this.hotelsService.addImages(id, dtos);
+  }
+
+  @Post(':id/images')
+  addImage(@Param('id') id: string, @Body() dto: AddHotelImageDto) {
+    return this.hotelsService.addImage(id, dto);
+  }
+
+  @Get(':id/images')
+  getImages(@Param('id') id: string) {
+    return this.hotelsService.getImages(id);
+  }
+
+  @Patch(':id/images/:imageId/primary')
+  setPrimaryImage(@Param('id') id: string, @Param('imageId') imageId: string) {
+    return this.hotelsService.setPrimaryImage(id, imageId);
+  }
+
+  @Delete(':id/images/:imageId')
+  deleteImage(@Param('id') id: string, @Param('imageId') imageId: string) {
+    return this.hotelsService.deleteImage(id, imageId);
+  }
+}
