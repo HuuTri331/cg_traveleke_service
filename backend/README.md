@@ -163,3 +163,11 @@ EMPLOYEE / RECEPTIONIST
 ├── Rooms
 ├── Check-in/out
 └── Schedule
+
+
+**Lưu ý khi xoá sạch dữ liệu trong database rồi thì khi đó muốn chạy lại thì đầu tiên
+vào trong source backend thực hiện các bước
+npm install (Nếu đã có node_modules rồi thì bỏ qua)
+npm run seed (để tạo dữ liệu mặc định cho 1 số các fields các bảng)
+rồi khi đó cuối cùng mới 
+npm run start:dev
