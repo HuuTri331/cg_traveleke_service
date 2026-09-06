@@ -9,10 +9,14 @@ import {
   Post,
   Query,
   UploadedFiles,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 
+import { Roles } from '../auth/decorators/roles.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
 import { AddHotelImageDto } from './dto/add-hotel-image.dto';
 import { CreateHotelDto } from './dto/create-hotel.dto';
 import { QueryHotelDto } from './dto/query-hotel.dto';
@@ -21,10 +25,12 @@ import { HotelsService } from './hotels.service';
 import { createMulterOptions } from './upload-image.config';
 
 @Controller('hotels')
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class HotelsController {
   constructor(private readonly hotelsService: HotelsService) {}
 
   @Post()
+  @Roles('ADMIN', 'EMPLOYEE')
   create(@Body() dto: CreateHotelDto) {
     return this.hotelsService.create(dto);
   }
@@ -40,8 +46,15 @@ export class HotelsController {
   }
 
   @Patch(':id')
+  @Roles('ADMIN', 'EMPLOYEE')
   update(@Param('id') id: string, @Body() dto: UpdateHotelDto) {
     return this.hotelsService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @Roles('ADMIN')
+  remove(@Param('id') id: string) {
+    return this.hotelsService.remove(id);
   }
 
   // ============================================================

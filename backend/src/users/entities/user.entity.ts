@@ -3,9 +3,13 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  JoinTable,
+  ManyToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+
+import { Role } from './role.entity';
 
 export type UserGender = 'MALE' | 'FEMALE' | 'OTHER';
 
@@ -73,13 +77,6 @@ export class User {
   @Column({
     type: 'varchar',
     length: 20,
-    default: 'CUSTOMER',
-  })
-  role!: UserRole;
-
-  @Column({
-    type: 'varchar',
-    length: 20,
     default: 'ACTIVE',
   })
   status!: UserStatus;
@@ -116,4 +113,29 @@ export class User {
     nullable: true,
   })
   deletedAt!: Date | null;
+
+  /**
+   * Quan hệ nhiều-nhiều với Role qua bảng users_roles.
+   * Eager loading để luôn lấy kèm roles khi query user.
+   */
+  @ManyToMany(() => Role, { eager: true })
+  @JoinTable({
+    name: 'users_roles',
+    joinColumn: { name: 'user_id', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'role_id', referencedColumnName: 'id' },
+  })
+  roles!: Role[];
+
+  /**
+   * Getter virtual: trả về role có ưu tiên cao nhất (ADMIN > EMPLOYEE > CUSTOMER).
+   * Dùng trong Guard và AuthService để kiểm tra quyền đơn giản.
+   */
+  get role(): UserRole {
+    if (!this.roles || this.roles.length === 0) return 'CUSTOMER';
+    const priority: UserRole[] = ['ADMIN', 'EMPLOYEE', 'CUSTOMER'];
+    for (const p of priority) {
+      if (this.roles.some((r) => r.name === p)) return p;
+    }
+    return 'CUSTOMER';
+  }
 }

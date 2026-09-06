@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { HotelsModule } from './hotels/hotels.module';
 import { RoomsModule } from './rooms/rooms.module';
@@ -38,6 +39,7 @@ import { UsersModule } from './users/users.module';
     }),
 
     HealthModule,
+    AuthModule,
     UsersModule,
     HotelsModule,
     RoomsModule,
@@ -47,3 +49,5 @@ import { UsersModule } from './users/users.module';
   providers: [AppService],
 })
 export class AppModule {}
+
+

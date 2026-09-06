@@ -9,10 +9,14 @@ import {
   Post,
   Query,
   UploadedFiles,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 
+import { Roles } from '../auth/decorators/roles.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
 import { createMulterOptions } from '../hotels/upload-image.config';
 import { AddRoomImageDto } from './dto/add-room-image.dto';
 import { CreateRoomDto } from './dto/create-room.dto';
@@ -21,30 +25,36 @@ import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomsService } from './rooms.service';
 
 @Controller('rooms')
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
 
   @Post()
+  @Roles('ADMIN', 'EMPLOYEE')
   create(@Body() dto: CreateRoomDto) {
     return this.roomsService.create(dto);
   }
 
   @Get()
+  @Roles('ADMIN', 'EMPLOYEE')
   findAll(@Query() query: QueryRoomDto) {
     return this.roomsService.findAll(query);
   }
 
   @Get(':id')
+  @Roles('ADMIN', 'EMPLOYEE')
   findOne(@Param('id') id: string) {
     return this.roomsService.findOne(id);
   }
 
   @Patch(':id')
+  @Roles('ADMIN', 'EMPLOYEE')
   update(@Param('id') id: string, @Body() dto: UpdateRoomDto) {
     return this.roomsService.update(id, dto);
   }
 
   @Delete(':id')
+  @Roles('ADMIN')
   remove(@Param('id') id: string) {
     return this.roomsService.remove(id);
   }

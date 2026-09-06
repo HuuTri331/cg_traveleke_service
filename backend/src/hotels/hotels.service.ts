@@ -430,6 +430,14 @@ export class HotelsService {
     }
   }
 
+  /**
+   * Xóa mềm khách sạn (chỉ ADMIN).
+   */
+  async remove(id: string): Promise<void> {
+    const hotel = await this.findOne(id);
+    await this.hotelsRepository.softDelete(hotel.id);
+  }
+
   private rethrowDatabaseError(error: unknown): never {
     if (error instanceof QueryFailedError) {
       const driverError = error.driverError as {
@@ -439,7 +447,7 @@ export class HotelsService {
 
       if (driverError.errno === 1452) {
         throw new BadRequestException(
-          'hotelTypeId hoặc locationId không tồn tại trong database.',
+          'Dữ liệu kiểu khách sạn và vị trí khách sạn chưa có trong database nên chưa tạo khách sạn được!',
         );
       }
 
