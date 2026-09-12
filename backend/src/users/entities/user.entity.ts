@@ -3,9 +3,13 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  JoinTable,
+  ManyToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+
+import { Role } from './role.entity';
 
 export type UserGender = 'MALE' | 'FEMALE' | 'OTHER';
 
@@ -73,13 +77,6 @@ export class User {
   @Column({
     type: 'varchar',
     length: 20,
-    default: 'CUSTOMER',
-  })
-  role!: UserRole;
-
-  @Column({
-    type: 'varchar',
-    length: 20,
     default: 'ACTIVE',
   })
   status!: UserStatus;
@@ -116,4 +113,56 @@ export class User {
     nullable: true,
   })
   deletedAt!: Date | null;
+
+  /**
+   * User có thể có nhiều Role.
+   *
+   * users
+   *   ↓
+   * users_roles
+   *   ↓
+   * roles
+   */
+  @ManyToMany(() => Role, { eager: true })
+  @JoinTable({
+    name: 'users_roles',
+
+    joinColumn: {
+      name: 'user_id',
+      referencedColumnName: 'id',
+    },
+
+    inverseJoinColumn: {
+      name: 'role_id',
+      referencedColumnName: 'id',
+    },
+  })
+  roles!: Role[];
+
+  /**
+   * Role ưu tiên:
+   *
+   * ADMIN > EMPLOYEE > CUSTOMER
+   *
+   * Getter này không tạo cột role trong database.
+   */
+  get role(): UserRole {
+    if (!this.roles || this.roles.length === 0) {
+      return 'CUSTOMER';
+    }
+
+    const priority: UserRole[] = [
+      'ADMIN',
+      'EMPLOYEE',
+      'CUSTOMER',
+    ];
+
+    for (const role of priority) {
+      if (this.roles.some((r) => r.name === role)) {
+        return role;
+      }
+    }
+
+    return 'CUSTOMER';
+  }
 }
