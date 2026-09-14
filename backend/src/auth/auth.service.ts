@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -10,6 +11,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
 
+import { MailService } from '../mail/mail.service';
 import { Role } from '../users/entities/role.entity';
 import { User } from '../users/entities/user.entity';
 import { LoginDto } from './dto/login.dto';
@@ -27,9 +29,12 @@ export interface MeResponse {
   fullName: string;
   email: string;
   phone: string | null;
+  address: string | null;
   avatarUrl: string | null;
   role: string;
   status: string;
+  isEmailVerified: boolean;
+  emailVerifiedAt: Date | null;
   lastLoginAt: Date | null;
   permissions: string[];
 }
@@ -63,12 +68,13 @@ export class AuthService {
     private readonly rolesRepository: Repository<Role>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly mailService: MailService,
   ) {}
 
   /**
-   * Đăng ký tài khoản khách hàng mới.
+   * Đăng ký tài khoản khách hàng mới và gửi link xác thực qua Gmail.
    */
-  async register(dto: RegisterDto, avatarUrl?: string): Promise<AuthTokenPayload> {
+  async register(dto: RegisterDto, avatarUrl?: string) {
     const existing = await this.usersRepository.findOne({
       where: { email: dto.email },
       withDeleted: true,
@@ -87,28 +93,141 @@ export class AuthService {
       email: dto.email,
       password: hashedPassword,
       phone: dto.phone ?? null,
+      address: dto.address ?? null,
       dateOfBirth: dto.dateOfBirth ?? null,
       gender: dto.gender ?? null,
       avatarUrl: avatarUrl ?? null,
       status: 'ACTIVE',
+      emailVerifiedAt: null,
       roles: customerRole ? [customerRole] : [],
     });
 
     const saved = await this.usersRepository.save(user);
 
-    // Load lại với roles
-    const fullUser = await this.usersRepository
-      .createQueryBuilder('user')
-      .addSelect('user.password')
-      .leftJoinAndSelect('user.roles', 'roles')
-      .where('user.id = :id', { id: saved.id })
-      .getOne();
+    // Tạo JWT token xác thực email (thời hạn 24h)
+    const verificationToken = this.jwtService.sign(
+      {
+        sub: saved.id,
+        email: saved.email,
+        type: 'EMAIL_VERIFICATION',
+      },
+      { expiresIn: '24h' },
+    );
 
-    return this.login({ email: dto.email, password: dto.password });
+    // Bắn email xác thực tài khoản qua Gmail SMTP
+    try {
+      await this.mailService.sendVerificationEmail(
+        saved.email,
+        saved.fullName,
+        verificationToken,
+      );
+    } catch (mailError) {
+      // Log lỗi nhưng không hủy tài khoản vừa tạo để khách hàng có thể dùng nút "Gửi lại link xác thực"
+      console.error('Lỗi khi gửi email xác thực lúc đăng ký:', mailError);
+    }
+
+    return {
+      userId: saved.id,
+      fullName: saved.fullName,
+      email: saved.email,
+      requiresVerification: true,
+      isEmailVerified: false,
+    };
+  }
+
+  /**
+   * Xác thực tài khoản email thông qua token từ liên kết được gửi tới Gmail.
+   */
+  async verifyEmail(token: string) {
+    if (!token) {
+      throw new BadRequestException('Mã token xác thực không được để trống.');
+    }
+
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(token);
+    } catch {
+      throw new BadRequestException(
+        'Mã xác thực không hợp lệ hoặc đã hết hạn. Vui lòng yêu cầu gửi lại email xác thực.',
+      );
+    }
+
+    if (payload?.type !== 'EMAIL_VERIFICATION') {
+      throw new BadRequestException('Loại mã token xác thực không hợp lệ.');
+    }
+
+    const user = await this.usersRepository.findOne({
+      where: { id: payload.sub, email: payload.email },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản người dùng tương ứng.');
+    }
+
+    if (user.emailVerifiedAt) {
+      return {
+        success: true,
+        message: 'Tài khoản của bạn đã được xác thực trước đó.',
+        alreadyVerified: true,
+        email: user.email,
+      };
+    }
+
+    // Cập nhật email_verified_at
+    user.emailVerifiedAt = new Date();
+    await this.usersRepository.save(user);
+
+    return {
+      success: true,
+      message: 'Xác thực tài khoản thành công! Bạn có thể đăng nhập ngay bây giờ.',
+      email: user.email,
+    };
+  }
+
+  /**
+   * Gửi lại email xác thực cho khách hàng chưa xác thực.
+   */
+  async resendVerification(email: string) {
+    if (!email) {
+      throw new BadRequestException('Vui lòng cung cấp địa chỉ email.');
+    }
+
+    const user = await this.usersRepository.findOne({
+      where: { email },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản với địa chỉ email này.');
+    }
+
+    if (user.emailVerifiedAt) {
+      throw new BadRequestException('Tài khoản này đã được xác thực email từ trước.');
+    }
+
+    const verificationToken = this.jwtService.sign(
+      {
+        sub: user.id,
+        email: user.email,
+        type: 'EMAIL_VERIFICATION',
+      },
+      { expiresIn: '24h' },
+    );
+
+    await this.mailService.sendVerificationEmail(
+      user.email,
+      user.fullName,
+      verificationToken,
+    );
+
+    return {
+      success: true,
+      message: 'Đã gửi lại liên kết xác thực tới email của bạn. Vui lòng kiểm tra hộp thư.',
+    };
   }
 
   /**
    * Xác thực email & password, trả về JWT access token.
+   * Chặn tài khoản CUSTOMER chưa xác thực email.
    */
   async login(dto: LoginDto): Promise<AuthTokenPayload> {
     // Lấy user kèm password (password dùng select: false nên phải addSelect)
@@ -137,6 +256,16 @@ export class AuthService {
       throw new UnauthorizedException(
         'Mật khẩu không đúng. Vui lòng kiểm tra lại.',
       );
+    }
+
+    // Kiểm tra xác thực email đối với tài khoản CUSTOMER
+    if (user.role === 'CUSTOMER' && !user.emailVerifiedAt) {
+      throw new UnauthorizedException({
+        statusCode: 401,
+        message: 'Tài khoản chưa được xác thực email. Vui lòng kiểm tra email hoặc nhấn gửi lại link xác thực.',
+        requiresVerification: true,
+        email: user.email,
+      });
     }
 
     // Cập nhật last_login_at
@@ -174,9 +303,12 @@ export class AuthService {
       fullName: user.fullName,
       email: user.email,
       phone: user.phone,
+      address: user.address,
       avatarUrl: user.avatarUrl,
       role: user.role,
       status: user.status,
+      isEmailVerified: !!user.emailVerifiedAt,
+      emailVerifiedAt: user.emailVerifiedAt,
       lastLoginAt: user.lastLoginAt,
       permissions,
     };

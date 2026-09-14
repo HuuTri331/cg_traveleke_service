@@ -62,6 +62,7 @@ import { HotelsModule } from './hotels/hotels.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { UsersModule } from './users/users.module';
 import { BookingsModule } from './bookings/bookings.module';
+import { MailModule } from './mail/mail.module';
 
 @Module({
   imports: [
@@ -125,6 +126,8 @@ import { BookingsModule } from './bookings/bookings.module';
     RoomsModule,
 
     BookingsModule,
+
+    MailModule,
   ],
 
   controllers: [

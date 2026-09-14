@@ -48,6 +48,13 @@ export class User {
   @Column({
     type: 'varchar',
     length: 255,
+    nullable: true,
+  })
+  address!: string | null;
+
+  @Column({
+    type: 'varchar',
+    length: 255,
     select: false,
   })
   password!: string;
@@ -137,5 +144,12 @@ export class User {
       if (this.roles.some((r) => r.name === p)) return p;
     }
     return 'CUSTOMER';
+  }
+
+  /**
+   * Kiểm tra tài khoản đã xác thực email hay chưa.
+   */
+  get isEmailVerified(): boolean {
+    return this.emailVerifiedAt !== null;
   }
 }
