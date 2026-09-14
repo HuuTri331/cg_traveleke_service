@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -9,8 +10,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
 
+import { Role } from '../users/entities/role.entity';
 import { User } from '../users/entities/user.entity';
 import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 
 export interface AuthTokenPayload {
   access_token: string;
@@ -56,9 +59,53 @@ export class AuthService {
   constructor(
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+    @InjectRepository(Role)
+    private readonly rolesRepository: Repository<Role>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * Đăng ký tài khoản khách hàng mới.
+   */
+  async register(dto: RegisterDto, avatarUrl?: string): Promise<AuthTokenPayload> {
+    const existing = await this.usersRepository.findOne({
+      where: { email: dto.email },
+      withDeleted: true,
+    });
+
+    if (existing) {
+      throw new ConflictException('Email này đã được sử dụng bởi tài khoản khác.');
+    }
+
+    const customerRole = await this.rolesRepository.findOne({ where: { name: 'CUSTOMER' } });
+
+    const hashedPassword = await bcrypt.hash(dto.password, 12);
+
+    const user = this.usersRepository.create({
+      fullName: dto.fullName,
+      email: dto.email,
+      password: hashedPassword,
+      phone: dto.phone ?? null,
+      dateOfBirth: dto.dateOfBirth ?? null,
+      gender: dto.gender ?? null,
+      avatarUrl: avatarUrl ?? null,
+      status: 'ACTIVE',
+      roles: customerRole ? [customerRole] : [],
+    });
+
+    const saved = await this.usersRepository.save(user);
+
+    // Load lại với roles
+    const fullUser = await this.usersRepository
+      .createQueryBuilder('user')
+      .addSelect('user.password')
+      .leftJoinAndSelect('user.roles', 'roles')
+      .where('user.id = :id', { id: saved.id })
+      .getOne();
+
+    return this.login({ email: dto.email, password: dto.password });
+  }
 
   /**
    * Xác thực email & password, trả về JWT access token.
