@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { HomePageRoomController } from './home-page-room.controller';
 import { HotelsModule } from '../hotels/hotels.module';
 import { RoomImage } from './entities/room-image.entity';
 import { Room } from './entities/room.entity';
@@ -9,7 +10,7 @@ import { RoomsService } from './rooms.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Room, RoomImage]), HotelsModule],
-  controllers: [RoomsController],
+  controllers: [RoomsController, HomePageRoomController,],
   providers: [RoomsService],
   exports: [RoomsService],
 })

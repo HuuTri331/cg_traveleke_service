@@ -56,6 +56,8 @@ Repository<Hotel>
 Repository<Booking>
 
 tổng quan luồng đi
+Module 
+
 Controller
     ↓
 Service

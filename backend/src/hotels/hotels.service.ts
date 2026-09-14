@@ -7,6 +7,8 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
 
+import { SearchHotelDto } from './dto/search-hotel.dto';
+
 import { AddHotelImageDto } from './dto/add-hotel-image.dto';
 import { CreateHotelDto } from './dto/create-hotel.dto';
 import { QueryHotelDto } from './dto/query-hotel.dto';
@@ -128,6 +130,68 @@ export class HotelsService {
       },
     };
   }
+
+  async search(query: SearchHotelDto) {
+  const page = query.page ?? 1;
+  const perPage = query.perPage ?? 10;
+
+  const qb = this.hotelsRepository
+    .createQueryBuilder('hotel')
+    .where('hotel.deleted_at IS NULL')
+    .orderBy('hotel.id', 'DESC');
+
+  if (query.keyword?.trim()) {
+    const keyword = `%${query.keyword.trim()}%`;
+
+    qb.andWhere(
+      `(
+        hotel.name LIKE :keyword
+        OR hotel.address LIKE :keyword
+        OR hotel.description LIKE :keyword
+        OR hotel.email LIKE :keyword
+      )`,
+      { keyword },
+    );
+  }
+
+  if (query.locationId) {
+    qb.andWhere('hotel.location_id = :locationId', {
+      locationId: query.locationId,
+    });
+  }
+
+  if (query.hotelTypeId) {
+    qb.andWhere('hotel.hotel_type_id = :hotelTypeId', {
+      hotelTypeId: query.hotelTypeId,
+    });
+  }
+
+  if (query.starRating) {
+    qb.andWhere('hotel.star_rating = :starRating', {
+      starRating: query.starRating,
+    });
+  }
+
+  if (query.status) {
+    qb.andWhere('hotel.status = :status', {
+      status: query.status,
+    });
+  }
+
+  qb.skip((page - 1) * perPage).take(perPage);
+
+  const [data, total] = await qb.getManyAndCount();
+
+  return {
+    data,
+    meta: {
+      page,
+      perPage,
+      total,
+      totalPages: Math.ceil(total / perPage),
+    },
+  };
+}
 
   async findOne(id: string): Promise<Hotel> {
     this.assertValidId(id);
@@ -449,8 +513,7 @@ export class HotelsService {
         throw new BadRequestException(
           'Dữ liệu kiểu khách sạn và vị trí khách sạn chưa có trong database nên chưa tạo khách sạn được!',
         );
-      }
-
+}
       if (driverError.errno === 1062) {
         throw new ConflictException(
           'Dữ liệu hotel bị trùng ở trường UNIQUE (ví dụ slug).',
