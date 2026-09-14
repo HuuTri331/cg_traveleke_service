@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Post,
   Query,
+  Req,
   Res,
   UploadedFile,
   UseGuards,
@@ -14,16 +15,18 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FileInterceptor } from '@nestjs/platform-express';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { diskStorage } from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
 
 import { AuthService } from './auth.service';
+import { EmailSecurityService } from './email-security.service';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
+import { ValidateEmailDto } from './dto/validate-email.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../users/entities/user.entity';
@@ -55,20 +58,58 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly configService: ConfigService,
+    private readonly emailSecurityService: EmailSecurityService,
   ) {}
+
+  /**
+   * Lấy địa chỉ IP của Client để quản lý vi phạm và chống spam
+   */
+  private getClientIp(req: Request): string {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string') {
+      return forwarded.split(',')[0].trim();
+    }
+    if (Array.isArray(forwarded)) {
+      return forwarded[0].trim();
+    }
+    return req.ip || req.socket.remoteAddress || '127.0.0.1';
+  }
+
+  /**
+   * POST /api/auth/validate-email
+   * Kiểm tra email có thật không, có tục tĩu/ảo không trước khi đăng ký.
+   * Nếu phát hiện vi phạm, hệ thống kích hoạt khóa 10 phút hoặc 10 giờ.
+   */
+  @Post('validate-email')
+  @HttpCode(HttpStatus.OK)
+  async validateEmail(@Body() dto: ValidateEmailDto, @Req() req: Request) {
+    const clientIp = this.getClientIp(req);
+    await this.emailSecurityService.validateEmail(dto.email, clientIp);
+    return {
+      success: true,
+      valid: true,
+      message: 'Địa chỉ email hợp lệ.',
+    };
+  }
 
   /**
    * POST /api/auth/register
    * Đăng ký tài khoản khách hàng mới (có thể upload avatar).
-   * Gửi link xác thực tới Gmail và yêu cầu xác thực trước khi đăng nhập.
+   * Kiểm tra nghiêm ngặt email tồn tại & không tục tĩu trước khi xử lý.
    */
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(FileInterceptor('avatar', avatarMulterOptions))
   async register(
     @Body() dto: RegisterDto,
+    @Req() req: Request,
     @UploadedFile() avatarFile?: Express.Multer.File,
   ) {
+    const clientIp = this.getClientIp(req);
+
+    // 1. Kiểm tra an toàn email và xử lý khóa nếu vi phạm
+    await this.emailSecurityService.validateEmail(dto.email, clientIp);
+
     const avatarUrl = avatarFile ? `/uploads/avatars/${avatarFile.filename}` : undefined;
     const data = await this.authService.register(dto, avatarUrl);
     return {
@@ -112,7 +153,11 @@ export class AuthController {
    */
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
-  async resendVerification(@Body() dto: ResendVerificationDto) {
+  async resendVerification(@Body() dto: ResendVerificationDto, @Req() req: Request) {
+    const clientIp = this.getClientIp(req);
+    // Kiểm tra lockout trước khi cho phép gửi lại
+    this.emailSecurityService.checkLockout(clientIp);
+
     const result = await this.authService.resendVerification(dto.email);
     return result;
   }
