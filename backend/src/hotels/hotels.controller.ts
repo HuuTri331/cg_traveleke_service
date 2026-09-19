@@ -28,15 +28,15 @@ import { HotelsService } from './hotels.service';
 import { createMulterOptions } from './upload-image.config';
 
 @Controller('hotels')
-@UseGuards(JwtAuthGuard, RolesGuard)
 export class HotelsController {
   constructor(private readonly hotelsService: HotelsService) {}
 
   // ============================================================
-  // KHÁCH SẠN
+  // KHÁCH SẠN (PUBLIC ĐỌC & TÌM KIẾM CHO KHÁCH HÀNG)
   // ============================================================
 
   @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   create(@Body() dto: CreateHotelDto) {
     return this.hotelsService.create(dto);
@@ -58,12 +58,14 @@ export class HotelsController {
   }
 
   @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   update(@Param('id') id: string, @Body() dto: UpdateHotelDto) {
     return this.hotelsService.update(id, dto);
   }
 
   @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   remove(@Param('id') id: string) {
     return this.hotelsService.remove(id);
@@ -75,6 +77,7 @@ export class HotelsController {
   // ============================================================
 
   @Post(':id/images/upload')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   @UseInterceptors(AnyFilesInterceptor(createMulterOptions('hotels')))
   uploadImages(
@@ -98,6 +101,7 @@ export class HotelsController {
   }
 
   @Post(':id/images')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   addImage(
     @Param('id') id: string,
@@ -112,6 +116,7 @@ export class HotelsController {
   }
 
   @Patch(':id/images/:imageId/primary')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   setPrimaryImage(
     @Param('id') id: string,
@@ -121,6 +126,7 @@ export class HotelsController {
   }
 
   @Delete(':id/images/:imageId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   deleteImage(
     @Param('id') id: string,

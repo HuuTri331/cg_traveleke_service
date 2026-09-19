@@ -5,6 +5,7 @@ import { Room } from '../rooms/entities/room.entity';
 
 import { Booking } from './entities/booking.entity';
 import { BookingRoom } from './entities/booking-room.entity';
+import { BookingStatusLog } from './entities/booking-status-log.entity';
 
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
@@ -14,6 +15,7 @@ import { BookingsService } from './bookings.service';
     TypeOrmModule.forFeature([
       Booking,
       BookingRoom,
+      BookingStatusLog,
       Room,
     ]),
   ],

@@ -124,6 +124,91 @@ async function seed() {
   `);
   console.log('Created or verified room_images table successfully.');
 
+  // 6. Seed Admin & Employee accounts
+  const bcrypt = await import('bcrypt');
+  const passwordHash = await bcrypt.hash('123456789', 12);
+
+  await connection.query(`
+    INSERT INTO users (full_name, email, password, role, status, email_verified_at)
+    VALUES ('Quản Trị Viên', 'admintraveloka@gmail.com', ?, 'ADMIN', 'ACTIVE', NOW())
+    ON DUPLICATE KEY UPDATE
+      password = VALUES(password),
+      role = 'ADMIN',
+      status = 'ACTIVE',
+      email_verified_at = NOW();
+  `, [passwordHash]);
+
+  await connection.query(`
+    INSERT IGNORE INTO users_roles (user_id, role_id)
+    SELECT u.id, r.id FROM users u, roles r
+    WHERE u.email = 'admintraveloka@gmail.com' AND r.name = 'ADMIN';
+  `);
+
+  await connection.query(`
+    INSERT INTO users (full_name, email, password, role, status, email_verified_at)
+    VALUES ('Nhân Viên', 'nhanvientraveloka@gmail.com', ?, 'EMPLOYEE', 'ACTIVE', NOW())
+    ON DUPLICATE KEY UPDATE
+      password = VALUES(password),
+      role = 'EMPLOYEE',
+      status = 'ACTIVE',
+      email_verified_at = NOW();
+  `, [passwordHash]);
+
+  await connection.query(`
+    INSERT IGNORE INTO users_roles (user_id, role_id)
+    SELECT u.id, r.id FROM users u, roles r
+    WHERE u.email = 'nhanvientraveloka@gmail.com' AND r.name = 'EMPLOYEE';
+  `);
+  // 7. Seed Sample Hotels & Rooms if empty
+  const [hotelsCountRows]: any = await connection.query(`SELECT COUNT(*) as cnt FROM hotels`);
+  if (hotelsCountRows[0].cnt === 0) {
+    console.log('Seeding sample hotels and rooms...');
+    await connection.query(`
+      INSERT INTO hotels (id, hotel_type_id, location_id, name, slug, description, star_rating, address, phone, email, cover_image_url, status)
+      VALUES
+        (1, 1, 1, 'Khách sạn Caravelle Sài Gòn', 'khach-san-caravelle-sai-gon', 'Khách sạn 5 sao sang trọng ngay trung tâm Quận 1 với tầm nhìn tráng lệ ra toàn cảnh thành phố.', 5, '19-23 Công Trường Lam Sơn, Bến Nghé, Quận 1, TP. Hồ Chí Minh', '02838234999', 'caravelle@traveleke.vn', '/uploads/hotels/hotels-1786794920215-472320896.png', 'ACTIVE'),
+        (2, 1, 3, 'Furama Resort Đà Nẵng', 'furama-resort-da-nang', 'Khu nghỉ dưỡng 5 sao hướng biển Bắc Mỹ An tuyệt đẹp với hệ sinh thái ẩm thực và hồ bơi vô cực đẳng cấp.', 5, '105 Võ Nguyên Giáp, Ngũ Hành Sơn, Đà Nẵng', '02363847333', 'furama@traveleke.vn', '/uploads/hotels/hotels-1786798592187-334845302.png', 'ACTIVE'),
+        (3, 1, 2, 'Lotte Hotel Hà Nội', 'lotte-hotel-ha-noi', 'Tọa lạc trên các tầng cao của tòa nhà Lotte Center, mang đến trải nghiệm nghỉ dưỡng 5 sao trên tầng mây.', 5, '54 Liễu Giai, Ba Đình, Hà Nội', '02433331000', 'lotte@traveleke.vn', '/uploads/hotels/hotels-1788620536254-73388191.png', 'ACTIVE')
+      ON DUPLICATE KEY UPDATE name = VALUES(name);
+    `);
+
+    await connection.query(`
+      INSERT INTO hotel_images (hotel_id, image_url, caption, sort_order, is_primary)
+      VALUES
+        (1, '/uploads/hotels/hotels-1786794920215-472320896.png', 'Mặt tiền khách sạn Caravelle', 0, 1),
+        (1, '/uploads/hotels/hotels-1786795692411-620859.png', 'Sảnh chính Caravelle', 1, 0),
+        (2, '/uploads/hotels/hotels-1786798592187-334845302.png', 'Khuôn viên Furama Resort', 0, 1),
+        (2, '/uploads/hotels/hotels-1786798592184-324501.jpg', 'Hồ bơi hướng biển Furama', 1, 0),
+        (3, '/uploads/hotels/hotels-1788620536254-73388191.png', 'Toàn cảnh Lotte Hotel Hà Nội', 0, 1)
+      ON DUPLICATE KEY UPDATE caption = VALUES(caption);
+    `);
+
+    await connection.query(`
+      INSERT INTO rooms (id, hotel_id, name, slug, description, price_per_night, max_adults, max_children, total_rooms, available_rooms, bed_count, bed_type, room_size, rating, review_count, cover_image_url, status)
+      VALUES
+        (1, 1, 'Phòng Deluxe City View', 'phong-deluxe-city-view-caravelle', 'Phòng nghỉ tiện nghi hiện đại với cửa kính panorama view ngắm trung tâm thành phố Sài Gòn rực rỡ ánh đèn.', 1850000, 2, 1, 10, 8, 1, 'Giường Đôi', 38, 4.90, 48, '/uploads/rooms/rooms-1786797511481-837351127.png', 'AVAILABLE'),
+        (2, 1, 'Phòng Premium Suite King', 'phong-premium-suite-king-caravelle', 'Suite cao cấp với phòng khách riêng biệt, bồn tắm nằm massage và đặc quyền sử dụng Signature Lounge.', 3200000, 2, 2, 5, 4, 1, 'Giường Đôi King', 56, 5.00, 32, '/uploads/rooms/rooms-1786797511488-924455364.png', 'AVAILABLE'),
+        (3, 2, 'Phòng Ocean Deluxe Biển Mỹ An', 'phong-ocean-deluxe-bien-my-an', 'Phòng hướng biển với ban công thoáng mát, đón gió biển tự nhiên trong lành và không gian thư giãn tuyệt đối.', 2450000, 2, 1, 12, 10, 1, 'Giường Đôi', 45, 4.95, 75, '/uploads/rooms/rooms-1786798401064-252341834.jpg', 'AVAILABLE'),
+        (4, 2, 'Biệt Thự Hướng Vườn Furama Villa', 'biet-thu-huong-vuon-furama-villa', 'Villa sân vườn nhiệt đới với hồ bơi riêng biệt, không gian nghỉ dưỡng biệt lập lý tưởng cho gia đình.', 5900000, 4, 2, 4, 3, 2, '2 Giường Đôi King', 120, 5.00, 26, '/uploads/rooms/rooms-1786803009948-438879937.png', 'AVAILABLE'),
+        (5, 3, 'Phòng Grand Deluxe Lotte', 'phong-grand-deluxe-lotte', 'Thiết kế phong cách tối giản thanh lịch với view hồ Tây thơ mộng từ trên cao cùng giường nệm êm ái.', 2100000, 2, 1, 15, 12, 1, 'Giường Đôi', 42, 4.88, 54, '/uploads/rooms/rooms-1788621367940-828756673.png', 'AVAILABLE'),
+        (6, 3, 'Phòng Club Junior Suite', 'phong-club-junior-suite-lotte', 'Không gian sang trọng với bàn làm việc cao cấp, bồn tắm ngắm mây và bữa sáng buffet thượng hạng miễn phí.', 3800000, 2, 1, 6, 5, 1, 'Giường Đôi King', 65, 4.96, 41, '/uploads/rooms/rooms-1788621480468-810683228.png', 'AVAILABLE')
+      ON DUPLICATE KEY UPDATE name = VALUES(name);
+    `);
+
+    await connection.query(`
+      INSERT INTO room_images (room_id, image_url, caption, sort_order, is_primary)
+      VALUES
+        (1, '/uploads/rooms/rooms-1786797511481-837351127.png', 'Ảnh phòng Deluxe City View', 0, 1),
+        (2, '/uploads/rooms/rooms-1786797511488-924455364.png', 'Ảnh phòng Premium Suite King', 0, 1),
+        (3, '/uploads/rooms/rooms-1786798401064-252341834.jpg', 'Ảnh phòng Ocean Deluxe', 0, 1),
+        (4, '/uploads/rooms/rooms-1786803009948-438879937.png', 'Ảnh Biệt Thự Hướng Vườn', 0, 1),
+        (5, '/uploads/rooms/rooms-1788621367940-828756673.png', 'Ảnh phòng Grand Deluxe Lotte', 0, 1),
+        (6, '/uploads/rooms/rooms-1788621480468-810683228.png', 'Ảnh phòng Club Junior Suite', 0, 1)
+      ON DUPLICATE KEY UPDATE caption = VALUES(caption);
+    `);
+    console.log('Seeded sample hotels, rooms, and images successfully.');
+  }
+
   await connection.end();
   console.log('Database seeding completed successfully!');
 }

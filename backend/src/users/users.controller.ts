@@ -39,6 +39,38 @@ export class UsersController {
   }
 
   /**
+   * GET /api/users/customers
+   * Lấy danh sách khách hàng — ADMIN & EMPLOYEE.
+   */
+  @Get('customers')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async findAllCustomers() {
+    const data = await this.usersService.findAllCustomers();
+    return { success: true, data };
+  }
+
+  /**
+   * PATCH /api/users/customers/:id/status
+   * Khoá / Mở khoá tài khoản khách hàng — ADMIN & EMPLOYEE.
+   */
+  @Patch('customers/:id/status')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async updateCustomerStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateStatusDto,
+    @CurrentUser() user: User,
+  ) {
+    const data = await this.usersService.updateCustomerStatus(id, dto, user.id);
+    const label = dto.status === 'BLOCKED' ? 'Khoá' : 'Mở khoá';
+    return {
+      success: true,
+      message: `Đã ${label.toLowerCase()} tài khoản khách hàng thành công.`,
+      data,
+    };
+  }
+
+
+  /**
    * GET /api/users/:id
    * Xem chi tiết nhân viên — chỉ ADMIN.
    */

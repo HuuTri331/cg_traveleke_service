@@ -64,6 +64,8 @@ import { UsersModule } from './users/users.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { MailModule } from './mail/mail.module';
 
+import { HotelStaffModule } from './hotel-staff/hotel-staff.module';
+
 @Module({
   imports: [
     // ============================================================
@@ -126,6 +128,8 @@ import { MailModule } from './mail/mail.module';
     RoomsModule,
 
     BookingsModule,
+
+    HotelStaffModule,
 
     MailModule,
   ],

@@ -28,45 +28,44 @@ import { RoomsService } from './rooms.service';
 import { SearchRoomDto } from './dto/search-room.dto';
 
 @Controller('rooms')
-@UseGuards(JwtAuthGuard, RolesGuard)
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
 
   // ============================================================
-  // CRUD PHÒNG
+  // CRUD PHÒNG (PUBLIC ĐỌC & TÌM KIẾM CHO KHÁCH HÀNG)
   // ============================================================
 
   @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   create(@Body() dto: CreateRoomDto) {
     return this.roomsService.create(dto);
   }
 
   @Get()
-  @Roles('ADMIN', 'EMPLOYEE')
   findAll(@Query() query: QueryRoomDto) {
     return this.roomsService.findAll(query);
   }
 
   @Get('search')
-  @Roles('ADMIN', 'EMPLOYEE')
   search(@Query() query: SearchRoomDto) {
     return this.roomsService.search(query);
   }
 
   @Get(':id')
-  @Roles('ADMIN', 'EMPLOYEE')
   findOne(@Param('id') id: string) {
     return this.roomsService.findOne(id);
   }
 
   @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   update(@Param('id') id: string, @Body() dto: UpdateRoomDto) {
     return this.roomsService.update(id, dto);
   }
 
   @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   remove(@Param('id') id: string) {
     return this.roomsService.remove(id);
@@ -78,6 +77,7 @@ export class RoomsController {
   // ============================================================
 
   @Post(':id/images/upload')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   @UseInterceptors(AnyFilesInterceptor(createMulterOptions('rooms')))
   uploadImages(
@@ -101,6 +101,7 @@ export class RoomsController {
   }
 
   @Post(':id/images')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   addImage(
     @Param('id') id: string,
@@ -110,12 +111,12 @@ export class RoomsController {
   }
 
   @Get(':id/images')
-  @Roles('ADMIN', 'EMPLOYEE')
   getImages(@Param('id') id: string) {
     return this.roomsService.getImages(id);
   }
 
   @Patch(':id/images/:imageId/primary')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   setPrimaryImage(
     @Param('id') id: string,
@@ -125,6 +126,7 @@ export class RoomsController {
   }
 
   @Delete(':id/images/:imageId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   deleteImage(
     @Param('id') id: string,

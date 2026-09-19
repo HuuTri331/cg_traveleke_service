@@ -27,24 +27,74 @@ export class UsersService {
   /**
    * Lấy danh sách tất cả nhân viên (ADMIN & EMPLOYEE), không trả về CUSTOMER.
    */
-  async findAllStaff(): Promise<User[]> {
+  async findAllStaff() {
     const users = await this.usersRepository.find({
       order: { createdAt: 'DESC' },
     });
-    return users.filter((u) => u.role === 'ADMIN' || u.role === 'EMPLOYEE');
+    return users
+      .filter((u) => u.role === 'ADMIN' || u.role === 'EMPLOYEE')
+      .map((u) => ({
+        ...u,
+        role: u.role,
+        isEmailVerified: u.isEmailVerified,
+      }));
+  }
+
+  /**
+   * Lấy danh sách tất cả khách hàng (role = 'CUSTOMER') — ADMIN & EMPLOYEE
+   */
+  async findAllCustomers() {
+    const users = await this.usersRepository.find({
+      order: { createdAt: 'DESC' },
+    });
+    return users
+      .filter((u) => u.role === 'CUSTOMER')
+      .map((u) => ({
+        id: u.id,
+        fullName: u.fullName,
+        email: u.email,
+        phone: u.phone,
+        address: u.address,
+        gender: u.gender,
+        dateOfBirth: u.dateOfBirth,
+        avatarUrl: u.avatarUrl,
+        role: u.role,
+        status: u.status,
+        isEmailVerified: u.isEmailVerified,
+        lastLoginAt: u.lastLoginAt,
+        createdAt: u.createdAt,
+        updatedAt: u.updatedAt,
+      }));
+  }
+
+  /**
+   * Cập nhật trạng thái tài khoản khách hàng (chỉ ADMIN & EMPLOYEE)
+   */
+  async updateCustomerStatus(id: string, dto: UpdateStatusDto, requestUserId?: string) {
+    const user = await this.usersRepository.findOne({ where: { id } });
+    if (!user || user.role !== 'CUSTOMER') {
+      throw new NotFoundException(`Không tìm thấy khách hàng với ID ${id}.`);
+    }
+
+    user.status = dto.status;
+    return this.usersRepository.save(user);
   }
 
   /**
    * Tìm nhân viên theo ID.
    */
-  async findOneStaff(id: string): Promise<User> {
+  async findOneStaff(id: string) {
     const user = await this.usersRepository.findOne({ where: { id } });
 
     if (!user || user.role === 'CUSTOMER') {
       throw new NotFoundException(`Không tìm thấy nhân viên với ID ${id}.`);
     }
 
-    return user;
+    return {
+      ...user,
+      role: user.role,
+      isEmailVerified: user.isEmailVerified,
+    };
   }
 
   /**
