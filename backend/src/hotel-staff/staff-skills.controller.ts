@@ -13,7 +13,14 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { StaffSkillsService, UpsertStaffSkillDto, UpsertLanguageSkillDto } from './staff-skills.service';
+import {
+  StaffSkillsService,
+  UpsertStaffSkillDto,
+  UpsertLanguageSkillDto,
+  CreateSkillCategoryDto,
+  UpdateSkillCategoryDto,
+  CheckEligibilityDto,
+} from './staff-skills.service';
 import { CaseComplexity } from './entities/staff-eligibility-rule.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -38,7 +45,7 @@ export class StaffSkillsController {
   @Roles('ADMIN')
   @HttpCode(HttpStatus.CREATED)
   createCategory(
-    @Body() body: { code: string; name: string; description?: string; department?: string },
+    @Body() body: CreateSkillCategoryDto,
   ) {
     return this.staffSkillsService.createSkillCategory(body);
   }
@@ -47,7 +54,7 @@ export class StaffSkillsController {
   @Roles('ADMIN')
   updateCategory(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { name?: string; description?: string; department?: string; status?: 'ACTIVE' | 'INACTIVE' },
+    @Body() body: UpdateSkillCategoryDto,
   ) {
     return this.staffSkillsService.updateSkillCategory(id, body);
   }
@@ -141,12 +148,7 @@ export class StaffSkillsController {
 
   @Post('check-eligibility')
   checkEligibility(
-    @Body()
-    body: {
-      userId: number;
-      caseComplexity: CaseComplexity;
-      requiredLanguage?: string;
-    },
+    @Body() body: CheckEligibilityDto,
   ) {
     return this.staffSkillsService.checkEligibility(
       body.userId,

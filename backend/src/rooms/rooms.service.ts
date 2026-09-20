@@ -16,6 +16,8 @@ import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomImage } from './entities/room-image.entity';
 import { Room, RoomStatus } from './entities/room.entity';
 import { SearchRoomDto } from './dto/search-room.dto';
+import { RoomServiceAssignment } from './entities/room-service-assignment.entity';
+import { RoomService } from '../services/entities/room-service.entity';
 
 export const MAX_ROOM_IMAGES = 5;
 
@@ -26,6 +28,10 @@ export class RoomsService {
     private readonly roomsRepository: Repository<Room>,
     @InjectRepository(RoomImage)
     private readonly roomImagesRepository: Repository<RoomImage>,
+    @InjectRepository(RoomServiceAssignment)
+    private readonly rsaRepository: Repository<RoomServiceAssignment>,
+    @InjectRepository(RoomService)
+    private readonly roomServicesRepository: Repository<RoomService>,
     private readonly hotelsService: HotelsService,
   ) {}
 
@@ -79,6 +85,27 @@ export class RoomsService {
             isPrimary: 1,
           }),
         );
+      }
+
+      // Gán dịch vụ cho phòng: nếu dto.serviceIds có thì gán theo danh sách đó,
+      // nếu không có thì mặc định tự động gán toàn bộ dịch vụ MIỄN PHÍ đang hoạt động!
+      let serviceIdsToAssign = dto.serviceIds;
+      if (!serviceIdsToAssign || serviceIdsToAssign.length === 0) {
+        const defaultFreeServices = await this.roomServicesRepository.find({
+          where: { isComplimentary: true, status: 'ACTIVE' },
+        });
+        serviceIdsToAssign = defaultFreeServices.map((s) => Number(s.id));
+      }
+
+      if (serviceIdsToAssign && serviceIdsToAssign.length > 0) {
+        const assignments = serviceIdsToAssign.map((sId) =>
+          this.rsaRepository.create({
+            roomId: Number(savedRoom.id),
+            serviceId: sId,
+            isComplimentary: true,
+          }),
+        );
+        await this.rsaRepository.save(assignments);
       }
 
       return savedRoom;
@@ -343,7 +370,35 @@ export class RoomsService {
     });
 
     room.images = images;
+    (room as any).services = await this.getRoomServices(Number(id));
     return room;
+  }
+
+  async getRoomServices(roomId: number) {
+    const assignments = await this.rsaRepository
+      .createQueryBuilder('rsa')
+      .leftJoinAndSelect('rsa.service', 'service')
+      .leftJoinAndSelect('service.category', 'category')
+      .where('rsa.room_id = :roomId', { roomId })
+      .getMany();
+
+    return assignments.map((a) => ({
+      id: a.service?.id,
+      name: a.service?.name,
+      description: a.service?.description,
+      unit: a.service?.unit,
+      basePrice: a.service?.basePrice,
+      isComplimentary: a.service?.isComplimentary,
+      serviceType: a.service?.serviceType,
+      category: a.service?.category
+        ? {
+            id: a.service.category.id,
+            code: a.service.category.code,
+            name: a.service.category.name,
+            icon: a.service.category.icon,
+          }
+        : null,
+    }));
   }
 
   async update(id: string, dto: UpdateRoomDto): Promise<Room> {
@@ -428,8 +483,24 @@ export class RoomsService {
       room.status = dto.status;
     }
 
+    if (dto.serviceIds !== undefined) {
+      await this.rsaRepository.delete({ roomId: Number(room.id) });
+      if (dto.serviceIds.length > 0) {
+        const assignments = dto.serviceIds.map((sId) =>
+          this.rsaRepository.create({
+            roomId: Number(room.id),
+            serviceId: sId,
+            isComplimentary: true,
+          }),
+        );
+        await this.rsaRepository.save(assignments);
+      }
+    }
+
     try {
-      return await this.roomsRepository.save(room);
+      const saved = await this.roomsRepository.save(room);
+      (saved as any).services = await this.getRoomServices(Number(saved.id));
+      return saved;
     } catch (error) {
       this.rethrowDatabaseError(error);
     }

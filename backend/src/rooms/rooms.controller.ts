@@ -57,6 +57,11 @@ export class RoomsController {
     return this.roomsService.findOne(id);
   }
 
+  @Get(':id/services')
+  getRoomServices(@Param('id') id: string) {
+    return this.roomsService.getRoomServices(Number(id));
+  }
+
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')

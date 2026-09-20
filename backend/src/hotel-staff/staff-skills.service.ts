@@ -6,32 +6,14 @@ import { StaffSkill } from './entities/staff-skill.entity';
 import { StaffLanguageSkill, LanguageLevel } from './entities/staff-language-skill.entity';
 import { StaffEligibilityRule, CaseComplexity } from './entities/staff-eligibility-rule.entity';
 
-export class UpsertStaffSkillDto {
-  skillId: number;
-  level: number; // 1-5
-  yearsExp?: number;
-  certificate?: string;
-  certificateExpiry?: string; // ISO date string
-  note?: string;
-  eligibilityLevel?: 'TRAINING' | 'STANDARD' | 'SENIOR' | 'VIP' | 'COMPLEX';
-}
-
-export class UpdateStaffSkillDto {
-  level?: number;
-  yearsExp?: number;
-  certificate?: string;
-  certificateExpiry?: string;
-  note?: string;
-  eligibilityLevel?: 'TRAINING' | 'STANDARD' | 'SENIOR' | 'VIP' | 'COMPLEX';
-}
-
-export class UpsertLanguageSkillDto {
-  languageCode: string;
-  languageName: string;
-  level: LanguageLevel;
-  certificate?: string;
-  certificateExpiry?: string;
-}
+export * from './dto/staff-skills.dto';
+import {
+  UpsertStaffSkillDto,
+  UpdateStaffSkillDto,
+  UpsertLanguageSkillDto,
+  CreateSkillCategoryDto,
+  UpdateSkillCategoryDto,
+} from './dto/staff-skills.dto';
 
 @Injectable()
 export class StaffSkillsService {

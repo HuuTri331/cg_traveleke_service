@@ -14,6 +14,9 @@
 --   - Tương thích cả khi khởi tạo database mới hoặc cập nhật từ database cũ của nhánh git khác.
 -- ====================================================================================================
 
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
+
 USE hotel_booking_db;
 
 -- Tắt kiểm tra foreign key tạm thời để tránh xung đột thứ tự ràng buộc khi import
@@ -208,6 +211,23 @@ CREATE TABLE IF NOT EXISTS room_services (
     INDEX idx_room_services_hotel (hotel_id),
     INDEX idx_room_services_type (service_type),
     INDEX idx_room_services_status (status)
+) ENGINE=InnoDB;
+
+-- 3.2.1 Bảng Room_Service_Assignments (Gán dịch vụ phòng & tiện ích vào từng loại phòng)
+CREATE TABLE IF NOT EXISTS room_service_assignments (
+    id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    room_id             BIGINT UNSIGNED NOT NULL,
+    service_id          BIGINT UNSIGNED NOT NULL,
+    is_complimentary    TINYINT(1) NOT NULL DEFAULT 1 COMMENT '1 = miễn phí kèm theo phòng, 0 = có phí thu thêm',
+    custom_price        DECIMAL(12,2) NULL,
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT pk_room_service_assignments PRIMARY KEY (id),
+    CONSTRAINT fk_rsa_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    CONSTRAINT fk_rsa_service FOREIGN KEY (service_id) REFERENCES room_services(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    UNIQUE KEY uq_room_service (room_id, service_id),
+    INDEX idx_rsa_room (room_id),
+    INDEX idx_rsa_service (service_id)
 ) ENGINE=InnoDB;
 
 -- 3.3 Bảng Service_Requests (Yêu cầu dịch vụ đầy đủ các cột SLA và Service Recovery)
@@ -679,6 +699,71 @@ DELIMITER ;
 
 CALL PatchMissingAddonColumns();
 DROP PROCEDURE IF EXISTS PatchMissingAddonColumns;
+
+-- ====================================================================================================
+-- SEED DỊCH VỤ PHÒNG CHUẨN (MIỄN PHÍ VÀ THU PHÍ) & GÁN MẶC ĐỊNH CHO PHÒNG
+-- ====================================================================================================
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Wifi Tốc Độ Cao', 'Internet wifi cáp quang băng thông rộng không giới hạn', 'phòng', 0, 1, 'INCLUDED', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'TECH_SUPPORT'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Wifi Tốc Độ Cao');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Dọn Phòng Hàng Ngày', 'Thay drap, hút bụi, khử khuẩn và dọn dẹp buồng phòng mỗi ngày', 'ngày', 0, 1, 'INCLUDED', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'HOUSEKEEPING'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Dọn Phòng Hàng Ngày');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Nước Suối Đóng Chai', 'Nước khoáng đóng chai tinh khiết miễn phí đặt sẵn tại bàn phòng (2 chai/ngày)', 'ngày', 0, 1, 'INCLUDED', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'FOOD_BEVERAGE'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Nước Suối Đóng Chai');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Trà & Cà Phê Miễn Phí', 'Gói trà túi lọc và cà phê hòa tan cao cấp kèm ấm đun siêu tốc tại phòng', 'ngày', 0, 1, 'INCLUDED', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'FOOD_BEVERAGE'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Trà & Cà Phê Miễn Phí');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Khăn Tắm & Đồ Vệ Sinh Cá Nhân', 'Bộ khăn bông, bàn chải, kem đánh răng, dầu gội, sữa tắm chất lượng cao', 'lần', 0, 1, 'INCLUDED', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'HOUSEKEEPING'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Khăn Tắm & Đồ Vệ Sinh Cá Nhân');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Dịch Vụ Báo Thức & Hỗ Trợ 24/7', 'Lễ tân trực hotline hỗ trợ thông tin và báo thức cuộc gọi theo yêu cầu', 'lần', 0, 1, 'INCLUDED', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'CONCIERGE'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Dịch Vụ Báo Thức & Hỗ Trợ 24/7');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Buffet Ăn Sáng Quốc Tế', 'Tiệc buffet sáng phong phú món Á - Âu tại nhà hàng khách sạn', 'người', 150000, 0, 'ADD_ON', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'FOODFAST'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Buffet Ăn Sáng Quốc Tế');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Giặt Sấy & Ủi Quần Áo Lấy Liền', 'Dịch vụ giặt sấy thơm tho và ủi phẳng trả đồ trong vòng 4 tiếng', 'kg', 60000, 0, 'ADD_ON', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'LAUNDRY'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Giặt Sấy & Ủi Quần Áo Lấy Liền');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Massage Thảo Dược Toàn Thân (60 Phút)', 'Liệu trình massage thư giãn với tinh dầu tự nhiên tại phòng hoặc spa', 'giờ', 350000, 0, 'ADD_ON', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'SPA_WELLNESS'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Massage Thảo Dược Toàn Thân (60 Phút)');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Đưa Đón Sân Bay Riêng 4 Chỗ', 'Xe đón hoặc tiễn sân bay sang trọng, tài xế đúng giờ và nhiệt tình', 'chuyến', 250000, 0, 'ADD_ON', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'TRANSPORT'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Đưa Đón Sân Bay Riêng 4 Chỗ');
+
+INSERT INTO room_services (category_id, name, description, unit, base_price, is_complimentary, service_type, status)
+SELECT c.id, 'Trông Trẻ Theo Giờ Tại Phòng', 'Nhân viên trông trẻ được đào tạo nghiệp vụ, an toàn và chu đáo', 'giờ', 100000, 0, 'ADD_ON', 'ACTIVE'
+FROM service_categories c WHERE c.code = 'CHILDCARE'
+AND NOT EXISTS (SELECT 1 FROM room_services rs WHERE rs.name = 'Trông Trẻ Theo Giờ Tại Phòng');
+
+-- Gán các dịch vụ miễn phí mặc định cho tất cả các phòng hiện có trong DB
+INSERT IGNORE INTO room_service_assignments (room_id, service_id, is_complimentary)
+SELECT r.id, rs.id, 1
+FROM rooms r
+CROSS JOIN room_services rs
+WHERE rs.is_complimentary = 1;
 
 -- Bật lại kiểm tra foreign key
 SET FOREIGN_KEY_CHECKS = 1;
