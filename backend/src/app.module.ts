@@ -65,6 +65,7 @@ import { BookingsModule } from './bookings/bookings.module';
 import { MailModule } from './mail/mail.module';
 
 import { HotelStaffModule } from './hotel-staff/hotel-staff.module';
+import { ServicesModule } from './services/services.module';
 
 @Module({
   imports: [
@@ -130,6 +131,8 @@ import { HotelStaffModule } from './hotel-staff/hotel-staff.module';
     BookingsModule,
 
     HotelStaffModule,
+
+    ServicesModule,
 
     MailModule,
   ],
