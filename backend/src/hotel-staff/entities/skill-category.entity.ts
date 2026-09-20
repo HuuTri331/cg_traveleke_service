@@ -34,6 +34,6 @@ export class SkillCategory {
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 
-  @OneToMany(() => StaffSkill, (ss) => ss.skill)
+  @OneToMany(() => StaffSkill, (ss: StaffSkill) => ss.skill)
   staffSkills: StaffSkill[];
 }

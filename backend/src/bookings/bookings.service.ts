@@ -255,6 +255,13 @@ export class BookingsService {
           bookingRoom,
         );
 
+        // Tự động phân công ngầm nhân viên lễ tân phù hợp theo phân hạng phòng & năng lực
+        await this.autoAssignHotelStaffInternal(
+          savedBooking,
+          room,
+          manager,
+        );
+
         return {
           message:
             'Đặt phòng thành công.',
@@ -287,6 +294,115 @@ export class BookingsService {
     );
   }
 
+  /**
+   * Tự động phân công ngầm nhân viên lễ tân dựa vào phân hạng phòng & năng lực nhân sự
+   */
+  private async autoAssignHotelStaffInternal(
+    booking: Booking,
+    room: Room,
+    manager: any,
+  ) {
+    try {
+      const isVipRoom =
+        Number(room.pricePerNight) >= 1500000 ||
+        /vip|suite|presidential|deluxe|luxury/i.test(room.name);
+
+      // Truy vấn danh sách nhân sự của khách sạn này
+      const staffList = await manager.query(
+        `
+        SELECT
+          hs.staff_user_id AS staffUserId,
+          u.full_name AS staffName,
+          u.email AS staffEmail,
+          hs.staff_role AS staffRole,
+          COALESCE(MAX(ss.level), 1) AS maxSkillLevel,
+          COALESCE(MAX(ss.years_exp), 0) AS maxYearsExp,
+          (SELECT COUNT(*) FROM bookings b WHERE b.handled_by = hs.staff_user_id AND b.status = 'COMPLETED') AS completedCount,
+          (SELECT COUNT(*) FROM bookings b WHERE b.handled_by = hs.staff_user_id AND b.status IN ('PENDING', 'CONFIRMED')) AS activeLoad
+        FROM hotel_staff hs
+        INNER JOIN users u ON u.id = hs.staff_user_id AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
+        LEFT JOIN staff_skills ss ON ss.user_id = hs.staff_user_id
+        WHERE hs.hotel_id = ? AND hs.status = 'ACTIVE'
+        GROUP BY hs.staff_user_id, u.full_name, u.email, hs.staff_role
+        `,
+        [booking.hotelId],
+      );
+
+      let candidates = staffList;
+      if (!candidates || candidates.length === 0) {
+        // Fallback: Nếu khách sạn chưa gán nhân sự, tìm nhân sự khả dụng trong hệ thống
+        candidates = await manager.query(
+          `SELECT u.id AS staffUserId, u.full_name AS staffName, u.email AS staffEmail,
+                  'EMPLOYEE' AS staffRole, 2 AS maxSkillLevel, 1 AS maxYearsExp, 0 AS completedCount, 0 AS activeLoad
+           FROM users u
+           WHERE u.role IN ('EMPLOYEE', 'ADMIN') AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
+           LIMIT 5`,
+        );
+      }
+
+      if (candidates && candidates.length > 0) {
+        let bestCandidate: any = null;
+        let reason = '';
+
+        if (isVipRoom) {
+          // Phòng VIP/Suite: Ưu tiên nhân sự có skill level cao, nhiều năm kinh nghiệm, thành tích tốt
+          candidates.sort((a: any, b: any) => {
+            const scoreA =
+              Number(a.maxSkillLevel) * 20 +
+              Number(a.maxYearsExp) * 10 +
+              Number(a.completedCount) * 5 -
+              Number(a.activeLoad) * 15 +
+              (a.staffRole === 'MANAGER' ? 30 : 0);
+            const scoreB =
+              Number(b.maxSkillLevel) * 20 +
+              Number(b.maxYearsExp) * 10 +
+              Number(b.completedCount) * 5 -
+              Number(b.activeLoad) * 15 +
+              (b.staffRole === 'MANAGER' ? 30 : 0);
+            return scoreB - scoreA;
+          });
+          bestCandidate = candidates[0];
+          reason = `Hệ thống tự động phân công: Phòng cao cấp/VIP (${room.name}) được phân công nhân sự giàu kinh nghiệm (${bestCandidate.staffName} - Level ${bestCandidate.maxSkillLevel}, ${bestCandidate.maxYearsExp} năm KN, ${bestCandidate.completedCount} đơn hoàn thành).`;
+        } else {
+          // Phòng Standard/Economy: Ghép nối nhân sự tiêu chuẩn/junior để cọ xát và cân bằng tải
+          candidates.sort((a: any, b: any) => {
+            const scoreA =
+              (5 - Number(a.maxSkillLevel)) * 20 +
+              (Number(a.maxYearsExp) <= 2 ? 30 : 0) -
+              Number(a.activeLoad) * 25;
+            const scoreB =
+              (5 - Number(b.maxSkillLevel)) * 20 +
+              (Number(b.maxYearsExp) <= 2 ? 30 : 0) -
+              Number(b.activeLoad) * 25;
+            return scoreB - scoreA;
+          });
+          bestCandidate = candidates[0];
+          reason = `Hệ thống tự động phân công: Phòng tiêu chuẩn/cơ bản (${room.name}) ghép nối nhân sự tiêu chuẩn (${bestCandidate.staffName} - Level ${bestCandidate.maxSkillLevel}) tối ưu phân bổ tải.`;
+        }
+
+        if (bestCandidate) {
+          booking.handledBy = String(bestCandidate.staffUserId);
+          booking.assignmentType = 'AUTO';
+          booking.assignmentNote = reason;
+          await manager.getRepository(Booking).save(booking);
+
+          // Ghi nhận log
+          await manager.getRepository(BookingStatusLog).save(
+            manager.getRepository(BookingStatusLog).create({
+              bookingId: booking.id,
+              oldStatus: null,
+              newStatus: BookingStatus.PENDING,
+              note: reason,
+              changedBy: String(bestCandidate.staffUserId),
+            }),
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('Lỗi phân công tự động phòng khách sạn (không chặn luồng chính):', err);
+    }
+  }
+
   // ============================================================
   // DANH SÁCH BOOKINGS (Admin/Employee)
   // ============================================================
@@ -313,6 +429,10 @@ export class BookingsService {
         'b.status AS status',
         'b.special_request AS specialRequest',
         'b.handled_by AS handledBy',
+        'b.assignment_type AS assignmentType',
+        'b.assignment_note AS assignmentNote',
+        'b.reassigned_at AS reassignedAt',
+        'b.reassigned_by AS reassignedBy',
         'b.confirmed_at AS confirmedAt',
         'b.rejected_at AS rejectedAt',
         'b.cancelled_at AS cancelledAt',
@@ -321,10 +441,14 @@ export class BookingsService {
         'h.address AS hotelAddress',
         'u.full_name AS customerName',
         'u.email AS customerEmail',
+        'staff.full_name AS handledByName',
+        'staff.email AS handledByEmail',
+        'staff.role AS handledByRole',
       ])
       .from('bookings', 'b')
       .leftJoin('hotels', 'h', 'h.id = b.hotel_id')
       .leftJoin('users', 'u', 'u.id = b.user_id')
+      .leftJoin('users', 'staff', 'staff.id = b.handled_by')
       .orderBy('b.created_at', 'DESC');
 
     // Filter theo status
@@ -396,6 +520,10 @@ export class BookingsService {
         b.status,
         b.special_request AS specialRequest,
         b.handled_by AS handledBy,
+        b.assignment_type AS assignmentType,
+        b.assignment_note AS assignmentNote,
+        b.reassigned_at AS reassignedAt,
+        b.reassigned_by AS reassignedBy,
         b.confirmed_at AS confirmedAt,
         b.rejected_at AS rejectedAt,
         b.cancelled_at AS cancelledAt,
@@ -416,13 +544,18 @@ export class BookingsService {
 
         u.full_name AS customerName,
         u.email AS customerEmail,
-        u.phone AS customerPhone
+        u.phone AS customerPhone,
+
+        staff.full_name AS handledByName,
+        staff.email AS handledByEmail,
+        staff.role AS handledByRole
 
       FROM bookings b
       LEFT JOIN booking_rooms br ON br.booking_id = b.id
       LEFT JOIN rooms r ON r.id = br.room_id
       LEFT JOIN hotels h ON h.id = b.hotel_id
       LEFT JOIN users u ON u.id = b.user_id
+      LEFT JOIN users staff ON staff.id = b.handled_by
       WHERE b.id = ?
       `,
       [id],
@@ -450,9 +583,17 @@ export class BookingsService {
       [id],
     );
 
+    const bookingData = bookings[0];
+    const canReassign =
+      bookingData.status !== BookingStatus.CHECKED_IN &&
+      bookingData.status !== BookingStatus.COMPLETED &&
+      bookingData.status !== BookingStatus.CANCELLED &&
+      bookingData.status !== BookingStatus.REJECTED;
+
     return {
       data: {
-        ...bookings[0],
+        ...bookingData,
+        canReassign,
         statusLogs,
       },
     };
@@ -489,7 +630,9 @@ export class BookingsService {
 
     // Cập nhật trạng thái và timestamps tương ứng
     booking.status = newStatus as unknown as BookingStatus;
-    booking.handledBy = changedByUserId;
+    if (!booking.handledBy) {
+      booking.handledBy = changedByUserId;
+    }
 
     const now = new Date();
     switch (newStatus) {
@@ -520,6 +663,183 @@ export class BookingsService {
     return {
       message: `Đã chuyển trạng thái booking ${booking.bookingCode} từ "${currentStatus}" sang "${newStatus}".`,
       data: booking,
+    };
+  }
+
+  // ============================================================
+  // PHÂN CÔNG LẠI NHÂN VIÊN PHỤ TRÁCH (Admin/Quản Lý Lễ Tân)
+  // ============================================================
+
+  async reassignStaff(
+    bookingId: string,
+    targetStaffUserId: string,
+    changedByUserId: string,
+    note?: string,
+  ) {
+    const booking = await this.bookingRepository.findOne({
+      where: { id: bookingId },
+    });
+
+    if (!booking) {
+      throw new NotFoundException('Không tìm thấy đơn đặt phòng.');
+    }
+
+    // 1. KIỂM TRA ĐIỀU KIỆN TIÊN QUYẾT: CHỈ ĐỔI KHI KHÁCH CHƯA TỚI NHẬN PHÒNG
+    if (booking.status === BookingStatus.CHECKED_IN) {
+      throw new BadRequestException(
+        'Không thể phân công lại nhân viên vì khách hàng đã tới nhận phòng (CHECKED_IN).',
+      );
+    }
+
+    if (
+      booking.status === BookingStatus.COMPLETED ||
+      booking.status === BookingStatus.CANCELLED ||
+      booking.status === BookingStatus.REJECTED
+    ) {
+      throw new BadRequestException(
+        `Không thể phân công lại cho đơn đặt phòng ở trạng thái ${booking.status}.`,
+      );
+    }
+
+    // 2. KIỂM TRA NHÂN VIÊN ĐƯỢC CHỈ ĐỊNH
+    const [targetStaff] = await this.dataSource.query(
+      'SELECT id, full_name, email, role FROM users WHERE id = ? AND deleted_at IS NULL AND status = "ACTIVE"',
+      [targetStaffUserId],
+    );
+
+    if (!targetStaff) {
+      throw new NotFoundException('Không tìm thấy nhân viên được chỉ định.');
+    }
+
+    if (targetStaff.role === 'CUSTOMER') {
+      throw new BadRequestException('Không thể phân công khách hàng làm người phụ trách phục vụ.');
+    }
+
+    // 3. CẬP NHẬT PHÂN CÔNG
+    const oldStaffId = booking.handledBy;
+    booking.handledBy = targetStaffUserId;
+    booking.assignmentType = 'MANUAL';
+    booking.assignmentNote = note ?? `Quản lý/Admin đã phân công lại người phụ trách: ${targetStaff.full_name}`;
+    booking.reassignedBy = changedByUserId;
+    booking.reassignedAt = new Date();
+
+    const saved = await this.bookingRepository.save(booking);
+
+    // 4. GHI LOG VẬN HÀNH
+    await this.bookingStatusLogRepository.save(
+      this.bookingStatusLogRepository.create({
+        bookingId: booking.id,
+        oldStatus: booking.status,
+        newStatus: booking.status,
+        note: `[PHÂN CÔNG LẠI] Đổi nhân viên phụ trách từ #${oldStaffId ?? 'Chưa có'} sang ${targetStaff.full_name} (#${targetStaff.id}). Lý do: ${note || 'Quản trị viên điều chỉnh thủ công'}`,
+        changedBy: changedByUserId,
+      }),
+    );
+
+    return {
+      message: `Đã phân công lại người phụ trách cho đơn đặt phòng #${booking.bookingCode} thành công.`,
+      booking: saved,
+      staff: {
+        id: targetStaff.id,
+        name: targetStaff.full_name,
+        email: targetStaff.email,
+      },
+    };
+  }
+
+  // ============================================================
+  // DANH SÁCH NHÂN VIÊN KHẢ DỤNG CHO ĐƠN ĐẶT PHÒNG
+  // ============================================================
+
+  async getAvailableStaffForBooking(bookingId: string) {
+    const booking = await this.bookingRepository.findOne({
+      where: { id: bookingId },
+    });
+    if (!booking) {
+      throw new NotFoundException('Không tìm thấy đơn đặt phòng.');
+    }
+
+    // Lấy thông tin phòng của booking
+    const [room] = await this.dataSource.query(
+      `SELECT r.id, r.name, r.price_per_night AS pricePerNight
+       FROM booking_rooms br
+       INNER JOIN rooms r ON r.id = br.room_id
+       WHERE br.booking_id = ?
+       LIMIT 1`,
+      [bookingId],
+    );
+
+    const isVip =
+      room &&
+      (Number(room.pricePerNight) >= 1500000 ||
+        /vip|suite|presidential|deluxe|luxury/i.test(room.name));
+
+    // Lấy danh sách nhân sự thuộc khách sạn này kèm kỹ năng & thành tích
+    const staffList = await this.dataSource.query(
+      `
+      SELECT
+        hs.staff_user_id AS staffUserId,
+        u.full_name AS staffName,
+        u.email AS staffEmail,
+        hs.staff_role AS staffRole,
+        COALESCE(MAX(ss.level), 1) AS maxSkillLevel,
+        COALESCE(MAX(ss.years_exp), 0) AS maxYearsExp,
+        COALESCE(MAX(ss.eligibility_level), 'STANDARD') AS eligibilityLevel,
+        (SELECT COUNT(*) FROM bookings b WHERE b.handled_by = hs.staff_user_id AND b.status = 'COMPLETED') AS completedCount,
+        (SELECT COUNT(*) FROM bookings b WHERE b.handled_by = hs.staff_user_id AND b.status IN ('PENDING', 'CONFIRMED')) AS activeLoad
+      FROM hotel_staff hs
+      INNER JOIN users u ON u.id = hs.staff_user_id AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
+      LEFT JOIN staff_skills ss ON ss.user_id = hs.staff_user_id
+      WHERE hs.hotel_id = ? AND hs.status = 'ACTIVE'
+      GROUP BY hs.staff_user_id, u.full_name, u.email, hs.staff_role
+      ORDER BY maxSkillLevel DESC, completedCount DESC
+      `,
+      [booking.hotelId],
+    );
+
+    let candidates = staffList;
+    if (!candidates || candidates.length === 0) {
+      // Fallback nếu chưa có nhân viên được gán vào hotel_staff
+      candidates = await this.dataSource.query(
+        `SELECT u.id AS staffUserId, u.full_name AS staffName, u.email AS staffEmail,
+                'EMPLOYEE' AS staffRole, 2 AS maxSkillLevel, 1 AS maxYearsExp, 'STANDARD' AS eligibilityLevel,
+                0 AS completedCount, 0 AS activeLoad
+         FROM users u
+         WHERE u.role IN ('EMPLOYEE', 'ADMIN') AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
+         LIMIT 10`,
+      );
+    }
+
+    return {
+      bookingId,
+      bookingCode: booking.bookingCode,
+      currentHandledBy: booking.handledBy,
+      assignmentType: booking.assignmentType,
+      assignmentNote: booking.assignmentNote,
+      roomInfo: room
+        ? {
+            name: room.name,
+            pricePerNight: room.pricePerNight,
+            isVip,
+          }
+        : null,
+      canReassign:
+        booking.status !== BookingStatus.CHECKED_IN &&
+        booking.status !== BookingStatus.COMPLETED &&
+        booking.status !== BookingStatus.CANCELLED &&
+        booking.status !== BookingStatus.REJECTED,
+      staff: candidates.map((s: any) => ({
+        ...s,
+        maxSkillLevel: Number(s.maxSkillLevel),
+        maxYearsExp: Number(s.maxYearsExp),
+        completedCount: Number(s.completedCount),
+        activeLoad: Number(s.activeLoad),
+        recommended: isVip
+          ? Number(s.maxSkillLevel) >= 4 ||
+            Number(s.maxYearsExp) >= 2 ||
+            s.staffRole === 'MANAGER'
+          : Number(s.maxSkillLevel) <= 3 && Number(s.activeLoad) <= 2,
+      })),
     };
   }
 

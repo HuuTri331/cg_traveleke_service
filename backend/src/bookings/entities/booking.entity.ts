@@ -61,6 +61,36 @@ export class Booking {
   handledBy!: string | null;
 
   @Column({
+    name: 'assignment_type',
+    type: 'varchar',
+    length: 20,
+    default: 'AUTO',
+  })
+  assignmentType!: string;
+
+  @Column({
+    name: 'assignment_note',
+    type: 'text',
+    nullable: true,
+  })
+  assignmentNote!: string | null;
+
+  @Column({
+    name: 'reassigned_at',
+    type: 'datetime',
+    nullable: true,
+  })
+  reassignedAt!: Date | null;
+
+  @Column({
+    name: 'reassigned_by',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
+  reassignedBy!: string | null;
+
+  @Column({
     name: 'contact_name',
     length: 150,
   })

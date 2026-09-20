@@ -1,9 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ServiceCategory } from './entities/service-category.entity';
-import { RoomService } from './entities/room-service.entity';
-import { ServiceRequest } from './entities/service-request.entity';
+import { RoomService, ServiceType } from './entities/room-service.entity';
+import { ServiceRequest, ServiceRequestStatus } from './entities/service-request.entity';
+import { BookingServiceSnapshot } from './entities/booking-service-snapshot.entity';
+import { ServiceRecoveryLog, RecoveryType } from './entities/service-recovery-log.entity';
 import {
   CreateServiceCategoryDto,
   UpdateServiceCategoryDto,
@@ -11,6 +13,9 @@ import {
   UpdateRoomServiceDto,
   CreateServiceRequestDto,
   UpdateServiceRequestDto,
+  CreateBookingSnapshotDto,
+  CreateServiceRecoveryLogDto,
+  ApproveRecoveryDto,
 } from './dto/services.dto';
 
 @Injectable()
@@ -24,6 +29,12 @@ export class ServicesService {
 
     @InjectRepository(ServiceRequest)
     private readonly serviceRequestRepo: Repository<ServiceRequest>,
+
+    @InjectRepository(BookingServiceSnapshot)
+    private readonly snapshotRepo: Repository<BookingServiceSnapshot>,
+
+    @InjectRepository(ServiceRecoveryLog)
+    private readonly recoveryLogRepo: Repository<ServiceRecoveryLog>,
   ) {}
 
   // ============================================================
@@ -110,7 +121,15 @@ export class ServicesService {
       unit: dto.unit ?? 'lần',
       basePrice: dto.basePrice ?? 0,
       isComplimentary: dto.isComplimentary ?? false,
+      serviceType: dto.serviceType ?? ServiceType.ADD_ON,
+      quotaPerBooking: dto.quotaPerBooking ?? null,
+      quotaPerNight: dto.quotaPerNight ?? null,
       maxQuantity: dto.maxQuantity ?? null,
+      slaMinutes: dto.slaMinutes ?? 30,
+      capacityPerHour: dto.capacityPerHour ?? null,
+      leadTimeHours: dto.leadTimeHours ?? 0,
+      requiresApproval: dto.requiresApproval ?? false,
+      departmentOwner: dto.departmentOwner ?? null,
       status: 'ACTIVE',
     });
     return this.roomServiceRepo.save(svc);
@@ -129,7 +148,9 @@ export class ServicesService {
   }
 
   // ============================================================
-  // SERVICE REQUESTS
+  // SERVICE REQUESTS & LIFECYCLE WORKFLOW
+  // Lifecycle: PENDING -> ACCEPTED -> ASSIGNED -> IN_PROGRESS -> COMPLETED -> CONFIRMED
+  //                                                          -> FAILED -> RECOVERY
   // ============================================================
 
   async getServiceRequestsByBooking(bookingId: number): Promise<ServiceRequest[]> {
@@ -163,6 +184,9 @@ export class ServicesService {
     const service = await this.getRoomServiceById(dto.serviceId);
     const quantity = dto.quantity ?? 1;
     const totalPrice = service.isComplimentary ? 0 : Number(service.basePrice) * quantity;
+    const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : new Date();
+    const slaMinutes = service.slaMinutes ?? 30;
+    const slaDueAt = new Date(scheduledAt.getTime() + slaMinutes * 60 * 1000);
 
     const req = this.serviceRequestRepo.create({
       bookingId: dto.bookingId,
@@ -173,7 +197,9 @@ export class ServicesService {
       totalPrice,
       note: dto.note,
       scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
-      status: 'PENDING',
+      slaDueAt,
+      isSlaBreahed: false,
+      status: ServiceRequestStatus.PENDING,
     });
     return this.serviceRequestRepo.save(req);
   }
@@ -182,12 +208,181 @@ export class ServicesService {
     const req = await this.serviceRequestRepo.findOne({ where: { id } });
     if (!req) throw new NotFoundException(`Yêu cầu dịch vụ #${id} không tồn tại`);
 
-    if (dto.status) req.status = dto.status as ServiceRequest['status'];
+    if (dto.status) req.status = dto.status as ServiceRequestStatus;
     if (dto.assignedTo !== undefined) req.assignedTo = dto.assignedTo;
     if (dto.note !== undefined) req.note = dto.note;
     if (dto.completedAt) req.completedAt = new Date(dto.completedAt);
+    if (dto.confirmedAt) req.confirmedAt = new Date(dto.confirmedAt);
+    if (dto.failureReason) req.failureReason = dto.failureReason;
+    if (dto.recoveryAction) req.recoveryAction = dto.recoveryAction;
+    if (dto.recoveryApprovedBy) req.recoveryApprovedBy = dto.recoveryApprovedBy;
+    if (dto.recoveryCost !== undefined) req.recoveryCost = dto.recoveryCost;
 
     return this.serviceRequestRepo.save(req);
+  }
+
+  async updateServiceRequestStatus(
+    id: number,
+    targetStatus: ServiceRequestStatus,
+    payload?: {
+      assignedTo?: number;
+      failureReason?: string;
+      note?: string;
+    },
+  ): Promise<ServiceRequest> {
+    const req = await this.serviceRequestRepo.findOne({
+      where: { id },
+      relations: ['service'],
+    });
+    if (!req) throw new NotFoundException(`Yêu cầu dịch vụ #${id} không tồn tại`);
+
+    const now = new Date();
+
+    // Check SLA breach
+    if (
+      req.slaDueAt &&
+      now > req.slaDueAt &&
+      targetStatus !== ServiceRequestStatus.COMPLETED &&
+      targetStatus !== ServiceRequestStatus.CONFIRMED
+    ) {
+      req.isSlaBreahed = true;
+    }
+
+    req.status = targetStatus;
+
+    switch (targetStatus) {
+      case ServiceRequestStatus.ACCEPTED:
+        req.acceptedAt = now;
+        break;
+      case ServiceRequestStatus.ASSIGNED:
+        if (payload?.assignedTo) req.assignedTo = payload.assignedTo;
+        break;
+      case ServiceRequestStatus.IN_PROGRESS:
+        req.startedAt = now;
+        break;
+      case ServiceRequestStatus.COMPLETED:
+        req.completedAt = now;
+        if (req.slaDueAt && now > req.slaDueAt) {
+          req.isSlaBreahed = true;
+        }
+        break;
+      case ServiceRequestStatus.CONFIRMED:
+        req.confirmedAt = now;
+        break;
+      case ServiceRequestStatus.FAILED:
+        req.failureReason = payload?.failureReason ?? 'Dịch vụ gặp sự cố không hoàn tất';
+        break;
+      case ServiceRequestStatus.CANCELLED:
+        if (payload?.note) req.note = payload.note;
+        break;
+    }
+
+    if (payload?.note) req.note = payload.note;
+    if (payload?.assignedTo !== undefined) req.assignedTo = payload.assignedTo;
+
+    return this.serviceRequestRepo.save(req);
+  }
+
+  // ============================================================
+  // BOOKING SERVICE SNAPSHOTS (Quyền lợi booking đã chốt)
+  // ============================================================
+
+  async createBookingSnapshots(
+    bookingId: number,
+    roomTypeId?: number,
+    hotelId?: number,
+  ): Promise<BookingServiceSnapshot[]> {
+    const qb = this.roomServiceRepo.createQueryBuilder('rs')
+      .leftJoinAndSelect('rs.category', 'cat')
+      .where('rs.status = :status', { status: 'ACTIVE' })
+      .andWhere('rs.serviceType IN (:...types)', { types: [ServiceType.INCLUDED, ServiceType.QUOTA] });
+
+    if (roomTypeId) {
+      qb.andWhere('(rs.roomTypeId = :roomTypeId OR rs.roomTypeId IS NULL)', { roomTypeId });
+    }
+    if (hotelId) {
+      qb.andWhere('(rs.hotelId = :hotelId OR rs.hotelId IS NULL)', { hotelId });
+    }
+
+    const services = await qb.getMany();
+    const snapshots: BookingServiceSnapshot[] = [];
+
+    for (const svc of services) {
+      const existing = await this.snapshotRepo.findOne({
+        where: { bookingId, serviceId: svc.id },
+      });
+      if (!existing) {
+        const snap = this.snapshotRepo.create({
+          bookingId,
+          serviceId: svc.id,
+          serviceName: svc.name,
+          serviceType: svc.serviceType,
+          categoryName: svc.category?.name ?? null,
+          unit: svc.unit,
+          basePrice: svc.basePrice,
+          isComplimentary: svc.isComplimentary,
+          quotaIncluded: svc.quotaPerBooking ?? 0,
+          quotaPerNight: svc.quotaPerNight ?? null,
+        });
+        snapshots.push(await this.snapshotRepo.save(snap));
+      }
+    }
+
+    return snapshots;
+  }
+
+  async getBookingSnapshots(bookingId: number): Promise<BookingServiceSnapshot[]> {
+    return this.snapshotRepo.find({
+      where: { bookingId },
+      order: { createdAt: 'ASC' },
+    });
+  }
+
+  // ============================================================
+  // SERVICE FAILURE & RECOVERY (Bù đắp sai lỗi dịch vụ)
+  // ============================================================
+
+  async createRecoveryLog(dto: CreateServiceRecoveryLogDto): Promise<ServiceRecoveryLog> {
+    const log = this.recoveryLogRepo.create({
+      serviceRequestId: dto.serviceRequestId ?? null,
+      bookingId: dto.bookingId,
+      reportedBy: dto.reportedBy,
+      recoveryType: dto.recoveryType,
+      reason: dto.reason,
+      actionTaken: dto.actionTaken,
+      costIncurred: dto.costIncurred ?? 0,
+      status: 'PENDING',
+    });
+    const saved = await this.recoveryLogRepo.save(log);
+
+    if (dto.serviceRequestId) {
+      const req = await this.serviceRequestRepo.findOne({ where: { id: dto.serviceRequestId } });
+      if (req) {
+        req.status = ServiceRequestStatus.FAILED;
+        req.recoveryAction = `${dto.recoveryType}: ${dto.actionTaken}`;
+        req.recoveryCost = dto.costIncurred ?? 0;
+        await this.serviceRequestRepo.save(req);
+      }
+    }
+
+    return saved;
+  }
+
+  async approveRecoveryLog(id: number, dto: ApproveRecoveryDto): Promise<ServiceRecoveryLog> {
+    const log = await this.recoveryLogRepo.findOne({ where: { id } });
+    if (!log) throw new NotFoundException(`Biên bản recovery #${id} không tồn tại`);
+
+    log.approvedBy = dto.approvedBy;
+    log.status = dto.decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
+    return this.recoveryLogRepo.save(log);
+  }
+
+  async getRecoveryLogs(bookingId?: number): Promise<ServiceRecoveryLog[]> {
+    const where = bookingId ? { bookingId } : {};
+    return this.recoveryLogRepo.find({
+      where,
+      order: { createdAt: 'DESC' },
+    });
   }
 
   // ============================================================
@@ -200,16 +395,31 @@ export class ServicesService {
     totalRequests: number;
     pendingRequests: number;
     completedRequests: number;
+    breachedSlaRequests: number;
   }> {
-    const [totalCategories, totalServices, totalRequests, pendingRequests, completedRequests] =
-      await Promise.all([
-        this.categoryRepo.count({ where: { status: 'ACTIVE' } }),
-        this.roomServiceRepo.count({ where: { status: 'ACTIVE' } }),
-        this.serviceRequestRepo.count(),
-        this.serviceRequestRepo.count({ where: { status: 'PENDING' } }),
-        this.serviceRequestRepo.count({ where: { status: 'COMPLETED' } }),
-      ]);
+    const [
+      totalCategories,
+      totalServices,
+      totalRequests,
+      pendingRequests,
+      completedRequests,
+      breachedSlaRequests,
+    ] = await Promise.all([
+      this.categoryRepo.count({ where: { status: 'ACTIVE' } }),
+      this.roomServiceRepo.count({ where: { status: 'ACTIVE' } }),
+      this.serviceRequestRepo.count(),
+      this.serviceRequestRepo.count({ where: { status: ServiceRequestStatus.PENDING } }),
+      this.serviceRequestRepo.count({ where: { status: ServiceRequestStatus.COMPLETED } }),
+      this.serviceRequestRepo.count({ where: { isSlaBreahed: true } }),
+    ]);
 
-    return { totalCategories, totalServices, totalRequests, pendingRequests, completedRequests };
+    return {
+      totalCategories,
+      totalServices,
+      totalRequests,
+      pendingRequests,
+      completedRequests,
+      breachedSlaRequests,
+    };
   }
 }

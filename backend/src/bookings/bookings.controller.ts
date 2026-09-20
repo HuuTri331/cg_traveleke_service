@@ -20,6 +20,7 @@ import { User } from '../users/entities/user.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { QueryBookingDto } from './dto/query-booking.dto';
 import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
+import { ReassignStaffDto } from './dto/reassign-staff.dto';
 import { BookingsService } from './bookings.service';
 
 @Controller('bookings')
@@ -105,6 +106,40 @@ export class BookingsController {
     @CurrentUser() user: User,
   ) {
     const result = await this.bookingsService.updateStatus(id, dto, user.id);
+    return {
+      success: true,
+      ...result,
+    };
+  }
+
+  // ================================
+  // DANH SÁCH NHÂN VIÊN KHẢ DỤNG ĐỂ PHÂN CÔNG (Admin/Employee)
+  // ================================
+  @Get(':id/available-staff')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'EMPLOYEE')
+  getAvailableStaff(@Param('id') id: string) {
+    return this.bookingsService.getAvailableStaffForBooking(id);
+  }
+
+  // ================================
+  // PHÂN CÔNG LẠI NHÂN VIÊN PHỤ TRÁCH (Admin/Employee)
+  // ================================
+  @Patch(':id/reassign')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'EMPLOYEE')
+  @HttpCode(HttpStatus.OK)
+  async reassign(
+    @Param('id') id: string,
+    @Body() dto: ReassignStaffDto,
+    @CurrentUser() user: User,
+  ) {
+    const result = await this.bookingsService.reassignStaff(
+      id,
+      dto.staffUserId,
+      user.id,
+      dto.note,
+    );
     return {
       success: true,
       ...result,

@@ -13,7 +13,8 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { StaffSkillsService, UpsertStaffSkillDto } from './staff-skills.service';
+import { StaffSkillsService, UpsertStaffSkillDto, UpsertLanguageSkillDto } from './staff-skills.service';
+import { CaseComplexity } from './entities/staff-eligibility-rule.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -100,6 +101,57 @@ export class StaffSkillsController {
       skillCode,
       Number(level) || 1,
       hotelId ? Number(hotelId) : undefined,
+    );
+  }
+
+  // ============================================================
+  // LANGUAGE SKILLS
+  // ============================================================
+
+  @Get('user/:userId/languages')
+  getLanguagesByUser(@Param('userId', ParseIntPipe) userId: number) {
+    return this.staffSkillsService.getLanguagesByUser(userId);
+  }
+
+  @Post('user/:userId/languages')
+  @HttpCode(HttpStatus.CREATED)
+  upsertLanguage(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() dto: UpsertLanguageSkillDto,
+  ) {
+    return this.staffSkillsService.upsertLanguage(userId, dto);
+  }
+
+  @Delete('user/:userId/languages/:code')
+  removeLanguage(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Param('code') code: string,
+  ) {
+    return this.staffSkillsService.removeLanguage(userId, code);
+  }
+
+  // ============================================================
+  // ELIGIBILITY RULES
+  // ============================================================
+
+  @Get('eligibility-rules')
+  getEligibilityRules() {
+    return this.staffSkillsService.getEligibilityRules();
+  }
+
+  @Post('check-eligibility')
+  checkEligibility(
+    @Body()
+    body: {
+      userId: number;
+      caseComplexity: CaseComplexity;
+      requiredLanguage?: string;
+    },
+  ) {
+    return this.staffSkillsService.checkEligibility(
+      body.userId,
+      body.caseComplexity,
+      body.requiredLanguage,
     );
   }
 

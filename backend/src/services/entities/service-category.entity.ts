@@ -37,6 +37,6 @@ export class ServiceCategory {
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 
-  @OneToMany(() => RoomService, (rs) => rs.category)
+  @OneToMany(() => RoomService, (rs: RoomService) => rs.category)
   services: RoomService[];
 }
