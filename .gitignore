@@ -3,3 +3,5 @@ backend/.DS_Store
 backend/.env
 backend/node_modules/
 backend/dist/
+backend/logs/
+*.log

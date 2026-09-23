@@ -16,6 +16,7 @@ import { Role } from '../users/entities/role.entity';
 import { User } from '../users/entities/user.entity';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { logWithTrace } from '../observability/trace-logger';
 
 export interface AuthTokenPayload {
   access_token: string;
@@ -121,10 +122,14 @@ export class AuthService {
         saved.fullName,
         verificationToken,
       );
-    } catch (mailError) {
+    } catch (mailError: any) {
       // Log lỗi nhưng không hủy tài khoản vừa tạo để khách hàng có thể dùng nút "Gửi lại link xác thực"
-      console.error('Lỗi khi gửi email xác thực lúc đăng ký:', mailError);
+      logWithTrace('error', 'Lỗi khi gửi email xác thực lúc đăng ký', {
+        email: saved.email,
+        error: mailError instanceof Error ? mailError.message : String(mailError),
+      });
     }
+
 
     return {
       userId: saved.id,

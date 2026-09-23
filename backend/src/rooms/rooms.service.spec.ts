@@ -12,6 +12,8 @@ import { CreateRoomDto } from './dto/create-room.dto';
 import { QueryRoomDto } from './dto/query-room.dto';
 import { RoomImage } from './entities/room-image.entity';
 import { Room, RoomStatus } from './entities/room.entity';
+import { RoomServiceAssignment } from './entities/room-service-assignment.entity';
+import { RoomService } from '../services/entities/room-service.entity';
 import { MAX_ROOM_IMAGES, RoomsService } from './rooms.service';
 
 describe('RoomsService', () => {
@@ -85,11 +87,35 @@ describe('RoomsService', () => {
           useValue: mockImageRepo,
         },
         {
+          provide: getRepositoryToken(RoomServiceAssignment),
+          useValue: {
+            find: jest.fn().mockResolvedValue([]),
+            save: jest.fn().mockImplementation((val) => Promise.resolve(val)),
+            delete: jest.fn().mockResolvedValue({ affected: 1 }),
+            createQueryBuilder: jest.fn().mockReturnValue({
+              leftJoinAndSelect: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
+              orderBy: jest.fn().mockReturnThis(),
+              getMany: jest.fn().mockResolvedValue([]),
+            }),
+          },
+        },
+
+        {
+          provide: getRepositoryToken(RoomService),
+          useValue: {
+            find: jest.fn().mockResolvedValue([]),
+            findByIds: jest.fn().mockResolvedValue([]),
+            findBy: jest.fn().mockResolvedValue([]),
+          },
+        },
+        {
           provide: HotelsService,
           useValue: mockHotelsService,
         },
       ],
     }).compile();
+
 
     service = module.get<RoomsService>(RoomsService);
     roomsRepository = module.get(getRepositoryToken(Room));

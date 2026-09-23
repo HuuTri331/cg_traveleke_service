@@ -16,6 +16,7 @@ import { UpdateHotelDto } from './dto/update-hotel.dto';
 import { HotelImage } from './entities/hotel-image.entity';
 import { Hotel, HotelStatus } from './entities/hotel.entity';
 import { deletePhysicalFile } from './upload-image.config';
+import { normalizePagination, buildPaginationMeta } from '../common/pagination';
 
 export const MAX_HOTEL_IMAGES = 6;
 
@@ -78,8 +79,7 @@ export class HotelsService {
   }
 
   async findAll(query: QueryHotelDto) {
-    const page = query.page ?? 1;
-    const perPage = query.perPage ?? 20;
+    const { page, limit, skip, perPage } = normalizePagination(query, 20, 100);
 
     const qb = this.hotelsRepository
       .createQueryBuilder('hotel')
@@ -116,82 +116,81 @@ export class HotelsService {
       });
     }
 
-    qb.skip((page - 1) * perPage).take(perPage);
+    qb.skip(skip).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
 
     return {
       data,
-      meta: {
+      meta: buildPaginationMeta({
         page,
-        perPage,
+        limit,
         total,
-        totalPages: Math.ceil(total / perPage),
-      },
+        dataLength: data.length,
+      }),
     };
   }
 
   async search(query: SearchHotelDto) {
-  const page = query.page ?? 1;
-  const perPage = query.perPage ?? 10;
+    const { page, limit, skip, perPage } = normalizePagination(query, 10, 100);
 
-  const qb = this.hotelsRepository
-    .createQueryBuilder('hotel')
-    .where('hotel.deleted_at IS NULL')
-    .orderBy('hotel.id', 'DESC');
+    const qb = this.hotelsRepository
+      .createQueryBuilder('hotel')
+      .where('hotel.deleted_at IS NULL')
+      .orderBy('hotel.id', 'DESC');
 
-  if (query.keyword?.trim()) {
-    const keyword = `%${query.keyword.trim()}%`;
+    if (query.keyword?.trim()) {
+      const keyword = `%${query.keyword.trim()}%`;
 
-    qb.andWhere(
-      `(
-        hotel.name LIKE :keyword
-        OR hotel.address LIKE :keyword
-        OR hotel.description LIKE :keyword
-        OR hotel.email LIKE :keyword
-      )`,
-      { keyword },
-    );
+      qb.andWhere(
+        `(
+          hotel.name LIKE :keyword
+          OR hotel.address LIKE :keyword
+          OR hotel.description LIKE :keyword
+          OR hotel.email LIKE :keyword
+        )`,
+        { keyword },
+      );
+    }
+
+    if (query.locationId) {
+      qb.andWhere('hotel.location_id = :locationId', {
+        locationId: query.locationId,
+      });
+    }
+
+    if (query.hotelTypeId) {
+      qb.andWhere('hotel.hotel_type_id = :hotelTypeId', {
+        hotelTypeId: query.hotelTypeId,
+      });
+    }
+
+    if (query.starRating) {
+      qb.andWhere('hotel.star_rating = :starRating', {
+        starRating: query.starRating,
+      });
+    }
+
+    if (query.status) {
+      qb.andWhere('hotel.status = :status', {
+        status: query.status,
+      });
+    }
+
+    qb.skip(skip).take(limit);
+
+    const [data, total] = await qb.getManyAndCount();
+
+    return {
+      data,
+      meta: buildPaginationMeta({
+        page,
+        limit,
+        total,
+        dataLength: data.length,
+      }),
+    };
   }
-
-  if (query.locationId) {
-    qb.andWhere('hotel.location_id = :locationId', {
-      locationId: query.locationId,
-    });
-  }
-
-  if (query.hotelTypeId) {
-    qb.andWhere('hotel.hotel_type_id = :hotelTypeId', {
-      hotelTypeId: query.hotelTypeId,
-    });
-  }
-
-  if (query.starRating) {
-    qb.andWhere('hotel.star_rating = :starRating', {
-      starRating: query.starRating,
-    });
-  }
-
-  if (query.status) {
-    qb.andWhere('hotel.status = :status', {
-      status: query.status,
-    });
-  }
-
-  qb.skip((page - 1) * perPage).take(perPage);
-
-  const [data, total] = await qb.getManyAndCount();
-
-  return {
-    data,
-    meta: {
-      page,
-      perPage,
-      total,
-      totalPages: Math.ceil(total / perPage),
-    },
-  };
-}
 
   async findOne(id: string): Promise<Hotel> {
     this.assertValidId(id);

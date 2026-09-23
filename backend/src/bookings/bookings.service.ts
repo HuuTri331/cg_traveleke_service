@@ -22,6 +22,9 @@ import {
 } from './entities/booking.entity';
 import { BookingRoom } from './entities/booking-room.entity';
 import { BookingStatusLog } from './entities/booking-status-log.entity';
+import { logWithTrace } from '../observability/trace-logger';
+import { normalizePagination, buildPaginationMeta } from '../common/pagination';
+
 
 /**
  * State machine: Các chuyển trạng thái hợp lệ cho booking.
@@ -398,18 +401,20 @@ export class BookingsService {
           );
         }
       }
-    } catch (err) {
-      console.warn('Lỗi phân công tự động phòng khách sạn (không chặn luồng chính):', err);
+    } catch (err: any) {
+      logWithTrace('warn', 'Lỗi phân công tự động phòng khách sạn (không chặn luồng chính)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
+
 
   // ============================================================
   // DANH SÁCH BOOKINGS (Admin/Employee)
   // ============================================================
 
   async findAll(query: QueryBookingDto) {
-    const page = Number(query.page) || 1;
-    const perPage = Number(query.perPage) || 20;
+    const { page, limit, skip, perPage } = normalizePagination(query, 20, 100);
 
     const qb = this.dataSource
       .createQueryBuilder()
@@ -481,19 +486,19 @@ export class BookingsService {
     const totalResult = await totalQuery.select('COUNT(*) AS cnt').getRawOne();
     const total = Number(totalResult?.cnt || 0);
 
-    // Phân trang
-    qb.offset((page - 1) * perPage).limit(perPage);
+    // Phân trang an toàn với skip và limit đã được chuẩn hóa
+    qb.offset(skip).limit(limit);
 
     const data = await qb.getRawMany();
 
     return {
       data,
-      meta: {
+      meta: buildPaginationMeta({
         page,
-        perPage,
+        limit,
         total,
-        totalPages: Math.ceil(total / perPage),
-      },
+        dataLength: data.length,
+      }),
     };
   }
 
@@ -971,6 +976,8 @@ export class BookingsService {
   // NHẬT KÝ VẬN HÀNH / ACTIVITY LOGS (Admin/Employee)
   // ============================================================
   async getActivityLogs(limit = 50) {
+    const safeLimit = Math.min(100, Math.max(1, Math.floor(Number(limit) || 50)));
+
     const logs = await this.dataSource.query(
       `
       SELECT
@@ -993,7 +1000,7 @@ export class BookingsService {
       ORDER BY bsl.changed_at DESC
       LIMIT ?
       `,
-      [limit],
+      [safeLimit],
     );
 
     return {

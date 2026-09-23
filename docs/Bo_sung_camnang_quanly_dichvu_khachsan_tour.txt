@@ -1,0 +1,783 @@
+# BỔ SUNG CẨM NANG NGHIỆP VỤ QUẢN LÝ KHÁCH SẠN VÀ TOUR
+
+Hướng đi nghiệp vụ, luồng xử lý thực tiễn và các phần còn thiếu sau khi đối chiếu tài liệu hiện tại với các hệ thống mã nguồn mở và chuẩn vận hành liên quan.
+
+[PHẠM VI CỦA TÀI LIỆU BỔ SUNG]
+Tài liệu này cố ý tập trung vào cách vận hành, luồng xử lý, tình huống thực tế, tiêu chí đánh giá và logic phân công con người. Không đi vào code, database, API hay cấu trúc triển khai kỹ thuật.
+
+Tài liệu gốc đã làm rất tốt lớp phân quyền, vai trò, workflow booking/tour/khách sạn, giám sát và KPI. Phần bổ sung dưới đây đi tiếp một tầng: quản lý dịch vụ gắn với phòng, quản lý chất lượng/hạng sao của khách sạn, hồ sơ năng lực nhân viên, cơ chế đánh giá - phân công - thăng tiến, và áp dụng tư duy tương tự cho tour du lịch.
+
+
+========================================================================
+
+
+## MỤC LỤC
+
+1. Kết luận sau khi đối chiếu tài liệu hiện tại
+2. Hiểu đúng câu chuyện: vì sao phòng khác nhau thì giá khác nhau
+3. Mô hình quản lý dịch vụ phòng theo lớp
+4. Danh mục dịch vụ và cách quản lý từng dịch vụ
+5. Luồng dịch vụ phòng từ lúc cấu hình đến khi khách rời khách sạn
+6. Các tình huống thực tế phải xử lý
+7. Đối chiếu các dự án mã nguồn mở lớn và bài học nên lấy
+8. Xếp hạng khách sạn 1-5 sao: hiểu đúng và quản lý đúng
+9. Luồng duy trì và công nhận hạng sao trong vận hành
+10. Đánh giá năng lực nhân viên: phần tài liệu hiện tại còn thiếu gì
+11. Thang năng lực và thang hiệu suất theo từng vị trí
+12. Luồng phân công nhân viên theo độ khó của khách/phòng/tour
+13. Cách quản lý hồ sơ và điều kiện để lên Supervisor/Manager
+14. Áp dụng toàn bộ logic trên cho tour du lịch
+15. Vòng lặp chất lượng khép kín giữa dịch vụ - nhân viên - phản hồi - hạng sao
+16. Bố cục đề xuất để bổ sung trực tiếp vào cẩm nang hiện tại
+17. Thứ tự ưu tiên triển khai về mặt nghiệp vụ
+18. Nguồn đối chiếu và ghi chú cập nhật năm 2026
+
+
+========================================================================
+
+
+# 1. KẾT LUẬN SAU KHI ĐỐI CHIẾU TÀI LIỆU HIỆN TẠI
+
+Tài liệu hiện tại không hề thiếu phần vận hành cơ bản. Nó đã tách Property, Room Type, Physical Room, Availability, Reservation, Room Assignment, Stay, Folio; đã có lễ tân, reservation, housekeeping, maintenance, night audit, revenue, finance; đã mô tả workflow check-in/check-out và có KPI cho nhiều vị trí. Vấn đề là các mảnh này đang đứng cạnh nhau nhưng chưa được nối thành một hệ thống quản trị chất lượng dịch vụ hoàn chỉnh.
+
+Nói dễ hiểu: tài liệu hiện tại trả lời rất tốt câu hỏi “ai được làm gì, trên booking nào, ở trạng thái nào, trong ca nào, với hạn mức bao nhiêu”. Nhưng để trở thành một hệ thống khách sạn/tour mạnh hơn, còn phải trả lời thêm các câu hỏi “khách đã mua chính xác những dịch vụ gì, dịch vụ nào đã bao gồm trong giá, ai đủ năng lực để phục vụ case này, dịch vụ được thực hiện tốt hay không, kết quả phục vụ có quay lại hồ sơ nhân viên hay không, và chất lượng vận hành đó có đủ để duy trì chuẩn 3-4-5 sao hay không”.
+
+
+Bảng 1. Những phần đã có và khoảng trống nên bổ sung
+Mảng            | Tài liệu hiện tại đã có                | Khoảng trống cần bổ sung              
+----------------+----------------------------------------+---------------------------------------
+Phòng khách sạn | Room Type, Physical Room, trạng thái,… | Mối quan hệ rõ giữa loại phòng - tiện…
+Giá             | Rate plan, Revenue Manager, rate over… | Giải thích giá theo giá trị phòng + d…
+Dịch vụ         | Có minibar, spa, laundry, concierge, … | Chưa có một luồng quản lý dịch vụ riê…
+Hạng sao        | Chưa phải một domain rõ                | Cần phân biệt hạng sao chính thức, hạ…
+Nhân viên       | Role, quyền, ca, hạn mức, KPI          | Thiếu hồ sơ năng lực: kỹ năng, ngoại …
+Phân công       | Theo role/scope/shift/booking          | Thiếu phân công theo độ phức tạp của …
+Quản lý         | Quyền Supervisor/Manager khá rõ        | Thiếu điều kiện năng lực/thành tích đ…
+Tour            | Workflow sale - operator - guide - fi… | Thiếu phân tầng chất lượng tour, tiêu…
+
+[KẾT LUẬN LỚN]
+Không cần phá bỏ cấu trúc cũ. Hãy giữ lớp phân quyền và workflow hiện tại, sau đó bổ sung thêm 4 lớp nghiệp vụ mới: (1) Quản lý dịch vụ và quyền lợi khách; (2) Quản lý hạng sao/compliance; (3) Quản lý năng lực - thành tích - điều kiện phân công nhân viên; (4) Quản lý chất lượng sản phẩm tour và năng lực hướng dẫn viên/điều hành.
+
+
+# 2. HIỂU ĐÚNG CÂU CHUYỆN: VÌ SAO PHÒNG KHÁC NHAU THÌ GIÁ KHÁC NHAU
+
+Ý của bạn rằng phòng sang hơn thường có nhiều dịch vụ tốt hơn là đúng, nhưng nếu dùng nó làm nguyên tắc duy nhất thì sẽ thiếu. Giá phòng cao hơn thường hình thành từ nhiều yếu tố cùng lúc. Dịch vụ chỉ là một trong các yếu tố đó.
+
+
+Bảng 2. Sáu nhóm yếu tố tạo nên giá trị và giá bán của phòng
+Nhóm                  | Ví dụ                                  | Tác động thực tế                      
+----------------------+----------------------------------------+---------------------------------------
+Không gian và vật lý  | Diện tích, tầng, view, ban công, số p… | Suite vẫn có thể đắt hơn Deluxe ngay …
+Tiện nghi trong phòng | Bồn tắm, smart TV, máy pha cà phê, bà… | Tăng giá trị cảm nhận và chi phí đầu …
+Dịch vụ đi kèm        | Breakfast, lounge, giặt là, đưa đón s… | Tạo khác biệt rõ giữa Standard/Execut…
+Gói giá               | Room only, breakfast included, refund… | Cùng một phòng nhưng có nhiều giá khá…
+Thời điểm và nhu cầu  | Cuối tuần, mùa cao điểm, lễ, sự kiện   | Giá có thể thay đổi dù phòng và dịch …
+Kênh và điều kiện bán | OTA, corporate, direct, loyalty, group | Có giá và quyền lợi khác nhau cho từn…
+
+Vì vậy nên hiểu theo công thức nghiệp vụ đơn giản: Giá bán cuối cùng của một booking = giá trị loại phòng + gói quyền lợi/dịch vụ + chính sách giá theo ngày/kênh + điều chỉnh hợp lệ. Không nên gắn cứng một mức giá duy nhất vào một phòng vật lý.
+
+
+## 2.1. Phân biệt 4 khái niệm để hệ thống không bị lẫn
+
+- Loại phòng: Standard, Deluxe, Executive, Suite... Đây là sản phẩm phòng bán ra.
+- Phòng vật lý: 301, 302, 1201... Đây là căn phòng thật được giao cho khách.
+- Tiện nghi/đặc điểm: view biển, bathtub, balcony, king bed, smart TV... Thường mô tả chất lượng/đặc tính, không phải lúc nào cũng tạo một khoản charge riêng.
+- Dịch vụ: breakfast, laundry, airport transfer, spa, room service, minibar, butler... Có thể được bao gồm, mua thêm, tính một lần, theo ngày, theo số người hoặc theo lượt.
+
+[ĐIỂM RẤT QUAN TRỌNG]
+Không nên biến tất cả mọi thứ thành “dịch vụ phòng”. View biển là đặc điểm phòng. Bữa sáng là dịch vụ. Minibar vừa là dịch vụ vừa có hàng tồn. Late checkout là quyền lợi/chính sách. Nếu gom hết vào một khái niệm, vận hành và tính giá sẽ rất khó kiểm soát.
+
+
+# 3. MÔ HÌNH QUẢN LÝ DỊCH VỤ PHÒNG THEO LỚP
+
+Đây là phần nên bổ sung lớn nhất. Cách dễ hiểu nhất là không gán thủ công hàng chục dịch vụ cho từng căn phòng. Hãy tổ chức dịch vụ thành các lớp kế thừa.
+
+[Luồng kế thừa dịch vụ]
+Chuẩn dịch vụ chung của khách sạn -> Quyền lợi bổ sung theo loại phòng -> Quyền lợi bổ sung theo gói giá/package -> Dịch vụ khách mua thêm trước khi đến -> Dịch vụ phát sinh trong lúc lưu trú -> Kết quả phục vụ và charge cuối cùng
+
+
+## 3.1. Lớp 1 - Dịch vụ nền tảng của khách sạn
+
+Đây là nhóm mà mọi khách đang ở tại cùng khách sạn đều được hưởng ở mức tối thiểu theo chính sách của khách sạn và hạng mà khách sạn đang vận hành. Hệ thống nên tạo một “gói nền tảng” để các loại phòng tự động kế thừa, thay vì sao chép 100 lần cho 100 phòng.
+
+Ví dụ một khách sạn có thể xác định gói nền tảng gồm: hỗ trợ lễ tân/check-in/check-out; tiếp nhận yêu cầu và khiếu nại; vệ sinh buồng theo chính sách; khăn/ga/đồ dùng cơ bản; điện, nước, điều hòa/thông gió theo tiêu chuẩn cơ sở; an ninh và hỗ trợ khẩn cấp; tiếp nhận yêu cầu bảo trì; hỗ trợ thanh toán/hóa đơn; hỗ trợ hành lý hoặc đánh thức khách nếu khách sạn cung cấp; Wi-Fi nếu đó là tiêu chuẩn chung của property.
+
+[LƯU Ý]
+Không nên ghi cứng rằng mọi khách sạn trên thế giới bắt buộc có cùng một danh sách. “Gói nền tảng” phải phụ thuộc pháp luật, hạng sao mục tiêu, thương hiệu và chính sách property. Hệ thống cần cho phép cấu hình và version hóa danh sách này.
+
+
+## 3.2. Lớp 2 - Dịch vụ/quyền lợi theo loại phòng
+
+Đây là nơi Standard, Deluxe, Executive và Suite thực sự khác nhau về trải nghiệm. Loại phòng cao hơn có thể thừa hưởng gói nền tảng rồi bổ sung quyền lợi.
+
+
+Bảng 3. Ví dụ phân tầng quyền lợi theo loại phòng
+Loại phòng             | Kế thừa                     | Quyền lợi bổ sung ví dụ               
+-----------------------+-----------------------------+---------------------------------------
+Standard               | Gói nền tảng khách sạn      | Không thêm hoặc chỉ có các tiện nghi …
+Deluxe                 | Gói nền tảng                | Welcome drink, ưu tiên tầng cao/view …
+Executive              | Gói nền tảng + Deluxe       | Executive lounge, breakfast, late che…
+Suite                  | Gói nền tảng + nhóm cao cấp | Laundry quota, airport transfer, loun…
+Presidential/VIP Suite | Toàn bộ quyền lợi cao cấp   | Butler/guest relation chuyên trách, l…
+
+
+## 3.3. Lớp 3 - Quyền lợi theo gói giá
+
+Cùng một Deluxe nhưng khách A mua “Room Only”, khách B mua “Breakfast Included”, khách C mua “Romantic Package”. Vì vậy hệ thống phải chốt quyền lợi theo booking chứ không chỉ nhìn vào tên phòng.
+
+- Room Only: chỉ phòng và các dịch vụ nền tảng.
+- Breakfast Included: thêm suất ăn sáng theo số khách đủ điều kiện.
+- Flexible: giá cao hơn nhưng điều kiện hủy/đổi linh hoạt hơn.
+- Non-refundable: giá thấp hơn nhưng hạn chế hoàn/hủy.
+- Romantic/Honeymoon: có trang trí, welcome gift, dinner hoặc late checkout.
+- Business/Executive: có lounge, meeting credit hoặc airport transfer tùy chính sách.
+
+
+## 3.4. Lớp 4 - Dịch vụ mua thêm
+
+Đây là các dịch vụ khách tự chọn và thường phát sinh charge riêng: extra bed, airport transfer, spa, laundry, meal, minibar, room service, birthday setup, tour desk, car rental, meeting room, extra guest, pet fee, early check-in/late checkout có tính phí...
+
+
+## 3.5. Lớp 5 - Dịch vụ phát sinh và service recovery
+
+Trong thực tế khách không chỉ mua dịch vụ. Khách còn báo hỏng điều hòa, xin thêm khăn, yêu cầu đổi gối, cần hỗ trợ y tế, phàn nàn về tiếng ồn hoặc cần đổi phòng. Những việc này phải đi vào cùng một cơ chế tiếp nhận - phân công - theo dõi - hoàn tất - xác nhận chất lượng, dù có thể không phát sinh tiền.
+
+
+# 4. DANH MỤC DỊCH VỤ VÀ CÁCH QUẢN LÝ TỪNG DỊCH VỤ
+
+Một dịch vụ muốn vận hành được không thể chỉ có tên và giá. Mỗi dịch vụ phải được mô tả đủ để nhân viên hiểu khi nào bán được, ai được thực hiện, tính tiền ra sao và khi nào coi là hoàn tất.
+
+
+Bảng 4. Thông tin nghiệp vụ tối thiểu của một dịch vụ
+Nội dung cần quản lý     | Diễn giải dễ hiểu                      | Ví dụ                                 
+-------------------------+----------------------------------------+---------------------------------------
+Tên và nhóm dịch vụ      | Để tìm, báo cáo và phân bộ phận        | Airport Transfer - Transport          
+Phạm vi áp dụng          | Dùng cho khách sạn nào, loại phòng/gó… | Hotel A; Suite trở lên                
+Bao gồm hay trả thêm     | Khách đã có quyền hay phải mua         | Included 1 lượt / Add-on 600.000đ     
+Cách tính giá            | Một lần, mỗi ngày, mỗi người, mỗi món… | Laundry theo món; breakfast theo ngườ…
+Thời gian phục vụ        | Khung giờ nhận yêu cầu và hoàn tất     | Spa 09:00-22:00                       
+Công suất                | Số slot/xe/nhân viên/phòng trị liệu c… | 4 phòng spa mỗi giờ                   
+Bộ phận chịu trách nhiệm | Ai nhận và ai thực hiện                | Concierge nhận, Transport thực hiện   
+SLA                      | Bao lâu phải phản hồi/hoàn tất         | Xác nhận pickup trong 10 phút         
+Điều kiện/hạn chế        | Đặt trước, tuổi, số khách, hủy         | Transfer đặt trước 6 giờ              
+Tồn kho nếu có           | Hàng nào bị trừ khi sử dụng            | Minibar, welcome gift, amenities      
+Quyền giảm/miễn phí      | Ai được complimentary hoặc waive       | Supervisor dưới 500k; Manager trên mứ…
+Dấu vết chất lượng       | Ai phục vụ, khi nào, kết quả, complai… | Completed/Failed/Compensated          
+
+
+## 4.1. Nên chia dịch vụ thành 5 nhóm nghiệp vụ
+
+1. Dịch vụ bao gồm trong giá: khách đã mua sẵn, không cần thu thêm nhưng vẫn cần ghi nhận việc cung cấp.
+2. Dịch vụ tùy chọn có tính phí: khách chủ động mua thêm.
+3. Dịch vụ vận hành không thu phí: thêm khăn, dọn phòng, maintenance, wake-up call...
+4. Dịch vụ giới hạn theo quota: ví dụ Suite được giặt miễn phí 2 món/ngày, lounge access 2 khách, transfer 1 lượt.
+5. Dịch vụ phục hồi trải nghiệm: complimentary drink, miễn phí late checkout, upgrade, giảm phí do sự cố; luôn cần reason và hạn mức phê duyệt.
+
+
+# 5. LUỒNG DỊCH VỤ PHÒNG TỪ LÚC CẤU HÌNH ĐẾN KHI KHÁCH RỜI KHÁCH SẠN
+
+
+## 5.1. Giai đoạn A - Xây dựng dịch vụ trước khi bán
+
+[Luồng A - Cấu hình]
+Khách sạn xác định chuẩn dịch vụ chung -> Định nghĩa từng loại phòng và quyền lợi -> Tạo các gói giá/package -> Tạo dịch vụ mua thêm và điều kiện bán -> Xác định bộ phận/nhân viên đủ điều kiện thực hiện -> Xác định công suất, giá, SLA, chính sách hủy/hoàn -> Manager duyệt và mở bán
+
+Điểm kiểm soát ở đây là không để bộ phận kinh doanh tự viết “Suite có limousine miễn phí” nếu bên vận hành chưa có xe/capacity, không có supplier hoặc không có ngân sách. Mọi quyền lợi bán ra phải gắn với khả năng thực hiện thật.
+
+
+## 5.2. Giai đoạn B - Khi khách tìm phòng và nhận báo giá
+
+Khi khách xem phòng, hệ thống phải cho nhân viên và khách nhìn rõ ba lớp: “được bao gồm”, “có thể mua thêm”, “điều kiện/hạn chế”. Giá rẻ hơn không có nghĩa là dịch vụ nền tảng kém an toàn; nó có thể đơn giản hơn về diện tích, view, quyền lợi và mức cá nhân hóa.
+
+
+## 5.3. Giai đoạn C - Khi booking được xác nhận
+
+Ngay tại thời điểm booking được xác nhận, phải tạo một bản chụp quyền lợi của khách. Việc này cực kỳ quan trọng vì về sau khách sạn có thể đổi giá hoặc thay package, nhưng booking đã bán phải biết rõ lúc bán khách được hưởng gì.
+
+- Loại phòng và room tier.
+- Gói giá đã mua.
+- Danh sách quyền lợi bao gồm và số lượng/quota.
+- Dịch vụ mua thêm đã đặt.
+- Điều kiện đổi/hủy/hoàn.
+- Yêu cầu đặc biệt: ăn kiêng, accessibility, baby cot, anniversary, airport pickup...
+- Những dịch vụ cần chuẩn bị trước khi khách đến.
+
+
+## 5.4. Giai đoạn D - Pre-arrival
+
+Trước ngày đến, hệ thống phải biến các quyền lợi thành công việc thực tế. Ví dụ khách Suite có airport transfer thì không thể chờ tới lúc khách đứng ở sân bay mới nhớ ra. Dịch vụ có “lead time” phải tự đi vào danh sách chuẩn bị.
+
+[Luồng D - Pre-arrival]
+Đọc các quyền lợi và yêu cầu của booking -> Tạo danh sách việc cần chuẩn bị -> Kiểm tra capacity và supplier -> Phân người phụ trách -> Liên hệ khách nếu thiếu thông tin -> Xác nhận Ready trước giờ đến -> Escalate nếu một quyền lợi không thể cung cấp
+
+
+## 5.5. Giai đoạn E - Trong thời gian lưu trú
+
+Mỗi yêu cầu dịch vụ nên đi qua một vòng đời rõ ràng thay vì chat miệng: New -> Accepted -> Assigned -> In Progress -> Completed -> Confirmed hoặc Failed/Cancelled. Nếu có charge thì charge phải gắn với request hoặc bằng chứng sử dụng.
+
+[Luồng E - Một yêu cầu dịch vụ trong lúc khách ở]
+Khách yêu cầu qua lễ tân/app/điện thoại/concierge -> Xác định khách có quyền miễn phí hay phải trả thêm -> Kiểm tra capacity/thời gian phục vụ -> Báo giá hoặc xác nhận quyền lợi -> Khách đồng ý nếu có charge -> Phân công bộ phận/nhân viên -> Nhân viên thực hiện và cập nhật trạng thái -> Ghi nhận charge/tồn kho nếu có -> Khách xác nhận hoặc hệ thống đóng theo policy -> Nếu lỗi -> complaint/service recovery
+
+
+## 5.6. Giai đoạn F - Check-out
+
+Check-out không chỉ cân tiền phòng. Lễ tân/cashier cần kiểm tra các dịch vụ chưa hoàn tất, charge còn pending, minibar chưa cập nhật, compensation chưa duyệt hoặc dịch vụ đã hủy nhưng vẫn còn charge. Không được “xóa cho cân”; phải dùng hủy/đảo/điều chỉnh có lý do và người duyệt.
+
+
+## 5.7. Giai đoạn G - Sau lưu trú
+
+Sau khi khách rời đi, dữ liệu dịch vụ phải quay về ba nơi: đánh giá chất lượng dịch vụ, hồ sơ nhân viên/bộ phận và chất lượng sản phẩm/phòng. Đây là chỗ tài liệu hiện tại còn thiếu vòng phản hồi.
+
+- Dịch vụ nào khách sử dụng nhiều hoặc ít.
+- Dịch vụ nào thường trễ SLA.
+- Dịch vụ nào tạo nhiều complaint hoặc compensation.
+- Loại phòng nào bị đánh giá “không đáng tiền”.
+- Nhân viên nào xử lý tốt case khó.
+- Supplier nào hay fail.
+- Quyền lợi nào bán nhiều nhưng vận hành không hiệu quả.
+
+
+# 6. CÁC TÌNH HUỐNG THỰC TẾ PHẢI XỬ LÝ
+
+
+## Tình huống 1 - Deluxe nhưng khách mua Room Only
+
+Khách đặt Deluxe vì thích view và diện tích, nhưng rate plan không có breakfast. Nhân viên không được nhìn “Deluxe” rồi mặc định cho ăn sáng miễn phí. Khi khách hỏi breakfast, hệ thống kiểm tra quyền lợi booking. Nếu chưa bao gồm thì báo giá, khách đồng ý mới thêm dịch vụ và charge. Đây là lý do phải tách Room Type khỏi Package.
+
+
+## Tình huống 2 - Suite có airport transfer miễn phí
+
+Booking Suite có 1 lượt transfer. Trước ngày đến, Concierge phải thấy request cần chuẩn bị. Nếu khách chưa cung cấp flight number, hệ thống đưa case vào “thiếu thông tin” để liên hệ. Khi xe hoàn tất pickup, quyền lợi được đánh dấu đã sử dụng. Nếu khách yêu cầu chuyến thứ hai, chuyến mới là add-on có tính phí theo policy.
+
+
+## Tình huống 3 - Minibar
+
+Khách dùng 2 nước ngọt và 1 snack. Room Attendant hoặc minibar staff ghi số lượng thực tế, hệ thống giảm tồn kho và post charge vào folio. Nếu khách tranh chấp lúc checkout, có thể truy được phòng, thời điểm, nhân viên ghi nhận và lịch sử thay đổi. Không để lễ tân xóa charge tùy ý để “cho nhanh”.
+
+
+## Tình huống 4 - Spa đã hết slot
+
+Khách muốn spa 20:00 nhưng capacity đã đầy. Hệ thống không nên cho bán rồi mới xin lỗi. Nhân viên phải đề xuất 18:30, 21:00 hoặc supplier thay thế đã được phê duyệt. Nếu package có spa bắt buộc mà khách sạn không cung cấp được, case phải chuyển thành service failure và có phương án bù phù hợp.
+
+
+## Tình huống 5 - Laundry làm hỏng đồ
+
+Laundry không chỉ là một charge. Đây là một case dịch vụ có tài sản khách. Khi phát hiện hư hỏng: ghi nhận item, ảnh/bằng chứng, nhân viên xử lý, supervisor, mức độ thiệt hại, chính sách bồi thường và quyết định. Kết quả phải đi vào complaint/service quality chứ không chỉ đóng charge về 0.
+
+
+## Tình huống 6 - Complimentary upgrade
+
+Khách Standard gặp sự cố phòng và được nâng lên Suite miễn phí. Có hai câu hỏi phải được tách: (1) khách được ở phòng Suite; (2) khách có được toàn bộ quyền lợi Suite như lounge, laundry, transfer hay không. Chính sách khách sạn phải xác định rõ. Upgrade phòng không mặc nhiên có nghĩa là cấp toàn bộ package cao cấp. Nếu có cấp thêm quyền lợi, cần reason và người duyệt.
+
+
+## Tình huống 7 - Phòng đắt nhưng case đơn giản
+
+Một khách ở Presidential Suite chỉ check-in bình thường, thông tin đã xác minh, prepaid, không có yêu cầu đặc biệt. Không nhất thiết phải để Manager tự làm check-in. Có thể cho một lễ tân đạt chuẩn VIP handling xử lý, còn Guest Relations/Manager chỉ theo dõi. Hệ thống nên phân theo độ phức tạp và năng lực, không phân chỉ theo giá phòng.
+
+
+## Tình huống 8 - Phòng rẻ nhưng case rất khó
+
+Khách ở Standard nhưng có chargeback, tranh chấp thanh toán, complaint an toàn và yêu cầu đổi phòng. Case này phải chuyển Supervisor/Duty Manager dù giá phòng thấp. Đây là ví dụ rõ nhất cho việc “giá phòng cao = nhân viên cấp cao” không đủ để làm quy tắc vận hành.
+
+
+# 7. ĐỐI CHIẾU CÁC DỰ ÁN MÃ NGUỒN MỞ LỚN VÀ BÀI HỌC NÊN LẤY
+
+
+## 7.1. QloApps - bài học về Room Type, Service Product và Additional Facility
+
+QloApps quản lý Room Type không chỉ bằng tên và giá. Room Type có base price, features, danh sách phòng vật lý, Service Products và Additional Facilities. Service Product có thể gắn với hotel/room type, có thể tự động thêm, có lựa chọn đưa giá vào room price hoặc tách thành convenience fee và có cách tính theo ngày hoặc một lần cho booking. Additional Facility cũng có thể tính theo ngày hoặc toàn bộ booking.
+
+Bài học nên lấy: tách “đặc điểm phòng”, “dịch vụ”, “facility mua thêm” và “giá” thành các phần riêng nhưng liên kết. Khi tạo phòng/loại phòng, admin chọn dịch vụ nào đi kèm, nhưng việc khách thực tế được hưởng gì vẫn phải chốt theo booking/rate plan.
+
+
+## 7.2. HotelDruid - bài học về extra cost, thời gian, tồn kho và quyền nhân viên
+
+HotelDruid coi extra cost là một đối tượng linh hoạt: có thể tính một lần, mỗi ngày/tuần, giá cố định hoặc phần trăm; gắn với rate, phòng, thời gian; thậm chí khi post một cost có thể trừ item khỏi tồn kho phòng/kho. Hệ thống quyền còn cho phép một user chỉ được thêm một loại extra cost cụ thể, ví dụ nhân viên bar chỉ được post charge liên quan bar.
+
+Bài học nên lấy: dịch vụ phải gắn với điều kiện sử dụng, thời gian, giá, tồn kho và quyền của người thao tác. Không phải cứ là lễ tân thì được tự do thêm/xóa mọi charge.
+
+
+## 7.3. OCA Vertical Hotel - bài học về tách module nghiệp vụ
+
+OCA Vertical Hotel tách reservation, folio/hotel configuration, housekeeping, restaurant và reporting thành các module. Bài học quan trọng không phải tên module mà là tư duy: reservation, housekeeping, restaurant/service và tài chính liên quan chặt nhưng không phải một nghiệp vụ duy nhất. Một bộ phận có thể cần dữ liệu phòng nhưng không cần toàn bộ dữ liệu thanh toán.
+
+
+## 7.4. Frappe HR - bài học về Skill Map, Training và Appraisal
+
+Frappe HR có Employee Skill Map: kỹ năng được gắn với chức danh, nhân viên được chấm mức proficiency, có ngày đánh giá và đào tạo; dữ liệu được dùng khi appraisal. Appraisal có chu kỳ, KRA và đánh giá hiệu suất. Đây chính là mảnh còn thiếu trong tài liệu nhân viên hiện tại: role/quyền cho biết “được phép làm”, còn skill/appraisal cho biết “làm có giỏi và đủ chuẩn hay không”.
+
+
+## 7.5. Odoo Planning - bài học về phân công theo role, điều kiện và lịch làm
+
+Odoo Planning phân công ca dựa trên role và resource; có thể gắn property như accreditation, location, language; Auto Plan xét role, xung đột lịch, ngày nghỉ, giờ làm và hợp đồng. Bài học nên lấy là cơ chế phân công phải lọc “đủ điều kiện” trước rồi mới cân tải, chứ không lấy người đang rảnh bất kỳ.
+
+
+## 7.6. ERPNext Hospitality/Frappe Hospitality - bài học về giới hạn của source đơn giản
+
+Frappe Hospitality quản lý phòng, reservation và invoice nhưng chính tài liệu của họ cũng ghi đang ở giai đoạn phát triển sớm. Đây là minh họa tốt cho việc một source có booking phòng không có nghĩa đã có đầy đủ service lifecycle, competency management, star compliance và quality management.
+
+[KẾT LUẬN TỪ OPEN SOURCE]
+Không có một source duy nhất giải quyết đầy đủ câu chuyện bạn đang muốn. Cách hợp lý là học QloApps/HotelDruid cho dịch vụ và charge; OCA cho cách tách nghiệp vụ; Frappe HR/Odoo HR cho năng lực - appraisal; Odoo Planning cho phân công. Sau đó ghép các nguyên tắc đó vào workflow khách sạn/tour của tài liệu hiện tại.
+
+
+# 8. XẾP HẠNG KHÁCH SẠN 1-5 SAO: HIỂU ĐÚNG VÀ QUẢN LÝ ĐÚNG
+
+
+## 8.1. Hạng sao thuộc về khách sạn/cơ sở, không phải từng căn phòng
+
+Đây là điểm cần sửa trong cách diễn đạt. Một căn Suite không phải “phòng 5 sao” theo nghĩa pháp lý. Khách sạn là đối tượng được công nhận hạng 1-5 sao. Bên trong khách sạn 5 sao vẫn có nhiều loại phòng từ thấp đến cao. Vì vậy hệ thống nên tách ba khái niệm: hạng sao chính thức của khách sạn; cấp/tier nội bộ của loại phòng; điểm đánh giá/review của khách.
+
+
+Bảng 5. Ba loại “đánh giá” không được trộn với nhau
+Khái niệm               | Ý nghĩa                                | Ví dụ                                 
+------------------------+----------------------------------------+---------------------------------------
+Hạng sao chính thức     | Công nhận đối với cơ sở lưu trú theo … | Hotel A - 5 sao, quyết định còn hiệu …
+Room Tier/Class         | Phân tầng sản phẩm phòng nội bộ        | Standard, Deluxe, Executive, Suite    
+Guest Rating/Reputation | Điểm và nhận xét khách trên OTA/websi… | 4.7/5 hoặc 9.1/10                     
+
+
+## 8.2. Khách sạn 5 sao không phải chỉ vì “phòng đắt + review tốt + lâu đời”
+
+Những yếu tố đó có thể làm khách cảm thấy khách sạn cao cấp và hỗ trợ danh tiếng, nhưng hạng sao chính thức được xem xét theo một bộ tiêu chí rộng hơn. Theo TCVN 4391:2015, việc xếp hạng dựa trên các nhóm như vị trí/kiến trúc, trang thiết bị tiện nghi, dịch vụ và chất lượng phục vụ, người quản lý và nhân viên, an ninh/an toàn, bảo vệ môi trường và vệ sinh an toàn thực phẩm. Các mức tiêu chí là mức tối thiểu phải đạt theo từng hạng.
+
+Do đó “nhân viên giỏi” thực sự có liên quan đến hạng khách sạn, nhưng không phải theo kiểu khách đánh giá nhân viên 5/5 là khách sạn tự thành 5 sao. Năng lực nhân sự là một phần trong hệ tiêu chí rộng hơn và còn phải được kiểm tra cùng cơ sở vật chất, dịch vụ, an toàn, vệ sinh, quy trình và các yêu cầu khác.
+
+
+## 8.3. Quy trình công nhận hạng tại Việt Nam nên được hiểu như một workflow compliance
+
+Theo thủ tục hiện hành được Bộ Văn hóa, Thể thao và Du lịch công bố, doanh nghiệp được tự nguyện đăng ký xếp hạng. Hạng 1-3 sao do cơ quan chuyên môn du lịch cấp tỉnh thẩm định/công nhận; hạng 4-5 sao do Cục Du lịch Quốc gia Việt Nam thực hiện. Hồ sơ có bản tự đánh giá theo tiêu chuẩn quốc gia, danh sách quản lý/nhân viên và hồ sơ văn bằng/chứng chỉ/bồi dưỡng nghiệp vụ/thời gian làm việc của người quản lý, trưởng bộ phận. Quyết định công nhận có thời hạn 5 năm.
+
+
+## 8.4. Hệ thống nên quản lý hạng sao theo 2 lớp
+
+1. Hạng mục tiêu: khách sạn đang muốn đạt 3, 4 hoặc 5 sao. Đây là mục tiêu quản trị nội bộ.
+2. Hạng đã được công nhận: chỉ ghi 3/4/5 sao chính thức khi có quyết định công nhận hợp lệ. Lưu số quyết định, cơ quan, ngày cấp, ngày hết hạn và tài liệu chứng minh.
+
+
+## 8.5. Nên có “bộ hồ sơ tiêu chuẩn” thay vì chỉ một trường Star = 5
+
+- Phiên bản tiêu chuẩn đang áp dụng.
+- Hạng mục tiêu và hạng đã công nhận.
+- Từng nhóm tiêu chí và trạng thái: đạt/chưa đạt/không áp dụng/cần bằng chứng.
+- Bằng chứng: ảnh, biên bản, chứng chỉ, SOP, hợp đồng, hồ sơ nhân sự, kết quả kiểm tra.
+- Người phụ trách từng tiêu chí.
+- Ngày kiểm tra gần nhất.
+- Vấn đề chưa phù hợp và hạn xử lý.
+- Kết quả thẩm định chính thức.
+- Ngày hết hạn quyết định 5 năm và cảnh báo tái xếp hạng.
+
+[VÌ SAO PHẢI VERSION HÓA TIÊU CHUẨN]
+TCVN 4391:2015 hiện vẫn đang được sử dụng làm căn cứ tham chiếu trong các thủ tục/địa phương năm 2026, đồng thời đang có dự án soát xét tiêu chuẩn trong giai đoạn 2025-2026. Vì vậy không nên hard-code tiêu chí “vĩnh viễn”; phải biết bộ tiêu chí thuộc phiên bản nào và có ngày hiệu lực.
+
+
+# 9. LUỒNG DUY TRÌ VÀ CÔNG NHẬN HẠNG SAO TRONG VẬN HÀNH
+
+[Luồng xếp hạng/compliance nên có]
+Ban lãnh đạo chọn hạng mục tiêu -> Tự đánh giá theo bộ tiêu chí hiện hành -> Phân tích khoảng cách: thiếu gì về cơ sở vật chất, dịch vụ, nhân sự, an toàn -> Lập kế hoạch khắc phục và người chịu trách nhiệm -> Thu thập bằng chứng và kiểm tra nội bộ -> Đủ điều kiện thì nộp hồ sơ thẩm định -> Cơ quan thẩm quyền kiểm tra/thẩm định -> Được công nhận -> lưu quyết định và thời hạn -> Vận hành hằng ngày phải duy trì tiêu chuẩn -> Có sự thay đổi lớn hoặc gần hết hạn -> tái đánh giá/tái xếp hạng
+
+
+## 9.1. Ví dụ thực tế: khách sạn muốn từ 4 sao lên 5 sao
+
+Không nên bắt đầu bằng việc “đổi Star = 5”. Phải tạo một kế hoạch nâng hạng. Hệ thống chỉ ra nhóm tiêu chí còn thiếu: khu vực phục vụ, trang thiết bị, dịch vụ bổ sung, chất lượng nhân sự, chứng chỉ, quy trình an toàn, chất lượng phục vụ. Mỗi thiếu sót trở thành một việc có owner, deadline và bằng chứng. Chỉ khi hoàn tất tự đánh giá và evidence mới chuyển sang hồ sơ thẩm định.
+
+
+## 9.2. Review khách hàng nằm ở đâu?
+
+Review nên là chỉ số chất lượng vận hành và danh tiếng, không dùng thay thế hạng sao chính thức. Tuy nhiên review rất hữu ích để phát hiện “tiêu chuẩn trên giấy đạt nhưng trải nghiệm thật không đạt”. Ví dụ khách sạn 5 sao mà hàng loạt review chê check-in 45 phút, nhân viên thiếu ngoại ngữ hoặc phòng bẩn thì hệ thống phải mở cảnh báo chất lượng để Manager xử lý.
+
+
+# 10. ĐÁNH GIÁ NĂNG LỰC NHÂN VIÊN: PHẦN TÀI LIỆU HIỆN TẠI CÒN THIẾU GÌ
+
+Cần nói rõ: tài liệu hiện tại đã có KPI cho Receptionist, Reservation Agent, Concierge, Housekeeping, Revenue Manager, Tour Guide, Tour Operator... Vì vậy không phải “chưa có đánh giá”. Thiếu ở đây là một tầng sâu hơn: KPI đo kết quả làm việc, còn hồ sơ năng lực trả lời người này có đủ kỹ năng, kinh nghiệm, chứng chỉ và lịch sử chất lượng để nhận case cấp độ nào hay không.
+
+
+## 10.1. Hồ sơ nhân viên nên có 7 lớp
+
+1. Hồ sơ công việc: vị trí, bộ phận, property/tour team, quản lý trực tiếp, ca.
+2. Quyền và hạn mức: những gì tài liệu hiện tại đã có - role, permission, scope, approval limit.
+3. Năng lực nghề nghiệp: giao tiếp, nghiệp vụ PMS, xử lý complaint, VIP handling, ngoại ngữ, sales/upsell, safety...
+4. Chứng chỉ/đào tạo: nghiệp vụ, ngoại ngữ, first aid, tour guide card/chứng nhận phù hợp, internal certification; có ngày hết hạn nếu cần.
+5. Kinh nghiệm thực chiến: số case đã xử lý, loại khách, loại phòng/tour, nhóm ngôn ngữ, số case khó, thời gian giữ vị trí.
+6. Hiệu suất và chất lượng: KPI, QA, complaint, praise, cash variance, lỗi, service recovery, audit.
+7. Thành tích và khả năng phát triển: khen thưởng, mentoring, training completed, mức sẵn sàng nhận case khó, ứng viên Supervisor/Manager.
+
+
+## 10.2. Phân biệt KPI và năng lực
+
+
+Bảng 6. KPI và năng lực là hai thứ khác nhau
+Loại                | Trả lời câu hỏi                        | Ví dụ                                 
+--------------------+----------------------------------------+---------------------------------------
+KPI                 | Kết quả thời gian vừa qua tốt hay khô… | Check-in duration, complaint rate, SL…
+Năng lực            | Người này có khả năng làm loại việc n… | English B2, VIP handling, payment dis…
+Điều kiện phân công | Hôm nay có được nhận case cụ thể khôn… | Đúng ca, đúng property, chứng chỉ còn…
+Thành tích/lịch sử  | Đã chứng minh năng lực qua những case… | 50 VIP stays, 20 Japan tours, 6 tháng…
+
+
+# 11. THANG NĂNG LỰC VÀ THANG HIỆU SUẤT THEO TỪNG VỊ TRÍ
+
+
+## 11.1. Nên có 5 mức năng lực thay vì chỉ “nhân viên” và “quản lý”
+
+
+Bảng 7. Thang năng lực gợi ý
+Mức                              | Ý nghĩa                               | Phạm vi công việc gợi ý               
+---------------------------------+---------------------------------------+---------------------------------------
+Level 1 - Training               | Nhân viên mới/đang học                | Case đơn giản; có checklist; case nhạ…
+Level 2 - Qualified              | Đã đạt chuẩn vị trí                   | Booking/phòng/tour thông thường trong…
+Level 3 - Senior                 | Có kinh nghiệm ổn định                | Case phức tạp, khách giá trị cao, hỗ …
+Level 4 - Specialist/VIP         | Chuyên gia hoặc phục vụ phân khúc cao | VIP, premium suite, complaint khó, to…
+Level 5 - Lead/Manager Candidate | Có năng lực điều phối và phê duyệt    | Escalation, coaching, phân công, kiểm…
+
+Các ngưỡng cụ thể là chính sách doanh nghiệp, không nên coi bảng trên là chuẩn pháp lý. Mục tiêu là có một ngôn ngữ thống nhất để phân công.
+
+
+## 11.2. Receptionist/Front Desk - đánh giá cái gì?
+
+- Chất lượng check-in/check-out: đúng, đủ, nhanh nhưng không bỏ xác minh.
+- Guest profile accuracy và room assignment accuracy.
+- Khả năng xử lý payment/deposit/folio trong phạm vi quyền.
+- Complaint handling và service recovery.
+- Ngoại ngữ/giao tiếp và khả năng phục vụ khách quốc tế/VIP.
+- Upsell nhưng không gây áp lực làm giảm trải nghiệm.
+- Số lỗi phải Supervisor sửa, số case reopen, key reissue bất thường.
+- Praise/complaint theo tên nhân viên và QA sampling.
+- Tuân thủ an ninh, privacy, ca và handover.
+
+
+## 11.3. Concierge/Guest Relations
+
+- Tốc độ nhận và hoàn tất guest request.
+- Độ chính xác khi đặt dịch vụ bên ngoài/đối tác.
+- Khả năng xử lý VIP preference và service personalization.
+- Complaint resolution và escalation đúng lúc.
+- Khả năng ngoại ngữ, kiến thức địa phương, nhà hàng, vận chuyển, tour.
+- Chi phí service recovery và tỷ lệ phải Manager can thiệp.
+- Feedback tích cực sau dịch vụ.
+
+
+## 11.4. Housekeeping
+
+- On-time room readiness, inspection pass rate và re-clean rate.
+- Complaint về sạch sẽ, amenities, linen.
+- Lost-and-found compliance và damage reporting.
+- Kỷ luật minibar/amenities/linen inventory.
+- Tuân thủ safety, privacy và Do Not Disturb.
+- Không đánh giá chỉ bằng số phòng dọn được vì dễ làm giảm chất lượng.
+
+
+## 11.5. Tour Operator
+
+- Supplier confirmation đúng hạn.
+- Manifest/rooming list chính xác.
+- Giữ đúng ngân sách nhưng không đánh đổi chất lượng.
+- Số thay đổi sát giờ do lỗi chủ quan.
+- Service failure và tốc độ xử lý escalation.
+- Khả năng điều hành tour phức tạp/nhiều supplier/nhiều điểm đến.
+- Chất lượng handover cho Guide và Finance.
+
+
+## 11.6. Tour Guide
+
+- Attendance và kiểm soát đoàn chính xác.
+- Kiến thức tuyến điểm và kỹ năng thuyết minh.
+- Ngoại ngữ phù hợp tour.
+- An toàn, first aid/khả năng xử lý sự cố theo loại tour.
+- Guest feedback, complaint và lời khen.
+- Báo cáo/chứng từ đúng hạn.
+- Khả năng giữ lịch trình nhưng vẫn linh hoạt với tình huống thực tế.
+- Kinh nghiệm với phân khúc: gia đình, MICE, luxury, inbound, adventure...
+
+
+## 11.7. Manager/Supervisor
+
+Manager không nên chỉ được đo bằng doanh thu. Một quản lý tốt phải làm đội vận hành tốt hơn.
+
+- SLA và backlog của cả đội.
+- Tỷ lệ lỗi lặp lại và kết quả QA.
+- Chất lượng phê duyệt ngoại lệ: không quá dễ dãi, không gây tắc vận hành.
+- Complaint escalated và service recovery cost.
+- Phân tải nhân viên hợp lý.
+- Đào tạo/mentoring và tốc độ phát triển nhân viên cấp dưới.
+- Cash/financial exceptions và audit findings.
+- Turnover, attendance và kỷ luật ca.
+- Duy trì tiêu chuẩn dịch vụ/hạng sao của property hoặc tiêu chuẩn tour.
+
+
+## 11.8. Khung điểm gợi ý để tránh “chỉ chạy KPI số lượng”
+
+Có thể dùng một khung nội bộ, ví dụ: 35-40% kết quả/KPI; 20-25% chất lượng QA và độ chính xác; 15-20% phản hồi khách; 10-15% tuân thủ/rủi ro; 10% đào tạo và phát triển. Đây chỉ là hướng thiết kế. Mỗi vị trí cần trọng số khác nhau và phải có “điều kiện loại trừ” cho lỗi nghiêm trọng.
+
+[ĐIỀU KIỆN LOẠI TRỪ]
+Một người có tổng điểm cao vẫn không được nhận case đặc biệt nếu chứng chỉ hết hạn, đang bị điều tra sự cố nghiêm trọng, không đúng ca/property, thiếu ngoại ngữ bắt buộc hoặc không có quyền tài chính cần thiết.
+
+
+# 12. LUỒNG PHÂN CÔNG NHÂN VIÊN THEO ĐỘ KHÓ CỦA KHÁCH/PHÒNG/TOUR
+
+Đây là phần rất sát với ý bạn: không để người mới vào tự chịu một booking VIP hoặc tour khó chỉ vì họ đang rảnh. Nhưng cách đúng không phải “phòng càng đắt thì người càng senior”; cách đúng là đánh giá độ phức tạp và rủi ro của case rồi đối chiếu với năng lực nhân viên.
+
+
+## 12.1. Bước 1 - Xếp mức độ phức tạp của case
+
+- Giá trị booking/tour.
+- Room tier hoặc tour tier.
+- VIP/corporate/repeat high-value guest.
+- Số lượng khách/group size.
+- Số dịch vụ đặc biệt cần phối hợp.
+- Ngôn ngữ bắt buộc.
+- Accessibility/medical/safety requirement.
+- Payment risk hoặc công nợ.
+- Complaint/escalation đang mở.
+- Thời gian gấp hoặc thay đổi sát giờ.
+- Tour có yếu tố rủi ro cao: adventure, nhiều chặng, quốc tế, visa, charter...
+
+
+## 12.2. Bước 2 - Lọc điều kiện bắt buộc của nhân viên
+
+[Luồng lọc nhân viên]
+Đúng role -> Đúng property/tour team -> Đang trong ca hoặc thời gian có thể làm -> Có skill/certification bắt buộc -> Ngoại ngữ phù hợp -> Hạn mức tài chính/approval phù hợp -> Không có xung đột lịch -> Không bị khóa/giới hạn do sự cố -> Sau đó mới so kinh nghiệm, điểm chất lượng và tải công việc
+
+
+## 12.3. Bước 3 - Chọn người tốt nhất trong nhóm đủ điều kiện
+
+Sau khi lọc đủ điều kiện mới cân các yếu tố mềm: kinh nghiệm với loại case tương tự, QA gần đây, phản hồi khách, complaint rate, workload hiện tại, continuity (đã chăm khách từ trước hay chưa), khả năng mentoring nếu có nhân viên mới đi kèm.
+
+
+## 12.4. Bước 4 - Giao người chính và người backup/escalation
+
+Case cao cấp nên có người chính rõ ràng và đường escalation rõ. Ví dụ Receptionist Senior là owner check-in VIP, Guest Relations là owner dịch vụ cá nhân hóa, Duty Manager là escalation. Không cần Manager làm mọi thao tác nhưng Manager phải biết case và sẵn sàng can thiệp.
+
+
+## 12.5. Bước 5 - Kết quả phục vụ quay lại hồ sơ nhân viên
+
+Sau khi case đóng, hệ thống ghi lại: nhân viên đã làm loại case nào, kết quả, feedback, lỗi, service recovery, praise, thời gian xử lý. Nhờ đó “thành tích” không phải lời kể trong CV mà được hình thành từ dữ liệu vận hành thật.
+
+
+## 12.6. Mô hình shadow cho nhân viên mới
+
+Để người mới phát triển, không nên cấm vĩnh viễn các phòng/tour cao cấp. Có thể cho Level 1 tham gia dưới dạng shadow hoặc secondary assignee: người senior chịu trách nhiệm chính, người mới quan sát/thực hiện một phần có kiểm soát. Sau đủ số case và đạt QA thì nâng eligibility.
+
+
+## 12.7. Ví dụ phân công 4 case
+
+
+Bảng 8. Ví dụ phân công theo độ phức tạp
+Case                                   | Không nên làm                          | Cách phân công hợp lý                 
+---------------------------------------+----------------------------------------+---------------------------------------
+Standard, prepaid, không yêu cầu đặc … | Ép Senior làm chỉ vì khách trả tiền    | Receptionist Level 2 có thể xử lý độc…
+Presidential Suite, VIP, airport pick… | Giao toàn bộ cho nhân viên mới         | Senior/VIP Front Desk + Guest Relatio…
+Standard nhưng dispute payment + comp… | Cho nhân viên mới xử lý vì phòng rẻ    | Escalate Supervisor/Duty Manager ngay 
+Tour Nhật premium, 30 khách corporate  | Chọn Guide đang rảnh nhưng tiếng Nhật… | Guide đủ ngôn ngữ + kinh nghiệm Japan…
+
+
+# 13. CÁCH QUẢN LÝ HỒ SƠ VÀ ĐIỀU KIỆN ĐỂ LÊN SUPERVISOR/MANAGER
+
+Ý bạn về việc “không thể tự nhiên được làm quản lý” là hoàn toàn đúng. Nhưng hệ thống cũng không nên tự động thăng chức chỉ vì điểm cao. Nó nên xác định người nào đủ điều kiện để được xem xét, còn quyết định cuối vẫn thuộc tổ chức.
+
+
+## 13.1. Hồ sơ ứng viên quản lý nên nhìn 5 nhóm
+
+1. Năng lực nghiệp vụ: đã làm chủ vị trí chuyên môn chưa, có xử lý được exception khó không.
+2. Lịch sử chất lượng: QA, complaint, lỗi nghiêm trọng, cash variance, audit finding.
+3. Năng lực con người: giao ca, coaching, phản hồi, xử lý xung đột, phối hợp bộ phận.
+4. Năng lực kiểm soát: approval có hợp lý không, có lạm dụng complimentary/override không.
+5. Lịch sử phát triển: training, certification, mentoring người mới, acting supervisor, kết quả team khi được giao phụ trách.
+
+
+## 13.2. Luồng bổ nhiệm nên có “giai đoạn acting”
+
+[Luồng đề xuất]
+Nhân viên đạt điều kiện tối thiểu -> Manager/HR đề cử hoặc nhân viên ứng tuyển nội bộ -> Kiểm tra skill - certification - performance - incident history -> Giao vai trò Acting/Shift Lead có thời hạn -> Theo dõi chất lượng phê duyệt và quản lý đội -> Đánh giá 360 độ/manager review -> Đạt -> bổ nhiệm chính thức; chưa đạt -> training và review lại
+
+
+## 13.3. Không để “Manager = Superadmin”
+
+Dù người đó rất giỏi, quyền quản lý nghiệp vụ vẫn phải tách khỏi quyền quản trị hệ thống. Manager có thể duyệt exception, điều phối người, xem dashboard; Access Admin mới quản lý account/role. Đây là điểm tài liệu hiện tại đang làm đúng và nên giữ nguyên.
+
+
+# 14. ÁP DỤNG TOÀN BỘ LOGIC TRÊN CHO TOUR DU LỊCH
+
+
+## 14.1. Tour cũng cần “tầng chất lượng sản phẩm”, không chỉ một tên tour và giá
+
+Tour không nên dùng sao giống khách sạn nếu không có chuẩn tương ứng. Có thể dùng tier nội bộ như Economy, Standard, Premium, Luxury, Private hoặc MICE/VIP. Mỗi tier phải có lời hứa dịch vụ cụ thể.
+
+
+## 14.2. Một tour phải được cấu thành từ các “service component” rõ ràng
+
+- Vận chuyển: loại xe/hãng bay/hạng ghế/điều kiện hành lý.
+- Lưu trú: khách sạn, hạng, rooming standard.
+- Ăn uống: số bữa, tiêu chuẩn, menu/dietary.
+- Điểm tham quan/vé.
+- Guide và ngôn ngữ.
+- Bảo hiểm và hỗ trợ khẩn cấp.
+- Dịch vụ đặc biệt: photographer, private dinner, lounge, fast track, local experience...
+- Tỷ lệ phục vụ: số khách/guide, số khách/xe, coordinator nếu đoàn lớn.
+
+
+## 14.3. Giá trị tour cao không chỉ vì khách sạn đắt
+
+Một tour premium/luxury có thể nổi bật vì itinerary độc đáo, supplier tốt, ít thời gian chờ, private access, guide giỏi, ngôn ngữ tốt, service ratio thấp, phản ứng sự cố nhanh và trải nghiệm cá nhân hóa. Đây mới là lý do tour “đáng tiền”, chứ không đơn giản cộng thật nhiều dịch vụ đắt.
+
+
+## 14.4. Tour cũng cần một “requirement profile” để phân Guide/Operator
+
+Ví dụ tour Nhật 7 ngày, 30 khách corporate, tier Premium: bắt buộc guide tiếng Nhật mức cao, kinh nghiệm Japan route, kinh nghiệm corporate group, khả năng xử lý flight disruption, đủ thẻ/chứng nhận cần thiết, không conflict lịch. Operator phải có kinh nghiệm supplier Nhật, group rooming list và deadline visa/document nếu có.
+
+
+## 14.5. Luồng tour hoàn chỉnh sau khi bổ sung quality management
+
+[Luồng Tour Quality]
+Tạo sản phẩm và xác định tier/lời hứa dịch vụ -> Chọn supplier và tiêu chuẩn từng service component -> Xác định yêu cầu năng lực Guide/Operator -> Mở bán và tạo booking -> Thu cọc/thu đủ theo workflow hiện tại -> Chốt supplier và kiểm tra chất lượng trước khởi hành -> Phân Guide/Operator đủ điều kiện -> Pre-departure briefing và checklist -> Vận hành tour - ghi attendance/service/incident -> Service recovery nếu có lỗi -> Kết thúc - đối soát -> Guest feedback + supplier rating + Guide/Operator performance -> Điều chỉnh sản phẩm/tier/supplier/training cho lần sau
+
+
+## 14.6. Tình huống tour thực tế
+
+Tour Nhật premium nhưng Guide chính bị ốm trước 12 giờ. Hệ thống không được chọn guide thay thế chỉ dựa trên “available”. Phải lọc guide có tiếng Nhật, thẻ/chứng nhận phù hợp, kinh nghiệm tuyến, không conflict và đạt level. Nếu chỉ còn guide Level 2 chưa đủ chuẩn, phải escalate Operations Manager để chọn phương án: điều senior từ tour khác, thuê guide đối tác đã được đánh giá, hoặc bố trí co-guide/translator. Mọi thay đổi phải được log vì ảnh hưởng lời hứa dịch vụ của tour.
+
+
+# 15. VÒNG LẶP CHẤT LƯỢNG KHÉP KÍN GIỮA DỊCH VỤ - NHÂN VIÊN - PHẢN HỒI - HẠNG SAO
+
+Đây là ý tưởng lớn nhất nên thêm vào cẩm nang. Hiện các phần đang nằm tách nhau. Khi nối lại, hệ thống sẽ trở thành một nền tảng quản trị chất lượng thay vì chỉ quản lý booking.
+
+[Vòng lặp chất lượng khách sạn]
+Khách sạn đặt chuẩn dịch vụ/hạng mục tiêu -> Loại phòng và package kế thừa chuẩn đó -> Booking chốt quyền lợi cụ thể -> Hệ thống chọn nhân viên đủ năng lực -> Nhân viên thực hiện dịch vụ -> Khách phản hồi + QA kiểm tra + sự cố được ghi nhận -> Kết quả cập nhật hồ sơ nhân viên và chất lượng dịch vụ -> Đào tạo/phân công/thăng tiến được điều chỉnh -> Manager cải tiến dịch vụ và duy trì tiêu chuẩn hạng sao
+
+[Vòng lặp chất lượng tour]
+Tour xác định tier và service promise -> Supplier + Guide/Operator phải đạt yêu cầu -> Tour được bán và vận hành -> Incident/feedback/chi phí thực tế được thu thập -> Đánh giá Guide/Operator/Supplier -> Cập nhật eligibility và training -> Cải tiến itinerary, supplier và tier cho tour sau
+
+
+## 15.1. Dashboard quản lý lúc đó nên có 4 góc nhìn
+
+1. Dịch vụ: request đang chờ, SLA, service failure, compensation, utilization, cost.
+2. Nhân viên: competency, eligibility, KPI, QA, complaint/praise, training/certification expiry.
+3. Hạng sao/compliance: tiêu chí chưa đạt, bằng chứng thiếu, certificate sắp hết hạn, audit issue.
+4. Tour: supplier quality, tour incident, guide performance, actual margin, guest feedback, product promise failure.
+
+
+# 16. BỐ CỤC ĐỀ XUẤT ĐỂ BỔ SUNG TRỰC TIẾP VÀO CẨM NANG HIỆN TẠI
+
+Tài liệu hiện tại kết thúc ở phần quản lý nhân viên/phân quyền. Có thể nối tiếp bằng các phần sau mà không phá cấu trúc cũ.
+
+
+Bảng 9. Các chương đề xuất bổ sung
+Phần/Chương    | Tên chương                             | Mục tiêu                              
+---------------+----------------------------------------+---------------------------------------
+PHẦN VI - 32   | Bản chất sản phẩm phòng và giá trị ph… | Tách room type, physical room, featur…
+33             | Danh mục dịch vụ khách sạn             | Dịch vụ nền tảng, included, add-on, o…
+34             | Quyền lợi dịch vụ của booking          | Chốt khách đã mua/được hưởng gì       
+35             | Workflow service request và fulfillme… | Từ yêu cầu -> phân công -> hoàn tất -…
+36             | Kiểm soát giá, quota, capacity và ser… | Không bán quyền lợi không có khả năng…
+PHẦN VII - 37  | Hạng sao khách sạn và phân biệt với r… | Hiểu đúng 1-5 sao                     
+38             | Bộ tiêu chí, bằng chứng và gap analys… | Quản lý compliance theo phiên bản     
+39             | Workflow xin công nhận, duy trì và tá… | Quyết định, thời hạn, audit, correcti…
+PHẦN VIII - 40 | Hồ sơ năng lực nhân viên               | Skill, certification, language, exper…
+41             | Performance scorecard và QA            | KPI + chất lượng + rủi ro + feedback  
+42             | Eligibility và phân công theo độ phức… | Lọc đủ điều kiện trước khi phân tải   
+43             | Mentoring, shadowing và nâng level     | Phát triển nhân viên mới an toàn      
+44             | Điều kiện Supervisor/Manager           | Acting, appraisal, promotion readiness
+PHẦN IX - 45   | Tier và tiêu chuẩn chất lượng tour     | Economy/Standard/Premium/Luxury/Priva…
+46             | Năng lực Guide/Operator và phân công   | Ngôn ngữ, tuyến, safety, group type   
+47             | Supplier quality và service component  | Đánh giá nhà cung cấp theo dịch vụ    
+48             | Post-tour feedback và improvement loop | Feedback -> staff/supplier/product    
+PHẦN X - 49    | Dashboard chất lượng tích hợp          | Hotel service + staff + star + tour   
+50             | Bộ tình huống ngoại lệ và test vận hà… | Kiểm thử các tình huống thực tế       
+
+
+# 17. THỨ TỰ ƯU TIÊN TRIỂN KHAI VỀ MẶT NGHIỆP VỤ
+
+Nếu làm tất cả cùng lúc sẽ rất lớn. Nên đi theo thứ tự tạo giá trị và giảm rủi ro.
+
+
+## Ưu tiên 1 - Hoàn thiện quản lý dịch vụ phòng
+
+- Tạo danh mục dịch vụ và phân nhóm.
+- Xác định dịch vụ nền tảng của property.
+- Gắn quyền lợi theo room type và rate/package.
+- Tạo service request lifecycle.
+- Gắn charge, inventory và service failure.
+
+
+## Ưu tiên 2 - Chốt quyền lợi khách tại booking
+
+Đây là điều kiện để tránh tranh chấp “tôi tưởng phòng này có breakfast/transfer/lounge”. Booking phải có snapshot quyền lợi rõ ràng.
+
+
+## Ưu tiên 3 - Hồ sơ năng lực nhân viên
+
+- Kỹ năng và level.
+- Ngoại ngữ.
+- Chứng chỉ và thời hạn.
+- Kinh nghiệm case/tour.
+- KPI/QA/feedback/lỗi.
+- Eligibility cho Standard/Premium/VIP/complex case.
+
+
+## Ưu tiên 4 - Cơ chế phân công
+
+Bắt đầu từ rule đơn giản: đủ role + đúng ca + skill bắt buộc + không conflict + đủ level. Sau này mới tinh chỉnh cân tải/điểm ưu tiên. Không cần bắt đầu bằng thuật toán phức tạp.
+
+
+## Ưu tiên 5 - Hạng sao và compliance
+
+Tạo checklist theo tiêu chuẩn, evidence, gap, corrective action, certificate/expiry. Đặc biệt phải version hóa vì tiêu chuẩn có thể thay đổi.
+
+
+## Ưu tiên 6 - Tour quality management
+
+Áp dụng cùng tư duy service promise - competency - assignment - feedback cho Guide, Operator, Supplier và từng tier tour.
+
+
+## Ưu tiên 7 - Dashboard và vòng cải tiến
+
+Cuối cùng mới gom dữ liệu để quản lý nhìn được: dịch vụ nào fail, nhân viên nào cần training, room/tour nào “không đáng tiền”, tiêu chí sao nào có nguy cơ, supplier nào kéo chất lượng xuống.
+
+[HƯỚNG ĐI TỔNG THỂ]
+Giữ nguyên “Role + Scope + State + Time + Limit + Approval + Audit” của cẩm nang hiện tại. Bổ sung thêm “Service Promise + Competency + Eligibility + Assignment + Quality Feedback + Compliance”. Khi ghép hai lớp này lại, hệ thống mới vừa an toàn về quyền vừa mạnh về chất lượng phục vụ.
+
+
+# 18. NGUỒN ĐỐI CHIẾU VÀ GHI CHÚ CẬP NHẬT NĂM 2026
+
+Phần trên được xây dựng từ hai nhóm nguồn: tài liệu gốc bạn cung cấp và nghiên cứu đối chiếu bên ngoài. Các nguồn ngoài chỉ dùng để rút ra pattern vận hành, không coi source open-source là chuẩn pháp lý.
+
+
+## 18.1. Tài liệu gốc
+
+- CẨM NANG QUẢN LÝ NHÂN VIÊN, PHÂN QUYỀN VÀ GIÁM SÁT VẬN HÀNH - Trong hệ thống bán vé máy bay, điều hành tour và quản lý khách sạn, phiên bản 1.0 ngày 03/09/2026.
+
+
+## 18.2. Open-source và tài liệu sản phẩm tham khảo
+
+- QloApps User Guide - Manage Room Types: https://docs.qloapps.com/catalog/manage_room_types/
+- QloApps User Guide - Manage Service Products: https://docs.qloapps.com/catalog/manage_service_products/
+- QloApps Catalog: https://docs.qloapps.com/catalog/
+- HotelDruid - Extra Costs: https://www.hoteldruid.com/en/extra_costs.html
+- HotelDruid - Users Management: https://www.hoteldruid.com/en/users_management.html
+- HotelDruid - Inventory Management: https://www.hoteldruid.com/en/inventory
+- OCA Vertical Hotel: https://github.com/OCA/vertical-hotel
+- Frappe HR - Employee Skill Map: https://docs.frappe.io/hr/employee-skill-map
+- Frappe HR - Appraisal: https://docs.frappe.io/hr/appraisal
+- Odoo Planning: https://www.odoo.com/documentation/17.0/applications/services/planning.html
+- Frappe Hospitality: https://docs.frappe.io/erpnext/hospitality
+
+
+## 18.3. Xếp hạng khách sạn và thủ tục hiện hành
+
+- Bộ Văn hóa, Thể thao và Du lịch - thủ tục công nhận hạng cơ sở lưu trú 1-3 sao và 4-5 sao: https://bvhttdl.gov.vn/thu-tuc-hanh-chinh
+- Bộ Văn hóa, Thể thao và Du lịch - tổng hợp quy định hoạt động lữ hành/lưu trú: https://bvhttdl.gov.vn/Pages/chi-tiet.aspx?url=%2Fquy-dinh-cua-phap-luat-ve-hoat-dong-kinh-doanh-dich-vu-lu-hanh-va-luu-tru-du-lich-20241230102536598.htm
+- TCVN 4391:2015 - Khách sạn - Xếp hạng (bản công bố/tra cứu): https://vhttdl.daklak.gov.vn/pdfjs/web/viewer.html?file=%2FUpload%2FImages%2F2-TCVN-4391-2015%281%29.pdf
+- Kế hoạch soát xét TCVN 4391:2015 giai đoạn 2025-2026 - Ủy ban Tiêu chuẩn Đo lường Chất lượng Quốc gia: https://tcvn.gov.vn/wp-content/uploads/2025/09/Bo-VHTTDL.pdf
+
+
+## 18.4. Ghi chú sử dụng
+
+Vì tiêu chuẩn và thủ tục có thể thay đổi theo thời gian, khi đưa phần xếp hạng/compliance vào vận hành thật cần luôn lưu “phiên bản tiêu chuẩn - ngày hiệu lực - cơ quan/nguồn”. Đặc biệt trong năm 2026 có kế hoạch soát xét TCVN 4391:2015, nên hệ thống không nên mặc định bộ tiêu chí hiện tại là bất biến.
+
+
+# KẾT LUẬN CUỐI
+
+Hướng đi lớn không phải thêm thật nhiều màn hình hay thêm thật nhiều quyền. Hướng đi là nối ba câu chuyện thành một vòng khép kín: (1) khách đã mua giá trị và dịch vụ gì; (2) ai đủ năng lực để thực hiện đúng mức chất lượng; (3) kết quả thực tế có quay lại để cải thiện nhân viên, sản phẩm, supplier và tiêu chuẩn khách sạn/tour hay không.
+
+Đối với khách sạn, phần bổ sung quan trọng nhất là quản lý dịch vụ theo lớp và quyền lợi của booking. Đối với nhân sự, phần bổ sung quan trọng nhất là hồ sơ năng lực + thành tích + eligibility chứ không chỉ role và KPI. Đối với hạng sao, cần quản lý như một quy trình compliance có bằng chứng và thời hạn, không coi review hoặc giá phòng là hạng sao. Đối với tour, cần quản lý “lời hứa dịch vụ” và yêu cầu năng lực Guide/Operator tương ứng với từng tier tour.
+
+Khi làm được các phần này, dự án sẽ chuyển từ “hệ thống đặt phòng/đặt tour có phân quyền” thành “hệ thống quản trị vận hành và chất lượng dịch vụ”, đúng với câu chuyện bạn đang muốn đi tới.

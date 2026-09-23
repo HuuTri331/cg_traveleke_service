@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 
 import { AssignRoleDto } from './dto/assign-role.dto';
 import { CreateStaffDto } from './dto/create-staff.dto';
@@ -26,45 +26,45 @@ export class UsersService {
 
   /**
    * Lấy danh sách tất cả nhân viên (ADMIN & EMPLOYEE), không trả về CUSTOMER.
+   * Lọc trực tiếp ở tầng CSDL sử dụng Index `idx_users_role`, tránh scan toàn bộ bảng vào RAM.
    */
   async findAllStaff() {
     const users = await this.usersRepository.find({
+      where: { role: In(['ADMIN', 'EMPLOYEE']) },
       order: { createdAt: 'DESC' },
     });
-    return users
-      .filter((u) => u.role === 'ADMIN' || u.role === 'EMPLOYEE')
-      .map((u) => ({
-        ...u,
-        role: u.role,
-        isEmailVerified: u.isEmailVerified,
-      }));
+    return users.map((u) => ({
+      ...u,
+      role: u.role,
+      isEmailVerified: u.isEmailVerified,
+    }));
   }
 
   /**
    * Lấy danh sách tất cả khách hàng (role = 'CUSTOMER') — ADMIN & EMPLOYEE
+   * Lọc trực tiếp ở tầng CSDL sử dụng Index `idx_users_role`, tối ưu hiệu năng và bộ nhớ.
    */
   async findAllCustomers() {
     const users = await this.usersRepository.find({
+      where: { role: 'CUSTOMER' },
       order: { createdAt: 'DESC' },
     });
-    return users
-      .filter((u) => u.role === 'CUSTOMER')
-      .map((u) => ({
-        id: u.id,
-        fullName: u.fullName,
-        email: u.email,
-        phone: u.phone,
-        address: u.address,
-        gender: u.gender,
-        dateOfBirth: u.dateOfBirth,
-        avatarUrl: u.avatarUrl,
-        role: u.role,
-        status: u.status,
-        isEmailVerified: u.isEmailVerified,
-        lastLoginAt: u.lastLoginAt,
-        createdAt: u.createdAt,
-        updatedAt: u.updatedAt,
-      }));
+    return users.map((u) => ({
+      id: u.id,
+      fullName: u.fullName,
+      email: u.email,
+      phone: u.phone,
+      address: u.address,
+      gender: u.gender,
+      dateOfBirth: u.dateOfBirth,
+      avatarUrl: u.avatarUrl,
+      role: u.role,
+      status: u.status,
+      isEmailVerified: u.isEmailVerified,
+      lastLoginAt: u.lastLoginAt,
+      createdAt: u.createdAt,
+      updatedAt: u.updatedAt,
+    }));
   }
 
   /**

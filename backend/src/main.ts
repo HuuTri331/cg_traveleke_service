@@ -1,3 +1,6 @@
+// 1. KHỞI TẠO OPENTELEMETRY SDK ĐẦU TIÊN (Trước khi NestJS & các thư viện mạng được load)
+import './observability/otel';
+
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
@@ -5,9 +8,16 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import * as path from 'path';
 
 import { AppModule } from './app.module';
+import { ObservabilityLoggerService, logWithTrace } from './observability/observability.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+  });
+
+  // Sử dụng Winston + OpenTelemetry Structured Logger thay thế console mặc định
+  const observabilityLogger = app.get(ObservabilityLoggerService);
+  app.useLogger(observabilityLogger);
 
   const configService = app.get(ConfigService);
 
@@ -39,7 +49,11 @@ async function bootstrap() {
 
   await app.listen(port);
 
-  console.log(`API running at http://localhost:${port}/api`);
+  logWithTrace('info', `Traveleke API running at http://localhost:${port}/api`, {
+    port,
+    prefix: '/api',
+  });
 }
+
 
 void bootstrap();

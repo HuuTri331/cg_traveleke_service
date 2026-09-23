@@ -49,9 +49,10 @@
 // })
 // export class AppModule {}
 
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -66,6 +67,13 @@ import { MailModule } from './mail/mail.module';
 
 import { HotelStaffModule } from './hotel-staff/hotel-staff.module';
 import { ServicesModule } from './services/services.module';
+import { AuditModule } from './audit/audit.module';
+import { UserContextMiddleware } from './audit/user-context.middleware';
+import { UserContextInterceptor } from './audit/user-context.interceptor';
+import { RedisModule } from './redis/redis.module';
+import { RateLimitModule } from './rate-limit/rate-limit.module';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { ObservabilityModule, LoggingInterceptor } from './observability/observability.module';
 
 @Module({
   imports: [
@@ -120,21 +128,20 @@ import { ServicesModule } from './services/services.module';
     // ============================================================
     // MODULES
     // ============================================================
+    AuditModule,
     HealthModule,
     AuthModule,
     UsersModule,
-
     HotelsModule,
-
     RoomsModule,
-
     BookingsModule,
-
     HotelStaffModule,
-
     ServicesModule,
-
     MailModule,
+    RedisModule,
+    RateLimitModule,
+    AnalyticsModule,
+    ObservabilityModule,
   ],
 
   controllers: [
@@ -143,6 +150,20 @@ import { ServicesModule } from './services/services.module';
 
   providers: [
     AppService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: LoggingInterceptor,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: UserContextInterceptor,
+    },
   ],
+
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    // Áp dụng UserContextMiddleware thiết lập AsyncLocalStorage context cho toàn bộ routes
+    consumer.apply(UserContextMiddleware).forRoutes('*');
+  }
+}

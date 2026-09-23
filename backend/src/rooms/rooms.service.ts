@@ -18,6 +18,7 @@ import { Room, RoomStatus } from './entities/room.entity';
 import { SearchRoomDto } from './dto/search-room.dto';
 import { RoomServiceAssignment } from './entities/room-service-assignment.entity';
 import { RoomService } from '../services/entities/room-service.entity';
+import { normalizePagination, buildPaginationMeta } from '../common/pagination';
 
 export const MAX_ROOM_IMAGES = 5;
 
@@ -115,8 +116,7 @@ export class RoomsService {
   }
 
   async findAll(query: QueryRoomDto) {
-    const page = query.page ?? 1;
-    const perPage = query.perPage ?? 20;
+    const { page, limit, skip, perPage } = normalizePagination(query, 20, 100);
 
     const qb = this.roomsRepository
       .createQueryBuilder('room')
@@ -163,35 +163,34 @@ export class RoomsService {
       });
     }
 
-    qb.skip((page - 1) * perPage).take(perPage);
+    qb.skip(skip).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
 
     return {
       data,
-      meta: {
+      meta: buildPaginationMeta({
         page,
-        perPage,
+        limit,
         total,
-        totalPages: Math.ceil(total / perPage),
-      },
+        dataLength: data.length,
+      }),
     };
   }
 
   async search(query: SearchRoomDto) {
-  const {
-    keyword,
-    hotelId,
-    minPrice,
-    maxPrice,
-    maxAdults,
-    maxChildren,
-    bedType,
-    minRating,
-    status,
-    page = 1,
-    limit = 12,
-  } = query;
+    const { page, limit, skip, perPage } = normalizePagination(query, 12, 100);
+    const {
+      keyword,
+      hotelId,
+      minPrice,
+      maxPrice,
+      maxAdults,
+      maxChildren,
+      bedType,
+      minRating,
+      status,
+    } = query;
 
   // ============================================================
   // KIỂM TRA KHOẢNG GIÁ
@@ -333,7 +332,7 @@ export class RoomsService {
   // PHÂN TRANG
   // ============================================================
 
-  qb.skip((page - 1) * limit).take(limit);
+  qb.skip(skip).take(limit);
 
   // ============================================================
   // THỰC THI QUERY
@@ -343,13 +342,12 @@ export class RoomsService {
 
   return {
     data,
-
-    meta: {
+    meta: buildPaginationMeta({
       page,
       limit,
       total,
-      totalPages: Math.ceil(total / limit),
-    },
+      dataLength: data.length,
+    }),
   };
 }
 

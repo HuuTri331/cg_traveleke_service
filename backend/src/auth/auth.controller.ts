@@ -30,6 +30,8 @@ import { ValidateEmailDto } from './dto/validate-email.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../users/entities/user.entity';
+import { RateLimiterGuard } from '../rate-limit/rate-limiter.guard';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 
 const avatarMulterOptions = {
   storage: diskStorage({
@@ -54,6 +56,7 @@ const avatarMulterOptions = {
 };
 
 @Controller('auth')
+@UseGuards(RateLimiterGuard)
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
@@ -82,6 +85,12 @@ export class AuthController {
    */
   @Post('validate-email')
   @HttpCode(HttpStatus.OK)
+  @RateLimit({
+    slidingWindow: {
+      limit: 15,
+      windowMs: 60_000,
+    },
+  })
   async validateEmail(@Body() dto: ValidateEmailDto, @Req() req: Request) {
     const clientIp = this.getClientIp(req);
     await this.emailSecurityService.validateEmail(dto.email, clientIp);
@@ -96,9 +105,16 @@ export class AuthController {
    * POST /api/auth/register
    * Đăng ký tài khoản khách hàng mới (có thể upload avatar).
    * Kiểm tra nghiêm ngặt email tồn tại & không tục tĩu trước khi xử lý.
+   * Tầng 1: Sliding Window chống spam tạo account hàng loạt (tối đa 5 req/phút/IP).
    */
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
+  @RateLimit({
+    slidingWindow: {
+      limit: 5,
+      windowMs: 60_000,
+    },
+  })
   @UseInterceptors(FileInterceptor('avatar', avatarMulterOptions))
   async register(
     @Body() dto: RegisterDto,
@@ -150,9 +166,16 @@ export class AuthController {
   /**
    * POST /api/auth/resend-verification
    * Gửi lại liên kết xác thực tới Gmail của khách hàng
+   * Giới hạn tối đa 3 lần/phút/IP để tránh spam cạn quota mail service.
    */
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
+  @RateLimit({
+    slidingWindow: {
+      limit: 3,
+      windowMs: 60_000,
+    },
+  })
   async resendVerification(@Body() dto: ResendVerificationDto, @Req() req: Request) {
     const clientIp = this.getClientIp(req);
     // Kiểm tra lockout trước khi cho phép gửi lại
@@ -165,9 +188,16 @@ export class AuthController {
   /**
    * POST /api/auth/login
    * Đăng nhập và nhận JWT token (yêu cầu email đã được xác thực).
+   * Tầng 1: Giới hạn tối đa 10 lần thử/phút/IP chống tấn công vét cạn mật khẩu (Brute-force).
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @RateLimit({
+    slidingWindow: {
+      limit: 10,
+      windowMs: 60_000,
+    },
+  })
   async login(@Body() dto: LoginDto) {
     const token = await this.authService.login(dto);
     return {
@@ -176,6 +206,7 @@ export class AuthController {
       data: token,
     };
   }
+
 
   /**
    * GET /api/auth/me

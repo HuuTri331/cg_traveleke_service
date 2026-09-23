@@ -22,6 +22,8 @@ import { QueryBookingDto } from './dto/query-booking.dto';
 import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
 import { ReassignStaffDto } from './dto/reassign-staff.dto';
 import { BookingsService } from './bookings.service';
+import { RateLimiterGuard } from '../rate-limit/rate-limiter.guard';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 
 @Controller('bookings')
 export class BookingsController {
@@ -31,9 +33,21 @@ export class BookingsController {
 
   // ================================
   // TẠO BOOKING (Khách hàng đăng nhập)
+  // Tầng 1 (IP): Tối đa 30 request/phút
+  // Tầng 2 (User): Token bucket capacity 10, refillRate 0.5 token/s
   // ================================
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RateLimiterGuard)
+  @RateLimit({
+    slidingWindow: {
+      limit: 30,
+      windowMs: 60_000,
+    },
+    tokenBucket: {
+      capacity: 10,
+      refillRate: 0.5,
+    },
+  })
   create(
     @Body() dto: CreateBookingDto,
   ) {

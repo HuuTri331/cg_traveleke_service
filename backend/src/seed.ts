@@ -124,6 +124,29 @@ async function seed() {
   `);
   console.log('Created or verified room_images table successfully.');
 
+  // 5.1. Create table audit_logs if not exists
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      entity_name     VARCHAR(100) NOT NULL,
+      entity_id       VARCHAR(100) NOT NULL,
+      action          VARCHAR(20) NOT NULL,
+      old_values      JSON NULL,
+      new_values      JSON NULL,
+      performed_by    VARCHAR(100) NULL DEFAULT 'SYSTEM',
+      ip_address      VARCHAR(45) NULL,
+      user_agent      VARCHAR(255) NULL,
+      request_id      VARCHAR(100) NULL,
+      created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT pk_audit_logs PRIMARY KEY (id),
+      INDEX idx_audit_entity (entity_name, entity_id),
+      INDEX idx_audit_action (action),
+      INDEX idx_audit_performed_by (performed_by),
+      INDEX idx_audit_created_at (created_at)
+    ) ENGINE=InnoDB;
+  `);
+  console.log('Created or verified audit_logs table successfully.');
+
   // 6. Seed Admin & Employee accounts
   const bcrypt = await import('bcrypt');
   const passwordHash = await bcrypt.hash('123456789', 12);

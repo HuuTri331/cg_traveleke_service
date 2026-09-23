@@ -26,8 +26,11 @@ import { SearchHotelDto } from './dto/search-hotel.dto';
 
 import { HotelsService } from './hotels.service';
 import { createMulterOptions } from './upload-image.config';
+import { RateLimiterGuard } from '../rate-limit/rate-limiter.guard';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 
 @Controller('hotels')
+@UseGuards(RateLimiterGuard)
 export class HotelsController {
   constructor(private readonly hotelsService: HotelsService) {}
 
@@ -48,6 +51,12 @@ export class HotelsController {
   }
 
   @Get('search')
+  @RateLimit({
+    slidingWindow: {
+      limit: 120,
+      windowMs: 60_000,
+    },
+  })
   search(@Query() query: SearchHotelDto) {
     return this.hotelsService.search(query);
   }
@@ -79,6 +88,12 @@ export class HotelsController {
   @Post(':id/images/upload')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
+  @RateLimit({
+    slidingWindow: {
+      limit: 20,
+      windowMs: 60_000,
+    },
+  })
   @UseInterceptors(AnyFilesInterceptor(createMulterOptions('hotels')))
   uploadImages(
     @Param('id') id: string,

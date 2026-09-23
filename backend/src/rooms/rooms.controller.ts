@@ -26,8 +26,11 @@ import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomsService } from './rooms.service';
 
 import { SearchRoomDto } from './dto/search-room.dto';
+import { RateLimiterGuard } from '../rate-limit/rate-limiter.guard';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 
 @Controller('rooms')
+@UseGuards(RateLimiterGuard)
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
 
@@ -48,6 +51,12 @@ export class RoomsController {
   }
 
   @Get('search')
+  @RateLimit({
+    slidingWindow: {
+      limit: 120,
+      windowMs: 60_000,
+    },
+  })
   search(@Query() query: SearchRoomDto) {
     return this.roomsService.search(query);
   }
@@ -84,6 +93,12 @@ export class RoomsController {
   @Post(':id/images/upload')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
+  @RateLimit({
+    slidingWindow: {
+      limit: 20,
+      windowMs: 60_000,
+    },
+  })
   @UseInterceptors(AnyFilesInterceptor(createMulterOptions('rooms')))
   uploadImages(
     @Param('id') id: string,

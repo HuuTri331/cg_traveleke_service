@@ -1,14 +1,20 @@
-import { IsOptional, IsString, IsNumberString, IsEnum } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsOptional, IsString, IsNumberString, IsEnum, IsInt, Min, Max } from 'class-validator';
 import { BookingStatus } from '../entities/booking.entity';
 
 export class QueryBookingDto {
   @IsOptional()
-  @IsNumberString({}, { message: 'Trang phải là số.' })
-  page?: number;
+  @Type(() => Number)
+  @IsInt({ message: 'Số trang (page) phải là số nguyên.' })
+  @Min(1, { message: 'Số trang (page) tối thiểu là 1.' })
+  page?: number = 1;
 
   @IsOptional()
-  @IsNumberString({}, { message: 'Số lượng mỗi trang phải là số.' })
-  perPage?: number;
+  @Type(() => Number)
+  @IsInt({ message: 'Số lượng mỗi trang (perPage) phải là số nguyên.' })
+  @Min(1, { message: 'Số lượng mỗi trang (perPage) tối thiểu là 1.' })
+  @Max(100, { message: 'Số lượng mỗi trang (perPage) tối đa là 100.' })
+  perPage?: number = 20;
 
   @IsOptional()
   @IsString()

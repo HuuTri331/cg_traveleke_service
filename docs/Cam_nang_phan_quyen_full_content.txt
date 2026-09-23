@@ -1,0 +1,3429 @@
+CẨM NANG
+
+QUẢN LÝ NHÂN VIÊN, PHÂN QUYỀN VÀ GIÁM SÁT VẬN HÀNH
+
+Trong hệ thống bán vé máy bay, điều hành tour và quản lý khách sạn
+
+Đối chiếu từ các nền tảng mã nguồn mở, chuẩn nghiệp vụ ngành du lịch và các nguyên tắc kiểm soát truy cập hiện đại. Tài liệu tập trung vào ý nghĩa vận hành, vai trò con người, workflow, phạm vi dữ liệu, phê duyệt và giám sát; không đi vào giải thích mã nguồn.
+
+Phiên bản | 1.0
+
+Ngày biên soạn | 03/09/2026
+
+Phạm vi | Đại lý vé máy bay, công ty tour, khách sạn/PMS
+
+Đối tượng sử dụng | Chủ doanh nghiệp, quản lý vận hành, BA/PO, quản trị hệ thống, kiểm soát nội bộ
+
+TÓM TẮT ĐIỀU HÀNH
+
+Mô hình nhân viên bán vé máy bay, điều hành tour và khách sạn không thể chỉ sao chép mô hình nhân viên sales trong e-commerce. Ba ngành cùng cần vai trò và quyền, nhưng đối tượng giao dịch, trạng thái dịch vụ, thời hạn, phạm vi địa điểm, trách nhiệm tài chính và mức độ rủi ro hoàn toàn khác nhau.
+
+CÔNG THỨC LÕI Một quyết định phân quyền đúng phải trả lời: nhân viên nào - thuộc bộ phận nào - đang làm ca nào - tại chi nhánh, sân bay hoặc khách sạn nào - được thực hiện nghiệp vụ gì - trên booking nào - ở trạng thái nào - trước hay sau thời hạn nào - với số tiền bao nhiêu - và có cần người khác duyệt hay không.
+
+Tài liệu này trình bày đầy đủ cơ cấu nhân sự, công dụng của từng vị trí, quyền nên có, quyền không nên có, cách cấp trên giám sát, các workflow từ đầu đến cuối, ma trận quyền mẫu, KPI, kiểm soát ngoại lệ và cách vận dụng nguồn mở như QloApps, HotelDruid, OCA Vertical Hotel, pretix, TravelTrek cùng các chuẩn IATA NDC, ONE Order và BSP.
+
+MỤC LỤC
+
+Mục lục tĩnh có số trang; các tiêu đề trong tài liệu đồng thời sử dụng Heading Styles để tra cứu bằng Navigation Pane của Microsoft Word.
+
+Nội dung | Trang
+
+PHẦN I. KHUNG TƯ DUY VÀ BỐI CẢNH NGUỒN MỞ | 5
+
+1. Kết luận nền tảng | 5
+
+2. Bức tranh mã nguồn mở tiêu biểu | 5
+
+3. So sánh ba mô hình vận hành | 6
+
+PHẦN II. NHÂN VIÊN BÁN VÉ MÁY BAY VÀ ĐẠI LÝ DU LỊCH | 8
+
+4. Các đối tượng phải tách rõ trong hệ thống vé máy bay | 8
+
+5. Các vai trò nhân viên bán vé máy bay | 9
+
+6. Workflow bán vé máy bay hoàn chỉnh | 14
+
+7. Công thức phân quyền dành cho vé máy bay | 16
+
+8. Ma trận quyền mẫu cho đại lý vé máy bay | 16
+
+9. Cách cấp trên quản lý và giám sát đội bán vé máy bay | 18
+
+PHẦN III. NHÂN VIÊN ĐẶT TOUR VÀ ĐIỀU HÀNH DU LỊCH | 20
+
+10. Các bộ phận chính trong công ty tour | 20
+
+11. Workflow tour hoàn chỉnh | 22
+
+12. Ma trận quyền mẫu cho công ty tour | 24
+
+13. Cách cấp trên giám sát hoạt động tour | 25
+
+PHẦN IV. QUẢN LÝ KHÁCH SẠN, LỄ TÂN VÀ ĐẶT PHÒNG | 27
+
+14. Các đối tượng phải tách rõ trong hệ thống khách sạn | 27
+
+15. Các vai trò nhân viên khách sạn | 28
+
+16. Workflow đặt phòng và lưu trú hoàn chỉnh | 34
+
+17. Công thức phân quyền dành cho khách sạn | 36
+
+18. Ma trận quyền mẫu cho khách sạn | 37
+
+19. Cách cấp trên quản lý và theo dõi nhân viên khách sạn | 39
+
+20. KPI theo vị trí trong khách sạn | 40
+
+PHẦN V. MÔ HÌNH TỔ CHỨC, NGUYÊN TẮC KIỂM SOÁT VÀ TRIỂN KHAI | 43
+
+21. Mô hình tổ chức minh họa cho đại lý du lịch 40 người | 43
+
+22. Mô hình tổ chức minh họa cho khách sạn 40 người | 43
+
+23. Các lớp cấu thành một hồ sơ nhân viên hoàn chỉnh | 44
+
+24. Những nguyên tắc bắt buộc dùng cho cả hai ngành | 45
+
+25. Vòng đời tài khoản nhân viên | 47
+
+26. Cách quản lý nhân viên theo ngày, tuần và tháng | 48
+
+27. Mô hình dashboard dành cho cấp quản lý | 49
+
+28. Đối chiếu các source và chuẩn tiêu biểu | 51
+
+29. Bộ câu hỏi thiết kế phân quyền | 52
+
+30. Bộ kiểm thử phân quyền trước khi go-live | 52
+
+31. Bản chất cuối cùng của việc quản lý các nhân viên này | 53
+
+PHẦN I. KHUNG TƯ DUY VÀ BỐI CẢNH NGUỒN MỞ
+
+1. Kết luận nền tảng
+
+Mô hình nhân viên bán vé máy bay, nhân viên điều hành tour và nhân viên khách sạn không thể chỉ sao chép nguyên xi mô hình nhân viên sales trong e-commerce. Trong e-commerce thông thường, đối tượng trung tâm là sản phẩm, giỏ hàng, đơn hàng, thanh toán và giao hàng. Trong ngành du lịch, đối tượng trung tâm thay đổi theo từng mô hình:
+
+Vé máy bay: nhu cầu hành trình, báo giá hoặc offer, giữ chỗ, PNR hoặc Order, thanh toán, xuất vé, phục vụ chuyến bay, đổi, hoàn và đối soát.
+
+Tour: sản phẩm tour, booking, deposit, xác nhận supplier, manifest, vận hành tour, chi phí phát sinh, đối soát và commission.
+
+Khách sạn: loại phòng và đêm phòng, reservation, phân phòng vật lý, check-in, stay, folio, dịch vụ phát sinh, check-out, housekeeping và night audit.
+
+CÔNG THỨC LÕI Hệ thống phải kiểm tra đồng thời: nhân viên nào - thuộc bộ phận nào - đang làm ca nào - tại chi nhánh, sân bay hoặc khách sạn nào - được thực hiện nghiệp vụ gì - trên booking nào - ở trạng thái nào - trước hay sau thời hạn nào - với số tiền bao nhiêu - và có cần người khác duyệt hay không.
+
+Điểm quan trọng nhất là phân quyền không chỉ là cho phép hoặc cấm một menu. Nó là cơ chế quyết định xem một người có được làm một hành động cụ thể lên một đối tượng cụ thể trong một bối cảnh cụ thể hay không.
+
+2. Bức tranh mã nguồn mở tiêu biểu
+
+2.1. Nhóm quản lý khách sạn
+
+QloApps có hồ sơ nhân viên, profile hoặc role như SuperAdmin, Manager và các profile tùy chỉnh; quyền theo khách sạn; quyền View, Add, Edit, Delete hoặc All trên từng khu vực; quản lý đặt phòng, đơn phòng, khách hàng, hoàn tiền, channel manager, kho, thống kê và cấu hình. Tài liệu cho phép giới hạn nhân viên theo từng khách sạn và từng chức năng trong back office. Đây là lớp quyền chức năng tốt, nhưng doanh nghiệp lớn vẫn cần bổ sung hạn mức tiền, trạng thái nghiệp vụ, ca làm việc và quy trình phê duyệt. Nguồn: QloApps Permissions.
+
+HotelDruid là ví dụ đáng chú ý về phân quyền theo ngữ cảnh. Quản trị viên có thể xác định nhân viên được tạo reservation hay không; được dùng phòng nào; được thao tác trong khoảng thời gian nào; được sử dụng loại giá, chi phí phát sinh hoặc discount nào; được sửa hoặc hủy booking trong bao lâu; chỉ được thấy booking do mình tạo hay được thấy toàn bộ; và có thể giới hạn nhân viên chỉ được thêm một loại chi phí cụ thể. Đây là mô hình kết hợp role, room scope, period scope, ownership và time window. Nguồn: HotelDruid Users Management.
+
+OCA Vertical Hotel trên Odoo chia nghiệp vụ thành các module quản lý folio, cấu hình khách sạn, reservation, housekeeping, nhà hàng và báo cáo. Cách chia module này phản ánh đúng thực tế rằng đặt phòng, lưu trú, dọn phòng và nhà hàng liên quan chặt chẽ nhưng không nên để một bộ phận toàn quyền trên mọi dữ liệu. Nguồn: OCA Vertical Hotel.
+
+2.2. Nhóm ticketing và đặt tour
+
+pretix là hệ thống ticketing sự kiện, không phải hệ thống đặt vé máy bay. Tuy vậy, cách quản lý quyền của pretix rất hữu ích:
+
+Nhân viên được tổ chức thành nhiều team.
+
+Mỗi team có quyền khác nhau.
+
+Team có thể chỉ truy cập một số event.
+
+API token thừa hưởng quyền của team.
+
+Có thể bắt buộc xác thực hai lớp.
+
+Thiết bị bán vé hoặc quét vé có security profile riêng.
+
+Thiết bị có thể bị giới hạn vào event, gate hoặc check-in list cụ thể.
+
+Điểm học được là một thiết bị check-in không được mặc nhiên có quyền chỉnh sản phẩm, giá hoặc cấu hình hệ thống. Nguồn: pretix Teams và pretix Device Authorization.
+
+TravelTrek là ví dụ về source kết hợp tour, khách sạn, chuyến bay và thanh toán. Source có staff role ADMIN hoặc AGENT, ghi nhận nhân viên thực hiện booking hộ khách, xử lý yêu cầu hoàn tiền, hàng đợi cần chú ý và tự động hủy booking chưa thanh toán khi quá hạn. Tuy nhiên, chỉ hai role ADMIN và AGENT là quá thô cho một tổ chức có vài chục nhân viên thực tế. Nguồn: TravelTrek.
+
+2.3. Nhóm source vé máy bay
+
+Các repository mã nguồn mở về airline reservation system được công khai phần lớn là dự án mô phỏng, bài tập đại học hoặc demo full-stack; chúng chưa thể được xem là Passenger Service System hoặc GDS hoàn chỉnh đủ để một đại lý vé máy bay lớn đưa thẳng vào sản xuất. Một số source có customer, booking agent, airline staff, booking, commission, flight administration và báo cáo, nhưng nên sử dụng để học mô hình dữ liệu hơn là làm chuẩn nghiệp vụ hàng không. Ví dụ: Airline Reservation System Demo.
+
+Vì vậy, mô hình nghiệp vụ vé máy bay nên được tổng hợp thêm từ các chuẩn và quy trình chính thức:
+
+IATA NDC: chuẩn mở cho trao đổi dữ liệu giữa hãng hàng không và travel seller. Nguồn: IATA NDC Developer Portal.
+
+IATA ONE Order: hướng tới hợp nhất PNR, e-ticket và EMD thành một Order tích hợp xuyên suốt đặt chỗ, cung ứng dịch vụ và kế toán. Nguồn: IATA ONE Order.
+
+IATA BSP: cơ chế tập trung bán, hoàn, báo cáo, billing và remittance giữa đại lý và hãng tham gia. Nguồn: BSP Manual for Agents.
+
+CẢNH BÁO Mã nguồn mở không đồng nghĩa với việc source đã đủ tiêu chuẩn vận hành hàng không hoặc khách sạn ở quy mô lớn. Source là vật liệu tham khảo; chính sách phân quyền, workflow, kiểm soát tài chính và trách nhiệm pháp lý vẫn phải được thiết kế theo tổ chức thực tế.
+
+3. So sánh ba mô hình vận hành
+
+Bảng 1. So sánh e-commerce, vé máy bay và khách sạn
+
+Thành phần | E-commerce | Vé máy bay hoặc đại lý du lịch | Khách sạn
+
+Tài nguyên bán | SKU và số lượng hàng | Ghế trên từng chặng, hạng đặt chỗ, điều kiện giá | Loại phòng theo từng đêm và phòng vật lý
+
+Đối tượng giao dịch | Order | PNR hoặc Order, ticket, coupon, EMD | Reservation, stay, room assignment, folio
+
+Vai trò của thời gian | Quan trọng nhưng thường linh hoạt hơn | Cực kỳ nghiêm ngặt: time limit, giờ bay, thời hạn đổi, void và refund | Check-in, check-out, ca làm, ngày kinh doanh
+
+Tính mất giá của tồn kho | Có thể nhập bổ sung | Ghế của chuyến đã bay mất giá trị hoàn toàn | Đêm phòng đã trôi qua không thể bán lại
+
+Nhân viên bán | Tạo và chốt đơn | Tư vấn hành trình, giữ chỗ, xuất vé, đổi và hoàn | Nhận booking, thu cọc, phân phòng, check-in
+
+Nhân viên thực hiện dịch vụ | Kho và giao vận | Check-in, gate, disruption support | Reception, housekeeping, concierge, maintenance
+
+Rủi ro chính | Sai giá, hoàn tiền, mất dữ liệu khách | Sai tên, sai hành trình, ADM, sai refund, mất quyền ticketing | Overbooking, giao sai phòng, sai giá, thất thoát tiền, phòng chưa sạch
+
+Phạm vi quyền | Store, channel, territory | Office, IATA location, hãng, thị trường, route, queue | Property, tòa nhà, tầng, phòng, bộ phận, ca
+
+Trạng thái quan trọng | Draft, paid, fulfilled, refunded | Held, ticketed, checked-in, flown, exchanged, refunded | Reserved, assigned, checked-in, checked-out, clean, dirty, inspected
+
+Quyền đặc biệt | Discount, refund | Ticketing authority, reissue, refund, fare override | Rate override, overbooking, room move, night audit
+
+Điểm chung là cả ba mô hình đều cần Role-Based Access Control. Tuy nhiên, vé máy bay và khách sạn còn cần rất nhiều điều kiện dựa trên thuộc tính và quan hệ:
+
+Thuộc tính của nhân viên.
+
+Thuộc tính của booking.
+
+Mối quan hệ giữa nhân viên và booking.
+
+Địa điểm.
+
+Ca làm.
+
+Thời gian.
+
+Trạng thái dịch vụ.
+
+Giá trị giao dịch.
+
+Quyền phê duyệt.
+
+OWASP khuyến nghị áp dụng least privilege, deny by default, kiểm tra quyền trên mọi request và không chỉ dựa vào role đơn thuần. Nguồn: OWASP Authorization Cheat Sheet.
+
+PHẦN II. NHÂN VIÊN BÁN VÉ MÁY BAY VÀ ĐẠI LÝ DU LỊCH
+
+4. Các đối tượng phải tách rõ trong hệ thống vé máy bay
+
+4.1. Yêu cầu hành trình
+
+Yêu cầu hành trình là nhu cầu ban đầu của khách, gồm điểm đi, điểm đến, ngày đi và về, số hành khách, người lớn, trẻ em, em bé, hành lý, hạng ghế, điều kiện thay đổi, ngân sách và các yêu cầu đặc biệt như suất ăn, xe lăn hoặc hỗ trợ. Yêu cầu hành trình chưa phải booking.
+
+4.2. Offer hoặc báo giá
+
+Offer chứa chuyến bay, giá, thuế và phí, hành lý, điều kiện đổi, điều kiện hoàn, thời hạn giá, thời gian nối chuyến và dịch vụ bổ sung. Một offer có thể hết hiệu lực rất nhanh. Nhân viên không nên gửi cho khách một ảnh chụp giá mà không có timestamp và điều kiện.
+
+4.3. PNR hoặc Order
+
+Trong mô hình truyền thống, PNR là bản ghi đặt chỗ. Trong airline retailing hiện đại, Order trở thành đối tượng trung tâm hơn. Một PNR hoặc Order có thể chứa:
+
+Hành khách.
+
+Chặng bay.
+
+Liên hệ.
+
+Giá.
+
+Dịch vụ bổ sung.
+
+Lịch sử thay đổi.
+
+Ticketing time limit.
+
+Người hoặc office tạo.
+
+Nguồn phân phối.
+
+Ghi chú nghiệp vụ.
+
+4.4. Ticket
+
+Booking và ticket không phải một. Có booking nhưng chưa xuất vé thì khách có thể chỉ đang được giữ chỗ. Ticket thể hiện quyền vận chuyển đã được phát hành và gắn với giá trị tài chính.
+
+4.5. Coupon
+
+Một ticket có thể chứa quyền sử dụng cho từng chặng. Từng coupon có thể ở trạng thái Open, Checked-in, Flown hoặc Used, Exchanged, Refunded, Void hoặc Suspended. Vì vậy không thể cho nhân viên đổi hoặc hoàn toàn bộ ticket mà không kiểm tra từng chặng đã được sử dụng hay chưa.
+
+4.6. EMD hoặc chứng từ dịch vụ bổ sung
+
+Dịch vụ bổ sung có thể gồm hành lý trả trước, chọn ghế, suất ăn, phòng chờ, phí đổi và dịch vụ đặc biệt. Nhân viên được phép bán vé chưa chắc đã được phép tự ý phát hành, void hoặc refund mọi dịch vụ bổ sung.
+
+4.7. Payment và settlement
+
+Hệ thống phải phân biệt rõ:
+
+Khách đã trả tiền cho đại lý.
+
+Hãng đã nhận tiền.
+
+Ticket đã được phát hành.
+
+Giao dịch đã được báo cáo.
+
+Khoản tiền đã được đối soát.
+
+Khoản tiền đã đến kỳ remittance.
+
+Refund đã được hãng chấp thuận.
+
+Refund đã thực sự trả về khách.
+
+Trong BSP, việc được công nhận là đại lý không tự động có nghĩa được xuất vé cho mọi hãng; hãng phải cấp ticketing authority riêng. Điều này dẫn đến nguyên tắc thiết kế bắt buộc:
+
+NGUYÊN TẮC Quyền tạo booking và quyền xuất ticket phải là hai quyền khác nhau. Quyền issue ticket còn phải bị giới hạn theo hãng, office, phương thức thanh toán, trạng thái tài chính và hạn mức giao dịch.
+
+5. Các vai trò nhân viên bán vé máy bay
+
+5.1. Reservation hoặc Sales Agent
+
+Công dụng
+
+Reservation hoặc Sales Agent là đầu mối làm việc với khách. Người này tiếp nhận yêu cầu, tìm chuyến, tư vấn hành trình, giải thích điều kiện giá, gửi báo giá, thu thập thông tin hành khách, tạo booking giữ chỗ, theo dõi time limit, yêu cầu khách thanh toán và bàn giao cho bộ phận ticketing khi đủ điều kiện.
+
+Nên được phép
+
+Search availability và offer.
+
+Xem fare rule ở mức cần thiết để tư vấn.
+
+Tạo PNR hoặc Order.
+
+Thêm hành khách và thông tin liên hệ.
+
+Thêm yêu cầu dịch vụ.
+
+Ghi chú trao đổi.
+
+Gửi itinerary và payment request.
+
+Xem trạng thái ticket và payment.
+
+Hủy booking chưa ticket trong phạm vi chính sách.
+
+Chuyển booking sang ticketing queue.
+
+Không nên mặc nhiên được phép
+
+Xuất ticket.
+
+Thay đổi payment thành đã thanh toán bằng tay.
+
+Override giá, thuế hoặc penalty.
+
+Đổi tên hành khách sau khi ticketed.
+
+Reissue.
+
+Refund.
+
+Sửa commission sau giao dịch.
+
+Truy cập booking không liên quan.
+
+Export toàn bộ danh sách hành khách.
+
+Quản lý user hoặc ticketing authority.
+
+Cách giám sát
+
+Tốc độ phản hồi yêu cầu.
+
+Tỷ lệ báo giá thành booking.
+
+Tỷ lệ booking thành ticket.
+
+Booking hết time limit do bỏ quên.
+
+Tỷ lệ sai tên, sai ngày, sai hành trình.
+
+Số lần khách phải liên hệ lại vì tư vấn thiếu.
+
+Tỷ lệ booking hủy.
+
+Doanh thu và lợi nhuận.
+
+Chất lượng dữ liệu hành khách.
+
+Tỷ lệ khiếu nại.
+
+Một nhân viên tạo nhiều booking nhưng để hàng loạt booking hết hạn không phải là nhân viên có hiệu suất tốt.
+
+5.2. Ticketing Agent
+
+Công dụng
+
+Ticketing Agent kiểm tra giao dịch trước khi phát hành chứng từ có giá trị. Người này phải xác minh hành khách, chặng bay, fare basis, rule, thuế, payment, ticketing authority, time limit và phương thức thanh toán.
+
+Nên được phép
+
+Mở booking do sales chuyển sang.
+
+Kiểm tra và xác nhận dữ liệu.
+
+Issue ticket trong phạm vi hãng và office được cấp.
+
+Issue EMD theo loại dịch vụ được phép.
+
+Void trong thời hạn và điều kiện cho phép.
+
+Từ chối xuất vé và trả booking về sales kèm lý do.
+
+Ghi số ticket, payment reference và người thực hiện.
+
+Xem queue cần xuất vé.
+
+Không nên mặc nhiên được phép
+
+Tự sửa giá để ticket được phát hành.
+
+Tự đánh dấu payment đã nhận.
+
+Xuất vé cho hãng không có authority.
+
+Dùng hình thức thanh toán mà office không được phép dùng.
+
+Refund toàn bộ.
+
+Tự duyệt transaction vượt hạn mức.
+
+Sửa booking sau phát hành bằng chức năng edit thông thường.
+
+Chỉ số giám sát
+
+Số ticket đã issue.
+
+Tỷ lệ ticketing error.
+
+Số debit memo hoặc sai lệch.
+
+Số vé phải void ngay sau issue.
+
+Số transaction bị trả lại cho sales.
+
+Số ticket phát hành sát time limit.
+
+Số lần override.
+
+Sai payment method.
+
+Sai tax hoặc fare.
+
+Thời gian xử lý queue.
+
+5.3. Reissue hoặc Exchange Agent
+
+Công dụng
+
+Nhân viên này xử lý đổi ngày, đổi chuyến, đổi route, tính chênh lệch giá, tính phí đổi, xử lý giá trị còn lại, phát hành ticket mới thay ticket cũ và điều chỉnh dịch vụ bổ sung.
+
+Vì sao phải là quyền riêng
+
+Sau khi ticket đã issue, thay đổi không còn là sửa một booking nháp. Nghiệp vụ có thể tạo chứng từ mới, số tiền phải thu thêm, khoản tiền còn thừa, penalty, tax adjustment, lịch sử exchange và liên kết giữa ticket cũ với ticket mới.
+
+Quyền phù hợp
+
+Xem toàn bộ lịch sử ticket trong case được giao.
+
+Kiểm tra coupon status.
+
+Tính lại fare.
+
+Tạo bản nháp exchange.
+
+Thu bổ sung hoặc tạo yêu cầu thu.
+
+Reissue sau khi thỏa điều kiện.
+
+Gửi xác nhận thay đổi cho khách.
+
+Hạn chế
+
+Không được bỏ phí đổi nếu không có quyền waive.
+
+Không được tự sửa exchange rate.
+
+Không được đổi ticket đã hoàn hoặc đã sử dụng trái điều kiện.
+
+Transaction giá trị lớn phải được supervisor duyệt.
+
+Việc waive penalty phải có reason code.
+
+5.4. Refund Agent
+
+Công dụng
+
+Refund Agent kiểm tra ticket, coupon chưa dùng, điều kiện fare, phí hoàn, thuế được hoàn, dịch vụ được hoàn, phương thức thanh toán ban đầu, khoản đã hoàn trước đó, người yêu cầu và chính sách của hãng hoặc supplier.
+
+Thiết kế hai bước
+
+Refund calculation hoặc request: một người tính toán và lập yêu cầu.
+
+Refund approval hoặc execution: người khác phê duyệt hoặc thực hiện trả tiền.
+
+Không nên để cùng một người sửa booking, tính refund, duyệt refund, chuyển tiền và đóng case.
+
+Theo dõi
+
+Refund aging.
+
+Tỷ lệ yêu cầu bị trả lại.
+
+Sai số tiền hoàn.
+
+Refund vượt chính sách.
+
+Refund nhiều lần trên cùng ticket.
+
+Refund sang phương thức khác nguồn ban đầu.
+
+Thời gian từ hãng chấp thuận đến khách nhận tiền.
+
+Lượng refund bất thường theo nhân viên.
+
+5.5. Corporate hoặc Group Agent
+
+Công dụng
+
+Nhân viên này quản lý hợp đồng doanh nghiệp, travel policy, người phê duyệt phía khách hàng, credit limit, group booking, danh sách hành khách lớn, deposit, deadline nộp tên, báo cáo theo cost center và điều kiện thương mại riêng.
+
+Phạm vi quyền
+
+Chỉ xem account doanh nghiệp được phân.
+
+Tạo booking trong policy.
+
+Xem negotiated fare của account đó.
+
+Không xem giá hợp đồng của doanh nghiệp khác.
+
+Không tự tăng credit limit.
+
+Không sửa công nợ.
+
+Không chuyển giá ưu đãi cho khách ngoài hợp đồng.
+
+Theo dõi
+
+Doanh thu từng account.
+
+Tỷ lệ sử dụng hợp đồng.
+
+Công nợ quá hạn.
+
+Group block chưa nộp tên.
+
+Deposit thiếu.
+
+Booking ngoài travel policy.
+
+Margin theo account.
+
+Retention và complaint.
+
+5.6. Customer Service hoặc Disruption Agent
+
+Công dụng
+
+Nhân viên này xử lý thay đổi giờ bay, delay, cancellation, misconnection, khách cần đổi chuyến do hãng, yêu cầu hỗ trợ đặc biệt và khiếu nại.
+
+Phân quyền đặc thù
+
+Phải phân biệt thay đổi tự nguyện do khách và thay đổi không tự nguyện do hãng; waiver hợp lệ; refund thương mại; và refund theo quy định. Nhân viên disruption có thể được quyền đổi chuyến miễn phí cho case bị ảnh hưởng nhưng không được dùng quyền đó cho một booking bình thường.
+
+Một điều kiện chính sách có thể được diễn đạt như sau:
+
+CÔNG THỨC Chỉ cho phép waiver khi booking nằm trong danh sách chuyến bị ảnh hưởng, waiver code đang hiệu lực, hành động nằm trong phạm vi code và nhân viên thuộc disruption queue được giao.
+
+Theo dõi
+
+Số case xử lý.
+
+SLA.
+
+Số khách được liên hệ.
+
+Số case phải escalate.
+
+Tỷ lệ re-accommodation thành công.
+
+Waiver sử dụng sai.
+
+Giá trị goodwill.
+
+Complaint sau xử lý.
+
+Backlog theo chuyến.
+
+5.7. Airport Check-in hoặc Gate Agent
+
+Nhân viên sân bay không phải sales agent nhưng cần truy cập một phần dữ liệu booking.
+
+Nên được thấy
+
+Hành khách trên chuyến được phân.
+
+Trạng thái ticket đủ điều kiện đi hay không.
+
+Thông tin check-in.
+
+Ghế.
+
+Hành lý.
+
+Yêu cầu hỗ trợ đặc biệt cần thiết cho phục vụ.
+
+Boarding status.
+
+Nên được làm
+
+Check-in.
+
+Gán hoặc đổi ghế trong phạm vi.
+
+Ghi nhận hành lý.
+
+In boarding document.
+
+Board hoặc offload theo quy trình.
+
+Ghi sự cố tại gate.
+
+Không nên được thấy hoặc làm
+
+Toàn bộ payment card.
+
+Margin.
+
+Commission đại lý.
+
+Toàn bộ lịch sử tài chính.
+
+Refund.
+
+Sửa fare.
+
+Quản lý ticketing authority.
+
+Export danh sách hành khách ngoài chuyến.
+
+Truy cập chuyến ở sân bay khác nếu không được điều động.
+
+Pattern của pretix phù hợp để tham khảo: thiết bị check-in có token và security profile riêng, có thể bị thu hồi, giới hạn API call và gắn với event, gate hoặc check-in list cụ thể.
+
+5.8. Pricing, Fare hoặc Inventory Controller
+
+Công dụng
+
+Đây không phải nhân viên bán trực tiếp. Họ quản lý fare product, markup, service fee, cabin hoặc class mapping, route, seat inventory hoặc allocation, promotion, blackout, contract fare, rule và effective date.
+
+Nguyên tắc phân quyền
+
+Không nên tự tạo payment cho khách.
+
+Không nên tự refund.
+
+Không nên sửa booking để hưởng commission.
+
+Thay đổi giá phải có ngày hiệu lực.
+
+Không sửa ngầm giá đã dùng cho ticket lịch sử.
+
+Giá mới phải tạo version mới.
+
+Thay đổi lớn cần phê duyệt.
+
+Theo dõi
+
+Margin.
+
+Fare competitiveness.
+
+Booking conversion.
+
+Tỷ lệ manual override.
+
+Inventory spoilage.
+
+Giá sai.
+
+Promotion vượt ngân sách.
+
+Chênh lệch giữa giá cấu hình và giá bán thực tế.
+
+5.9. Finance hoặc BSP Reconciliation
+
+Công dụng
+
+Bộ phận này đối chiếu ticket sales, refund, payment gateway, cash hoặc card, BSP billing, remittance, debit hoặc credit memo, commission, chargeback và chênh lệch.
+
+Nên được phép
+
+Xem transaction tài chính.
+
+Import billing.
+
+Match ticket với payment.
+
+Xác nhận remittance.
+
+Ghi nhận adjustment.
+
+Thực hiện refund đã được duyệt.
+
+Khóa kỳ đối soát.
+
+Tạo báo cáo chênh lệch.
+
+Không nên mặc nhiên được phép
+
+Tạo booking giả.
+
+Tự thêm mình vào commission.
+
+Đổi hành trình.
+
+Sửa passenger name.
+
+Sửa fare rule.
+
+Quản lý flight inventory.
+
+Xóa ticket hoặc payment history.
+
+5.10. Supervisor, Quality Assurance và Operations Manager
+
+Supervisor theo dõi queue trong ca, chia việc, duyệt ngoại lệ trong hạn mức, kiểm tra booking lỗi, xử lý escalation và chuyển booking giữa nhân viên.
+
+Quality Assurance lấy mẫu booking, kiểm tra tư vấn fare rule, tên, hành trình, ngày sinh, ticket, EMD, reissue và refund; ghi lỗi và yêu cầu đào tạo. QA không nhất thiết phải được quyền sửa transaction.
+
+Operations Manager xem toàn bộ hoạt động trong đơn vị, duyệt ngoại lệ lớn, phân bổ nhân sự, theo dõi doanh thu, SLA, lỗi và rủi ro, khóa quyền khi có sự cố và quyết định chính sách vận hành. Manager không nên dùng tài khoản superadmin trong công việc hằng ngày.
+
+5.11. Access Administrator
+
+Access Administrator tạo tài khoản, gắn role, gắn office, gắn phạm vi hãng, bật hoặc tắt MFA, thu hồi session, quản lý quyền tạm thời, kiểm tra account dormant, quản lý thiết bị và API token.
+
+NGUYÊN TẮC Access Administrator không nhất thiết cần được đọc đầy đủ passport, lịch sử hành trình, payment hoặc commission. Quyền quản trị danh tính và quyền đọc dữ liệu nghiệp vụ nên được tách rời.
+
+6. Workflow bán vé máy bay hoàn chỉnh
+
+Bảng 2. Tổng quan luồng bán vé và các điểm kiểm soát
+
+Giai đoạn | Người chính | Hoạt động cốt lõi | Kiểm soát bắt buộc | Đầu ra
+
+1. Tiếp nhận nhu cầu | Sales Agent | Ghi hành trình, nhu cầu, ngân sách, loại khách | Owner, office, SLA, customer scope | Yêu cầu hành trình có người phụ trách
+
+2. Search và offer | Sales Agent | Tìm chuyến, tính giá, gửi phương án | Fare rule, timestamp, markup hoặc discount limit | Offer có thời hạn và điều kiện
+
+3. Tạo PNR hoặc Order | Sales Agent | Nhập passenger, segment, contact, time limit | Audit, duplicate check, ownership | Booking giữ chỗ
+
+4. Thu tiền | Gateway, cashier hoặc Finance | Ghi nhận tiền và reference | Sales không tự đánh dấu paid, cash gắn ca | Payment hợp lệ hoặc exception
+
+5. Ticketing review | Ticketing Agent | Kiểm tra dữ liệu, authority, payment | Maker-checker, provider scope, time limit | Approved, rejected hoặc escalated
+
+6. Issue ticket và EMD | Ticketing Agent | Phát hành chứng từ | Authority, hãng, office, payment method, limit | Ticket và EMD có audit
+
+7. Pre-departure servicing | Service hoặc Exchange | Thêm dịch vụ, đổi chuyến, xử lý disruption | Coupon status, waiver, fare rule, approval | Booking được phục vụ đúng chính sách
+
+8. Check-in và boarding | Airport Agent | Check-in, seat, baggage, boarding | Flight, airport, gate, shift, device scope | Trạng thái phục vụ chuyến bay
+
+9. Sau chuyến bay | System hoặc Service | Cập nhật flown, no-show, unused | Coupon status, case ownership | Căn cứ đổi hoặc hoàn
+
+10. Reconciliation và commission | Finance | Match payment, ticket, refund, BSP | Khóa kỳ, adjustment, audit | Đối soát và commission chính xác
+
+6.1. Giai đoạn tiếp nhận nhu cầu
+
+Sales Agent tiếp nhận khách hàng, nguồn yêu cầu, thời gian tiếp nhận, SLA, hành trình mong muốn, ngân sách, loại khách và account doanh nghiệp nếu có. Sales chỉ thấy lead hoặc khách được giao; team lead thấy cả đội; manager thấy theo chi nhánh hoặc thị trường.
+
+6.2. Giai đoạn search và tạo offer
+
+Mỗi offer nên lưu provider hoặc hãng, chuyến, fare, tax, markup hoặc service fee, điều kiện hành lý, điều kiện đổi và hoàn, thời điểm báo giá, thời điểm hết hiệu lực và người tạo. Nhân viên chỉ được áp markup hoặc discount trong hạn mức. Fare override phải là permission riêng.
+
+6.3. Giai đoạn tạo PNR hoặc Order giữ chỗ
+
+Booking lưu passenger, segment, contact, time limit, fare, source, owner, office và queue. Booking chưa ticket có thể được chỉnh trong phạm vi, nhưng mọi thay đổi tên hoặc hành trình phải có audit. Booking sắp hết time limit phải đi vào exception queue.
+
+6.4. Giai đoạn thu tiền
+
+Sales có thể tạo payment request nhưng không tự xác nhận thanh toán. Hệ thống cần phân biệt Pending, Authorized, Captured hoặc Received, Failed, Reversed, Refunded, Partially Refunded và Unmatched. Gateway, webhook, cashier hoặc Finance là nguồn xác nhận tiền. Cash phải gắn với ca và quỹ.
+
+6.5. Giai đoạn ticketing review
+
+Ticketing Agent kiểm tra hành khách, hành trình, fare, tax, time limit, payment, authority, payment method và điều kiện thương mại. Kết quả có thể là Approved and Issued, Rejected to Sales, Pending Clarification hoặc Escalated to Supervisor.
+
+6.6. Giai đoạn issue ticket và EMD
+
+Khi phát hành, hệ thống ghi ticket number, issue time, issuing office, issuing agent, form of payment, fare và tax, coupon, EMD liên quan và provider response. Sau khi issue, một số trường phải bị khóa. Mọi thay đổi tiếp theo đi qua exchange, void hoặc refund workflow.
+
+6.7. Giai đoạn pre-departure servicing
+
+Có thể phát sinh thêm hành lý, chọn ghế, sửa contact, thêm special request, đổi chuyến, schedule change hoặc cancellation. Quyền phải dựa trên booking có bị ảnh hưởng hay không, coupon status, chính sách hãng, thời gian trước chuyến, loại thay đổi và waiver code.
+
+6.8. Giai đoạn check-in và boarding
+
+Airport staff chỉ thao tác trên chuyến, sân bay, ca, gate và danh sách hành khách được phân. Quyền check-in không kéo theo quyền refund hoặc sửa fare.
+
+6.9. Giai đoạn sau chuyến bay
+
+Hệ thống cập nhật Flown, No-show, Unused, Partially Used, Cancelled hoặc Disrupted. Trạng thái này quyết định có được đổi, có được hoàn, khoản nào được hoàn và approval nào cần thiết.
+
+6.10. Giai đoạn reconciliation và commission
+
+Finance match payment, ticket, refund, đối chiếu BSP hoặc provider, xử lý debit memo, khóa kỳ, tính commission và ghi adjustment. Commission không nên chỉ dựa trên booking tạo ra; có thể phải dựa trên ticket đã issue, tiền đã thu, ticket chưa refund, sau khi trừ debit memo và sau thời gian clawback.
+
+7. Công thức phân quyền dành cho vé máy bay
+
+CÔNG THỨC LÕI Cho phép khi: tài khoản đang hoạt động AND có role phù hợp AND có permission hành động AND đúng office hoặc chi nhánh AND đúng hãng hoặc provider AND có ticketing authority khi cần AND đúng booking, queue hoặc account được giao AND booking ở trạng thái cho phép AND chưa vượt time limit AND đúng payment method AND không vượt hạn mức tiền AND đã được duyệt khi cần AND thiết bị hoặc session hợp lệ.
+
+Ví dụ, một người có role Ticketing Agent nhưng chỉ thuộc office Hà Nội, chỉ được issue cho một nhóm hãng, chỉ được dùng customer card, hạn mức mỗi transaction là 100 triệu và chỉ được xử lý booking trong ticketing queue. Nếu doanh nghiệp áp dụng maker-checker, người đó còn không được issue booking do chính mình tạo. Vì vậy, role Ticketing Agent không đồng nghĩa với quyền issue mọi ticket.
+
+8. Ma trận quyền mẫu cho đại lý vé máy bay
+
+Ký hiệu sử dụng trong ma trận:
+
+Thực hiện: được hoàn tất nghiệp vụ.
+
+Khởi tạo: được lập yêu cầu nhưng không được tự duyệt.
+
+Duyệt: được phê duyệt theo hạn mức.
+
+Theo phạm vi: chỉ office, hãng, account hoặc queue được giao.
+
+Chỉ xem: không được sửa.
+
+Không: không được cấp.
+
+Ma trận 1. Phân quyền mẫu cho đại lý vé máy bay
+
+Nghiệp vụ | Sales Agent | Ticketing Agent | Reissue hoặc Refund | Supervisor | Finance | Pricing hoặc Inventory | Access Admin
+
+Search chuyến và giá | Theo phạm vi | Theo phạm vi | Theo case | Có | Chỉ xem | Có | Không
+
+Tạo offer | Thực hiện | Hỗ trợ | Không | Có | Không | Không | Không
+
+Tạo PNR hoặc Order | Thực hiện | Hỗ trợ sửa lỗi | Theo case | Có | Không | Không | Không
+
+Sửa passenger trước issue | Theo phạm vi | Theo queue | Theo case | Có | Không | Không | Không
+
+Đổi tên sau issue | Khởi tạo | Không | Theo chính sách | Duyệt | Không | Không | Không
+
+Xác nhận payment | Không | Chỉ xem | Chỉ xem | Chỉ xem | Thực hiện | Không | Không
+
+Issue ticket | Không hoặc hạn chế | Thực hiện | Theo case | Duyệt ngoại lệ | Không | Không | Không
+
+Issue EMD | Khởi tạo | Theo loại EMD | Theo case | Duyệt | Không | Không | Không
+
+Void | Khởi tạo | Theo điều kiện | Thực hiện | Duyệt ngoại lệ | Đối soát | Không | Không
+
+Reissue hoặc exchange | Khởi tạo | Hạn chế | Thực hiện | Duyệt vượt mức | Đối soát | Không | Không
+
+Waive penalty | Không | Không | Khởi tạo | Duyệt | Chỉ xem | Không | Không
+
+Refund calculation | Khởi tạo | Không | Thực hiện | Kiểm tra | Chỉ xem | Không | Không
+
+Refund approval | Không | Không | Không tự duyệt | Duyệt | Kiểm tra tài chính | Không | Không
+
+Trả tiền refund | Không | Không | Không | Không hoặc đồng duyệt | Thực hiện | Không | Không
+
+Sửa markup hoặc service fee | Trong hạn mức | Không | Không | Duyệt | Chỉ xem | Cấu hình policy | Không
+
+Sửa fare product | Không | Không | Không | Không | Không | Thực hiện | Không
+
+Quản lý flight inventory | Không | Không | Không | Chỉ xem | Không | Thực hiện | Không
+
+Đối soát BSP hoặc provider | Không | Chỉ xem case | Chỉ xem case | Chỉ xem | Thực hiện | Không | Không
+
+Xem commission | Của mình | Của mình | Của mình | Của đội | Toàn bộ để đối soát | Không | Không
+
+Sửa commission | Không | Không | Không | Đề nghị | Thực hiện có duyệt | Không | Không
+
+Export passenger data | Không hoặc rất hạn chế | Không | Theo case | Có phê duyệt | Theo nhu cầu đối soát | Không | Không
+
+Quản lý role hoặc user | Không | Không | Không | Không | Không | Không | Thực hiện
+
+Quản lý ticketing authority | Không | Chỉ xem | Chỉ xem | Đề nghị | Phối hợp kiểm soát | Không | Access Admin và lãnh đạo
+
+Ma trận trên là mô hình thiết kế đề xuất dựa trên tách nhiệm vụ và least privilege; nó không phải cấu hình mặc định của một source cụ thể.
+
+9. Cách cấp trên quản lý và giám sát đội bán vé máy bay
+
+9.1. Bảng điều hành thời gian thực
+
+Người quản lý cần nhìn thấy:
+
+Lead mới chưa nhận.
+
+Báo giá chưa phản hồi.
+
+PNR sắp hết time limit.
+
+Booking đã trả tiền nhưng chưa ticket.
+
+Ticketing queue đang chờ.
+
+Payment thất bại.
+
+Chuyến thay đổi lịch.
+
+Khách chưa được liên hệ.
+
+Refund quá SLA.
+
+Transaction chưa đối soát.
+
+Debit memo mới.
+
+Nhân viên đang online hoặc đang trực.
+
+Khối lượng việc của từng queue.
+
+Quản lý bằng exception queue hiệu quả hơn việc mở từng booking để kiểm tra.
+
+9.2. Dashboard hiệu suất theo vai trò
+
+Sales Agent
+
+Số yêu cầu nhận.
+
+Thời gian phản hồi.
+
+Quote-to-booking.
+
+Booking-to-ticket.
+
+Revenue.
+
+Margin.
+
+Booking expired.
+
+Error rate.
+
+Complaint.
+
+Repeat customer.
+
+Ticketing Agent
+
+Số ticket.
+
+Turnaround time.
+
+Error.
+
+Void ngay sau issue.
+
+Debit memo liên quan.
+
+Override.
+
+Booking trả lại.
+
+Ticket sát deadline.
+
+Reissue hoặc Refund
+
+Số case.
+
+SLA.
+
+Sai calculation.
+
+Refund aging.
+
+Waiver sử dụng.
+
+Giá trị penalty bị waive.
+
+Case reopen.
+
+Khiếu nại.
+
+Supervisor
+
+Backlog của đội.
+
+SLA breach.
+
+Approval turnaround.
+
+Error lặp lại.
+
+Tỷ lệ escalation.
+
+Capacity distribution.
+
+Kết quả QA.
+
+Finance
+
+Unmatched payment.
+
+Cash variance.
+
+BSP variance.
+
+Refund chưa trả.
+
+Chargeback.
+
+Remittance deadline.
+
+Debit hoặc credit memo.
+
+Commission adjustment.
+
+9.3. Theo dõi bất thường
+
+Hệ thống nên cảnh báo khi:
+
+Một nhân viên có quá nhiều void.
+
+Refund tăng đột biến.
+
+Nhiều refund về phương thức bất thường.
+
+Nhiều manual fare override.
+
+Nhiều penalty được waive.
+
+Nhân viên truy cập hàng loạt booking không thuộc queue.
+
+Booking bị đổi owner trước kỳ tính commission.
+
+Ticket được issue ngoài giờ hoặc ngoài office thông thường.
+
+Có nhiều lần đăng nhập từ vị trí bất thường.
+
+Có export dữ liệu hành khách số lượng lớn.
+
+Người dùng được gắn role đặc quyền tạm thời nhưng không có ngày hết hạn.
+
+NGUYÊN TẮC Giám sát đúng là giám sát transaction, kết quả, SLA và ngoại lệ. Không nhất thiết phải quay màn hình hoặc đếm từng cú nhấp chuột của nhân viên.
+
+PHẦN III. NHÂN VIÊN ĐẶT TOUR VÀ ĐIỀU HÀNH DU LỊCH
+
+10. Các bộ phận chính trong công ty tour
+
+Một source đơn giản thường chỉ có ADMIN và AGENT. Tuy nhiên, công ty tour thực tế cần tách rõ nhiều vai trò để tránh một người vừa bán, vừa tự chọn supplier, tự thu tiền, tự duyệt chi phí và tự tính commission.
+
+10.1. Travel Consultant hoặc Sales
+
+Công dụng
+
+Tiếp nhận nhu cầu khách.
+
+Tư vấn tour.
+
+Báo giá.
+
+Tạo booking.
+
+Thu thập thông tin hành khách.
+
+Theo dõi deposit.
+
+Upsell dịch vụ.
+
+Chăm sóc khách trước chuyến.
+
+Không nên tự thực hiện
+
+Sửa giá vốn supplier.
+
+Xác nhận đã thu tiền bằng tay.
+
+Chọn mình làm hướng dẫn viên để hưởng phụ cấp.
+
+Hoàn tiền.
+
+Sửa commission sau khi giao dịch đã chốt.
+
+10.2. Product hoặc Contracting Officer
+
+Công dụng
+
+Xây dựng chương trình tour.
+
+Quản lý supplier.
+
+Quản lý giá khách sạn, xe, ăn uống và vé tham quan.
+
+Quản lý capacity và allotment.
+
+Thiết lập blackout date.
+
+Thiết lập chính sách trẻ em và hủy.
+
+Tạo version sản phẩm và ngày hiệu lực.
+
+Giới hạn
+
+Người xây dựng sản phẩm không nên xem hoặc sửa payment riêng của khách nếu không cần. Người này cũng không nên tự phê duyệt toàn bộ chi phí phát sinh của một tour do chính mình cấu hình.
+
+10.3. Tour Operator hoặc Điều hành tour
+
+Công dụng
+
+Xác nhận supplier.
+
+Đặt phòng.
+
+Đặt xe.
+
+Đặt vé.
+
+Xếp hướng dẫn viên.
+
+Lập rooming list.
+
+Lập manifest.
+
+Theo dõi dịch vụ.
+
+Xử lý thay đổi trước khởi hành.
+
+Điều hành có thể được thay supplier trong phạm vi ngân sách và chính sách, nhưng không nên tự ý giảm giá bán cho khách hoặc sửa công nợ.
+
+10.4. Tour Guide hoặc Hướng dẫn viên
+
+Dữ liệu cần được thấy
+
+Tour được phân.
+
+Danh sách khách cần thiết.
+
+Điểm đón.
+
+Số điện thoại liên hệ.
+
+Lịch trình.
+
+Voucher dịch vụ.
+
+Yêu cầu ăn uống hoặc y tế cần thiết.
+
+Contact khẩn cấp.
+
+Nhiệm vụ báo cáo.
+
+Dữ liệu không cần được thấy
+
+Toàn bộ giá vốn.
+
+Margin.
+
+Dữ liệu thẻ thanh toán.
+
+Commission của sales.
+
+Hộ chiếu của mọi tour khác.
+
+Hợp đồng supplier.
+
+Quyền refund.
+
+Nên được phép
+
+Check-in khách tại điểm tập trung.
+
+Báo khách vắng.
+
+Báo sự cố.
+
+Gửi ảnh chứng từ chi phí.
+
+Ghi nhận dịch vụ không đạt.
+
+Xác nhận tour hoàn thành.
+
+Yêu cầu chi khẩn cấp.
+
+Hướng dẫn viên không nên tự duyệt chi phí do chính mình đề nghị.
+
+10.5. Transport Coordinator
+
+Transport Coordinator xếp xe, tài xế, lộ trình, giờ đón, số ghế, biển số, tình trạng phương tiện, điều phối thay xe và theo dõi chuyến. Người này chỉ được thấy manifest cần thiết và không cần truy cập toàn bộ tài chính của booking.
+
+10.6. Visa hoặc Documentation Staff
+
+Nhân viên hồ sơ visa xử lý passport data, visa requirement, form, appointment, document checklist, expiry date và trạng thái hồ sơ. Đây là role rất nhạy cảm.
+
+Kiểm soát bắt buộc
+
+Giới hạn theo case được giao.
+
+Che dữ liệu khi không cần.
+
+Log lượt xem và tải xuống.
+
+Cấm export hàng loạt.
+
+Thu hồi quyền sau khi case kết thúc.
+
+Thiết lập thời hạn lưu trữ.
+
+Không dùng tài khoản chung.
+
+10.7. Finance
+
+Finance quản lý deposit, installment, công nợ, supplier payment, tour settlement, tạm ứng hướng dẫn viên, refund, commission và lợi nhuận tour. Finance không nên tự thay đổi itinerary hoặc thêm khách vào booking.
+
+10.8. Tour Supervisor hoặc Operations Manager
+
+Vai trò này duyệt thay đổi supplier, duyệt chi phí ngoài ngân sách, xử lý sự cố, điều động guide, theo dõi tour đang chạy, chỉ đạo khẩn cấp, đóng tour và đánh giá kết quả.
+
+11. Workflow tour hoàn chỉnh
+
+Bảng 3. Workflow đặt và điều hành tour
+
+Giai đoạn | Người chính | Dữ liệu hoặc hoạt động | Kiểm soát | Đầu ra
+
+1. Tạo sản phẩm tour | Product hoặc Contracting | Lịch trình, supplier, giá vốn, capacity | Version giá, ngày hiệu lực, approval trước bán | Tour product sẵn sàng bán
+
+2. Tiếp nhận lead | Sales | Nhu cầu, khách, nguồn | Owner, team, SLA | Lead có người phụ trách
+
+3. Báo giá | Sales | Giá bán, lựa chọn, điều kiện | Discount limit, expiry, margin floor | Quotation hoặc offer
+
+4. Tạo booking | Sales | Khách, số lượng, ngày đi | Capacity lock, duplicate check | Booking tạm hoặc confirmed
+
+5. Thu deposit | Finance hoặc gateway | Số tiền, reference, due date | Sales không tự xác nhận paid | Deposit hợp lệ hoặc exception
+
+6. Xác nhận dịch vụ | Operator | Khách sạn, xe, vé, ăn uống | Supplier confirmation, budget | Dịch vụ đã giữ hoặc xác nhận
+
+7. Thu đủ tiền | Finance | Installment, due date, balance | Queue công nợ, reminder | Booking đủ điều kiện khởi hành
+
+8. Chuẩn bị khởi hành | Operator | Manifest, rooming list, voucher | Data minimization, approval bản cuối | Hồ sơ vận hành tour
+
+9. Vận hành tour | Guide hoặc Coordinator | Attendance, sự cố, chi phí | Mobile scope theo tour, emergency policy | Nhật ký thực hiện
+
+10. Kết thúc tour | Guide và Operator | Báo cáo hoàn thành, dịch vụ thực tế | Guide không tự duyệt chi phí | Tour completion record
+
+11. Đối soát | Finance | Supplier, tạm ứng, phát sinh | Maker-checker, chứng từ | Tour settlement
+
+12. Commission và khiếu nại | Finance, Manager, Service | Commission, refund, bồi thường | Khóa kỳ, approval theo ngưỡng | Kết quả tài chính cuối cùng
+
+11.1. Tạo sản phẩm tour
+
+Product hoặc Contracting Officer nhập lịch trình, supplier, giá vốn, capacity, ngày chạy, chính sách trẻ em, chính sách hủy và các restriction. Mỗi lần thay đổi quan trọng cần tạo version có ngày hiệu lực. Sản phẩm chưa được phê duyệt không được mở bán.
+
+11.2. Tiếp nhận lead và phân người phụ trách
+
+Lead được gắn nguồn, chiến dịch, loại khách, tour quan tâm, thời gian tiếp nhận, SLA và owner. Trưởng nhóm theo dõi lead chưa nhận, lead quá hạn và tải của từng sales.
+
+11.3. Báo giá
+
+Sales chọn sản phẩm hoặc cấu hình tour theo yêu cầu. Giá bán phải được kiểm tra với margin floor, discount limit và thời hạn báo giá. Giá dưới mức sàn phải chuyển người có thẩm quyền duyệt.
+
+11.4. Tạo booking và khóa capacity
+
+Booking ghi số lượng khách, loại khách, ngày đi, lựa chọn phòng, dịch vụ bổ sung, policy và owner. Hệ thống phải khóa capacity có thời hạn để tránh oversell. Booking chưa đặt cọc có thể tự hết hạn và trả capacity về kho.
+
+11.5. Thu deposit
+
+Sales tạo yêu cầu thanh toán. Gateway, cashier hoặc Finance xác nhận số tiền thực nhận. Trạng thái booking chỉ chuyển Guaranteed hoặc Confirmed khi điều kiện deposit đạt yêu cầu.
+
+11.6. Xác nhận supplier
+
+Operator gửi yêu cầu và nhận xác nhận từ khách sạn, hãng vận chuyển, nhà hàng, điểm tham quan và các supplier khác. Cần lưu confirmation number, giá, điều kiện hủy, deadline và người xác nhận.
+
+11.7. Thu đủ tiền
+
+Finance theo dõi installment, due date và balance. Booking thiếu tiền trước deadline đi vào exception queue. Sales có thể nhắc khách nhưng không tự thay đổi công nợ.
+
+11.8. Chuẩn bị khởi hành
+
+Operator tạo manifest, rooming list, voucher, contact list, pickup plan, service order và hồ sơ hướng dẫn viên. Dữ liệu nhạy cảm chỉ được cung cấp ở mức cần thiết cho từng bộ phận.
+
+11.9. Vận hành tour
+
+Guide hoặc Coordinator dùng ứng dụng di động có scope theo đúng tour và thời gian. Người dùng được check-in khách, ghi vắng mặt, báo sự cố, gửi chi phí và yêu cầu hỗ trợ. Sau thời hạn kết thúc, quyền truy cập mobile phải được thu hẹp hoặc hết hiệu lực.
+
+11.10. Kết thúc tour
+
+Guide nộp báo cáo tour, attendance cuối cùng, sự cố, dịch vụ không đạt, lost-and-found và chứng từ. Operator xác nhận dịch vụ đã thực hiện. Guide không tự đóng hoặc duyệt chi phí của mình.
+
+11.11. Đối soát
+
+Finance so sánh booking, dịch vụ xác nhận, dịch vụ thực tế, tạm ứng, hóa đơn supplier và khoản phát sinh. Mọi chênh lệch phải có reason, chứng từ và người duyệt.
+
+11.12. Commission, khiếu nại và refund
+
+Commission có thể dựa trên tiền đã thu, tour đã hoàn tất, margin sau đối soát và các khoản refund hoặc compensation. Sau khi khóa kỳ, thay đổi phải tạo adjustment chứ không được sửa im lặng dữ liệu cũ.
+
+12. Ma trận quyền mẫu cho công ty tour
+
+Ma trận 2. Phân quyền mẫu trong công ty tour
+
+Nghiệp vụ | Sales | Product hoặc Contracting | Tour Operator | Guide | Transport | Visa Staff | Finance | Operations Manager
+
+Xem lead hoặc khách | Khách được giao | Chỉ dữ liệu tổng hợp | Theo booking điều hành | Theo tour được phân | Theo chuyến | Theo case visa | Theo nhu cầu tài chính | Theo phạm vi quản lý
+
+Tạo quotation | Thực hiện | Cấu hình giá nền | Hỗ trợ chi phí | Không | Không | Không | Chỉ xem | Duyệt ngoại lệ
+
+Tạo booking | Thực hiện | Không | Hỗ trợ | Không | Không | Không | Không | Có
+
+Sửa giá vốn supplier | Không | Thực hiện | Theo quyền hạn chế | Không | Không | Không | Chỉ xem | Duyệt
+
+Discount giá bán | Trong hạn mức | Không | Không | Không | Không | Không | Chỉ xem | Duyệt vượt mức
+
+Xác nhận payment | Không | Không | Chỉ xem | Không | Không | Không | Thực hiện | Chỉ xem
+
+Giữ hoặc xác nhận supplier | Khởi tạo yêu cầu | Theo hợp đồng | Thực hiện | Không | Theo vận chuyển | Theo dịch vụ visa | Chỉ xem | Duyệt ngoại lệ
+
+Tạo manifest | Chỉ xem theo khách | Không | Thực hiện | Xem bản được phân | Xem phần cần thiết | Xem case liên quan | Không | Có
+
+Xem passport | Theo khách cần tư vấn, có che | Không | Hạn chế | Chỉ khi cần và có che | Không | Theo case | Hạn chế | Theo case
+
+Check-in khách tour | Không | Không | Theo dõi | Thực hiện | Hỗ trợ | Không | Không | Có
+
+Ghi chi phí tour | Không | Không | Khởi tạo | Khởi tạo có chứng từ | Khởi tạo vận chuyển | Khởi tạo case | Kiểm tra | Duyệt theo ngưỡng
+
+Duyệt chi phí của chính mình | Không | Không | Không | Không | Không | Không | Không tự duyệt | Không nếu là người tạo
+
+Refund request | Khởi tạo | Không | Khởi tạo theo sự cố | Báo sự cố | Báo sự cố | Báo case | Chỉ xem | Duyệt nghiệp vụ
+
+Refund execution | Không | Không | Không | Không | Không | Không | Thực hiện sau duyệt | Đồng duyệt mức lớn
+
+Xem margin | Của booking hoặc mức hạn chế | Có theo sản phẩm | Theo tour | Không | Không | Không | Có | Có
+
+Xem commission | Của mình | Không | Theo chính sách | Phụ cấp của mình | Theo chính sách | Không | Đối soát | Toàn bộ
+
+Sửa commission | Không | Không | Không | Không | Không | Không | Adjustment có duyệt | Duyệt
+
+Quản lý role hoặc user | Không | Không | Không | Không | Không | Không | Không | Không; Access Admin thực hiện
+
+13. Cách cấp trên giám sát hoạt động tour
+
+13.1. Trước khởi hành
+
+Lead và quotation chưa phản hồi.
+
+Booking chưa đặt cọc.
+
+Capacity sắp đầy hoặc bị giữ quá lâu.
+
+Supplier chưa xác nhận.
+
+Group chưa đủ danh sách tên.
+
+Passport hoặc visa còn thiếu.
+
+Balance chưa thanh toán.
+
+Guide hoặc xe chưa được phân.
+
+Manifest chưa khóa.
+
+Tour có nguy cơ không đủ khách.
+
+13.2. Trong khi tour đang chạy
+
+Khách đã check-in hoặc vắng mặt.
+
+Tour đang ở điểm nào.
+
+Dịch vụ nào đã hoàn thành.
+
+Sự cố đang mở.
+
+Chi phí khẩn cấp.
+
+Guide đã phản hồi hay chưa.
+
+Nhà xe hoặc supplier có vấn đề.
+
+Khách cần hỗ trợ y tế hoặc an toàn.
+
+Thời gian xử lý escalation.
+
+13.3. Sau tour
+
+Báo cáo tour chưa nộp.
+
+Chứng từ thiếu.
+
+Tạm ứng chưa quyết toán.
+
+Supplier invoice sai.
+
+Chi phí vượt ngân sách.
+
+Complaint.
+
+Refund hoặc compensation.
+
+Margin thực tế.
+
+Commission.
+
+Lỗi lặp lại theo guide, operator hoặc supplier.
+
+13.4. KPI theo vị trí
+
+Sales Tour
+
+Response time.
+
+Quote-to-booking.
+
+Deposit conversion.
+
+Doanh thu và margin.
+
+Tỷ lệ hủy.
+
+Dữ liệu booking chính xác.
+
+Upsell.
+
+Complaint.
+
+Tour Operator
+
+Supplier confirmation đúng hạn.
+
+Chênh lệch giá.
+
+Service failure.
+
+Chi phí phát sinh.
+
+Manifest accuracy.
+
+Số thay đổi sát giờ.
+
+SLA xử lý sự cố.
+
+Tour Guide
+
+Attendance accuracy.
+
+Báo cáo đúng hạn.
+
+Complaint.
+
+Chất lượng dịch vụ.
+
+Chứng từ chi phí.
+
+Tuân thủ an toàn.
+
+Số sự cố được báo đúng quy trình.
+
+Finance Tour
+
+Công nợ quá hạn.
+
+Tạm ứng chưa quyết toán.
+
+Supplier variance.
+
+Refund aging.
+
+Margin close đúng hạn.
+
+Commission adjustment.
+
+PHẦN IV. QUẢN LÝ KHÁCH SẠN, LỄ TÂN VÀ ĐẶT PHÒNG
+
+14. Các đối tượng phải tách rõ trong hệ thống khách sạn
+
+14.1. Property
+
+Property là khách sạn hoặc cơ sở. Một chuỗi có thể có nhiều khách sạn, nhiều tòa, nhiều khu, nhiều múi giờ, nhiều đồng tiền và chính sách khác nhau. Nhân viên của khách sạn A không mặc nhiên được xem khách của khách sạn B. QloApps hỗ trợ giới hạn quyền theo hotel cụ thể ngoài quyền chức năng của profile.
+
+14.2. Room Type
+
+Room type là loại phòng được bán về mặt thương mại, ví dụ Standard, Deluxe, Suite, Twin hoặc Family.
+
+14.3. Physical Room
+
+Phòng vật lý là phòng cụ thể như 301, 302 hoặc 501. Phòng vật lý có tầng, tình trạng, thiết bị, sức chứa, trạng thái vệ sinh, trạng thái bảo trì, lịch sử khách và đặc điểm riêng. Khách có thể đặt Deluxe nhưng chưa được gán phòng 501 cho đến gần ngày đến.
+
+14.4. Availability
+
+Availability phải được tính theo room type, từng đêm, booking, out-of-order room, maintenance, overbooking allowance, allotment, OTA hoặc channel và group block.
+
+14.5. Reservation
+
+Reservation thể hiện cam kết đặt phòng và chứa ngày đến, ngày đi, room type, số khách, giá, rate plan, source, deposit, cancellation policy, người tạo và trạng thái.
+
+14.6. Room Assignment
+
+Room assignment là việc gắn reservation vào phòng vật lý. Reservation và room assignment không phải một đối tượng. Việc tách này giúp khách sạn bán room type trước rồi tối ưu phân phòng sau.
+
+14.7. Stay
+
+Stay bắt đầu khi khách thực sự check-in. Một reservation có thể no-show, cancel, check-in một phần, đổi phòng, gia hạn, rút ngắn, split room hoặc có nhiều khách đi cùng.
+
+14.8. Folio
+
+Folio là sổ chi phí và tài chính của kỳ lưu trú, gồm room charge, tax, minibar, restaurant, laundry, spa, transport, deposit, payment, adjustment và refund. Reservation không nên bị đồng nhất với folio.
+
+14.9. Housekeeping Task
+
+Housekeeping task ghi phòng, loại việc, người được giao, thời hạn, trạng thái, vật tư, kết quả kiểm tra và ghi chú hư hỏng.
+
+14.10. Night Audit và Business Date
+
+Khách sạn hoạt động 24 giờ nhưng cần đóng ngày kinh doanh. Night audit kiểm tra arrival chưa xử lý, no-show, posting chưa hoàn tất, folio chưa cân, cash variance; chạy room charge, chốt báo cáo và chuyển business date. Đây là quyền rất mạnh, không nên cấp cho lễ tân thông thường.
+
+15. Các vai trò nhân viên khách sạn
+
+15.1. Reservation Agent
+
+Công dụng
+
+Trả lời yêu cầu đặt phòng.
+
+Kiểm tra availability.
+
+Tư vấn room type.
+
+Tạo reservation.
+
+Gửi confirmation.
+
+Thu thập guarantee hoặc deposit.
+
+Sửa ngày trước check-in.
+
+Xử lý cancellation trong chính sách.
+
+Quản lý group block hoặc corporate booking.
+
+Nên được phép
+
+Xem availability theo property được giao.
+
+Tạo booking.
+
+Chỉnh guest hoặc contact.
+
+Chọn rate plan được phép.
+
+Áp discount trong hạn mức.
+
+Ghi special request.
+
+Gửi confirmation.
+
+Hủy trước thời hạn cho phép.
+
+Thu hoặc yêu cầu deposit theo quy trình.
+
+Không nên được phép
+
+Tự tạo overbooking vượt ngưỡng.
+
+Backdate booking tùy ý.
+
+Sửa giá sau check-in.
+
+Đánh dấu phòng sạch.
+
+Check-out folio.
+
+Refund.
+
+Sửa payment status.
+
+Thay đổi rate plan hệ thống.
+
+Truy cập property khác.
+
+QloApps có cấu hình riêng cho việc tạo booking lùi ngày và quản lý overbooking. Điều đó cho thấy backdating và overbooking phải được coi là quyền đặc biệt, không phải thao tác booking bình thường. Nguồn: QloApps Order Preferences.
+
+Giám sát
+
+Booking conversion.
+
+Tốc độ phản hồi.
+
+Lead time.
+
+Average booking value.
+
+Cancellation.
+
+No-show liên quan guarantee thiếu.
+
+Booking nhập sai ngày.
+
+Duplicate booking.
+
+Rate override.
+
+Booking không có deposit.
+
+Source attribution.
+
+15.2. Receptionist hoặc Front Desk Agent
+
+Công dụng thực sự
+
+Lễ tân không chỉ chào khách. Đây là vị trí điều phối điểm giao nhau giữa reservation, guest identity, physical room, room key, payment, stay, housekeeping, concierge, maintenance, security và check-out.
+
+Nên được phép
+
+Xem arrival, departure và in-house của property và ca.
+
+Tìm reservation.
+
+Xác minh thông tin khách.
+
+Thêm guest đi cùng.
+
+Gán phòng đã sẵn sàng.
+
+Check-in.
+
+Cấp room key theo quy trình.
+
+Ghi deposit.
+
+Post một số charge được phép.
+
+Gia hạn hoặc rút ngắn trong hạn mức.
+
+Tạo room move request.
+
+Check-out khi folio cân.
+
+Ghi handover note.
+
+Báo maintenance hoặc housekeeping.
+
+QloApps có bảng Operations Today cho arrivals, departures, in-house, booking mới và cancellation; bảng chi tiết gồm khách, phòng, check-in, check-out, order status và payment status. Đây là kiểu bảng điều hành mà front desk và manager cần dùng theo ca. Nguồn: QloApps Operations Today.
+
+Không nên mặc nhiên được phép
+
+Xem đầy đủ card data.
+
+Thay đổi room rate tùy ý.
+
+Tạo complimentary stay.
+
+Refund tiền lớn.
+
+Đóng night audit.
+
+Đánh dấu phòng đã inspected.
+
+Cấp key mà không kiểm tra guest hoặc stay.
+
+Export danh sách khách.
+
+Đổi booking history sau checkout.
+
+Xóa folio charge.
+
+Giám sát
+
+Check-in time.
+
+Queue chờ.
+
+Room assignment error.
+
+Key reissue.
+
+Cash variance.
+
+Folio correction.
+
+Room move.
+
+Complaint.
+
+Checkout delay.
+
+Giao ca thiếu thông tin.
+
+Số lần override.
+
+15.3. Concierge hoặc Guest Relations
+
+Công dụng
+
+Concierge đón tiếp, hướng dẫn, đặt xe, đặt nhà hàng, đặt tour, ghi yêu cầu, theo dõi trải nghiệm, chăm sóc VIP và tiếp nhận complaint ban đầu.
+
+Nên được thấy
+
+Tên khách.
+
+Thời gian lưu trú.
+
+Phòng.
+
+Ngôn ngữ.
+
+Yêu cầu dịch vụ.
+
+Thông tin liên hệ cần thiết.
+
+Preference phù hợp.
+
+VIP level ở mức nghiệp vụ.
+
+Không nên được thấy
+
+Full passport scan.
+
+Số thẻ.
+
+Commission.
+
+Giá vốn.
+
+Ghi chú an ninh nhạy cảm.
+
+Toàn bộ lịch sử khách nếu không cần.
+
+Dữ liệu của property khác.
+
+Nên được làm
+
+Tạo service request.
+
+Đặt dịch vụ.
+
+Ghi charge đề nghị.
+
+Theo dõi request.
+
+Escalate complaint.
+
+Gửi message.
+
+Post charge lớn hoặc miễn phí dịch vụ phải có approval.
+
+15.4. Front Desk Cashier
+
+Tùy quy mô, cashier có thể là role riêng hoặc privilege tạm thời của lễ tân trong ca.
+
+Nên được phép
+
+Mở cash drawer theo ca.
+
+Thu tiền.
+
+In receipt.
+
+Ghi payment.
+
+Split payment.
+
+Chuyển folio theo quy tắc.
+
+Đóng quỹ.
+
+Báo chênh lệch.
+
+Kiểm soát đặc biệt
+
+Một user chỉ có một drawer đang mở.
+
+Tiền mặt phải gắn ca.
+
+Adjustment phải có reason.
+
+Void receipt phải log.
+
+Refund không đồng nghĩa với xóa payment.
+
+Chênh lệch phải được supervisor xác nhận.
+
+Không dùng chung tài khoản cashier.
+
+15.5. Front Office Supervisor
+
+Front Office Supervisor quản lý ca lễ tân, chia quầy, duyệt room move, duyệt rate override nhỏ, duyệt late checkout, duyệt complimentary nhỏ, xử lý overbooking, xử lý complaint, kiểm tra cash drawer và handover.
+
+Người này không nên tự phê duyệt refund do chính mình lập, không nên quản lý user toàn hệ thống, không được sửa báo cáo night audit đã khóa và không được xóa payment history.
+
+15.6. Front Office Manager hoặc Duty Manager
+
+Công dụng
+
+Theo dõi toàn bộ front office.
+
+Quyết định walk hoặc relocation khi overbook.
+
+Duyệt exception lớn.
+
+Điều động nhân viên.
+
+Xử lý sự cố an toàn.
+
+Duyệt guest compensation.
+
+Theo dõi room readiness.
+
+Kiểm tra rate override.
+
+Quản lý service recovery.
+
+Quyền phù hợp
+
+Xem toàn bộ booking và stay của property.
+
+Duyệt vượt hạn mức supervisor.
+
+Unlock một số case có lý do.
+
+Chuyển owner.
+
+Duyệt room move phức tạp.
+
+Xem audit và exception dashboard.
+
+Duty Manager không nên dùng superadmin làm tài khoản hằng ngày.
+
+15.7. Room Attendant hoặc Nhân viên buồng phòng
+
+Công dụng
+
+Nhận danh sách phòng.
+
+Dọn phòng.
+
+Bổ sung vật tư.
+
+Ghi minibar nếu được phép.
+
+Báo đồ thất lạc.
+
+Báo hư hỏng.
+
+Đánh dấu công việc hoàn thành.
+
+Yêu cầu kiểm tra.
+
+Phạm vi dữ liệu
+
+Room Attendant chỉ cần thấy số phòng, loại dọn, ưu tiên, trạng thái khách ở mức cần thiết, yêu cầu phù hợp, deadline và ghi chú an toàn. Người này không cần thấy giá phòng, payment, passport, email, commission hoặc toàn bộ folio.
+
+Chuyển trạng thái phù hợp
+
+Assigned sang In Progress.
+
+In Progress sang Cleaned.
+
+In Progress sang Issue Found.
+
+Cleaned sang Awaiting Inspection.
+
+Room Attendant không nên tự chuyển phòng thẳng sang Inspected hoặc Ready for Sale khi khách sạn yêu cầu supervisor kiểm tra.
+
+15.8. Housekeeping Supervisor
+
+Công dụng
+
+Lập kế hoạch dọn phòng.
+
+Phân phòng.
+
+Điều chỉnh ưu tiên.
+
+Kiểm tra phòng.
+
+Xác nhận trạng thái.
+
+Theo dõi linen và amenities.
+
+Báo maintenance.
+
+Theo dõi năng suất và chất lượng.
+
+OCA Vertical Hotel tách housekeeping khỏi reservation và folio. Đây là thiết kế đúng vì housekeeping cần hoạt động trên phòng và task nhưng không cần toàn bộ quyền tài chính.
+
+Nên được phép
+
+Xem arrivals và departures liên quan room readiness.
+
+Phân task.
+
+Đổi người thực hiện.
+
+Xác nhận inspection.
+
+Đánh dấu phòng unavailable theo quy trình.
+
+Tạo maintenance ticket.
+
+Xem lịch sử vệ sinh.
+
+Không nên được phép
+
+Sửa giá booking.
+
+Refund.
+
+Check-in khách.
+
+Xem full payment.
+
+Tạo role.
+
+Mở lại night audit.
+
+15.9. Maintenance Engineer
+
+Công dụng
+
+Maintenance Engineer nhận ticket hư hỏng, kiểm tra phòng, sửa chữa, ghi linh kiện và thời gian, xác nhận hoàn thành, yêu cầu nghiệm thu và đề nghị out-of-order.
+
+Quyền phù hợp
+
+Xem phòng hoặc tài sản được giao.
+
+Xem tình trạng khách ở mức cần thiết cho an toàn và lịch vào phòng.
+
+Tạo hoặc cập nhật work order.
+
+Đề nghị hoặc đánh dấu không thể sử dụng theo policy.
+
+Không tự đưa phòng trở lại inventory nếu cần housekeeping hoặc engineering supervisor nghiệm thu.
+
+Không nên được thấy
+
+Giá phòng.
+
+Payment.
+
+Passport.
+
+Ghi chú khách không liên quan.
+
+Dữ liệu toàn chuỗi.
+
+15.10. Night Auditor
+
+Night Auditor là một trong những role có độ tin cậy cao nhất trong khách sạn.
+
+Công dụng
+
+Kiểm tra arrival chưa xử lý.
+
+Đánh dấu no-show theo policy.
+
+Kiểm tra room charge.
+
+Kiểm tra folio.
+
+Kiểm tra payment.
+
+Kiểm tra cash.
+
+Chạy posting cuối ngày.
+
+Chạy báo cáo.
+
+Chuyển business date.
+
+Khóa kỳ.
+
+Phân quyền
+
+Night Auditor có thể xem toàn property, sửa một số posting có kiểm soát, tạo adjustment với reason, chạy audit và chốt ngày. Người này không nên thay đổi rate plan, quản lý role, xóa audit cũ, tự ý backdate sau khi khóa hoặc sửa lịch sử mà không có reversal.
+
+15.11. Revenue Manager
+
+Công dụng
+
+Revenue Manager quản lý giá, rate plan, restriction, minimum stay, closed to arrival, allotment, overbooking level, channel, forecast, occupancy, ADR, RevPAR và promotion.
+
+Phân quyền
+
+Revenue Manager được thay đổi cấu hình giá tương lai nhưng không nên tự sửa folio khách đang ở, refund, thu tiền, đánh dấu phòng sạch, check-in, sửa payment hoặc xóa booking.
+
+Mọi thay đổi rate nên có ngày hiệu lực, property, channel, người thay đổi, giá trước và sau, lý do và approval nếu biến động vượt ngưỡng.
+
+15.12. Finance hoặc Accounts
+
+Finance quản lý deposit, payment, invoice, credit note, refund, city ledger, corporate account, reconciliation, tax, revenue close, commission OTA và supplier payment. Finance cần dữ liệu tài chính nhưng không nhất thiết cần đổi room assignment, đánh dấu phòng clean, cấp room key, sửa guest preference hoặc truy cập housekeeping task.
+
+15.13. Property Manager hoặc General Manager
+
+Property Manager theo dõi doanh thu, occupancy, guest satisfaction, chất lượng vận hành, nhân sự, rủi ro, exception và phê duyệt đặc biệt. Manager nên thấy dashboard tổng hợp nhưng không nhất thiết phải sửa trực tiếp mọi transaction.
+
+15.14. PMS hoặc Access Administrator
+
+PMS hoặc Access Administrator tạo user, gắn role, gắn property, gắn department, thiết lập MFA, thu hồi session, quản lý API hoặc channel credential và kiểm tra quyền. Người này không mặc nhiên được cấp quyền xem passport, folio hoặc lịch sử khách.
+
+16. Workflow đặt phòng và lưu trú hoàn chỉnh
+
+Bảng 4. Workflow đặt phòng, lưu trú và đóng ngày
+
+Giai đoạn | Người chính | Hoạt động | Kiểm soát bắt buộc | Đầu ra
+
+1. Availability và rate | Revenue, Reservation | Giá, restriction, inventory | Property, channel, date, approval | Giá và phòng có thể bán
+
+2. Tạo reservation | Reservation Agent | Guest, ngày, room type, policy | Ownership, deposit rule, discount limit | Reservation
+
+3. Deposit và xác nhận | Gateway, cashier, Finance | Thu cọc, guarantee | Sales không tự xác nhận paid | Guaranteed hoặc exception
+
+4. Pre-arrival | Front Office, Housekeeping | Arrival list, VIP, preference, readiness | Data minimization, priority | Kế hoạch đón khách
+
+5. Phân phòng | Front Desk hoặc System | Gán physical room | Room type, capacity, clean, no conflict | Room assignment
+
+6. Check-in | Receptionist | Xác minh, deposit, room, key | Property, shift, ready status, identity | Stay đang hoạt động
+
+7. In-house operation | Nhiều bộ phận | Service, charge, housekeeping, maintenance | Role và field-level access | Dịch vụ trong thời gian lưu trú
+
+8. Room move | Front Desk, Supervisor | Chuyển phòng | Reason, approval, rate impact, audit | Room move record
+
+9. Check-out | Receptionist hoặc Cashier | Cân folio, thu tiền, invoice | Không xóa charge, dùng reversal | Stay kết thúc
+
+10. Housekeeping turnover | Attendant, Supervisor | Dirty, clean, inspect, ready | Separation of duties | Phòng sẵn sàng bán
+
+11. Night audit | Night Auditor | Posting, cash, no-show, close date | High privilege, audit log, lock period | Business date mới
+
+12. Refund và post-stay | Service, Manager, Finance | Complaint, refund, adjustment | Maker-checker, payment source | Case sau lưu trú được đóng
+
+16.1. Availability và rate
+
+Revenue Manager định nghĩa giá và restriction; Reservation Agent chỉ chọn giá được phép. Rate override vượt hạn mức phải duyệt. Availability phải tính cả reservation, out-of-order room và allotment.
+
+16.2. Tạo reservation
+
+Reservation Agent nhập ngày đến và đi, khách, room type, rate plan, source, guarantee, deposit, cancellation policy, special request và owner. HotelDruid cho phép giới hạn nhân viên theo phòng, khoảng thời gian, rate, discount và booking do chính người đó tạo.
+
+16.3. Deposit và xác nhận
+
+Payment gateway hoặc cashier xác nhận tiền. Reservation chuyển sang Guaranteed hoặc Confirmed khi đủ điều kiện. Sales không được tự sửa paid status. Booking thiếu deposit đi vào queue và booking cần approval không được auto-confirm.
+
+16.4. Pre-arrival
+
+Front Office kiểm tra arrival list, guest profile, VIP, special request, room preference, payment guarantee, room readiness, transport, group và early check-in. Housekeeping chỉ nhận phần dữ liệu cần cho room readiness, không cần toàn bộ folio.
+
+16.5. Phân phòng
+
+Hệ thống hoặc lễ tân gán phòng vật lý và kiểm tra room type, sức chứa, out-of-order, clean hoặc inspected status, trùng stay, preference, accessibility và connecting room. Lịch sử phải ghi người gán, thời điểm, phòng cũ, phòng mới và lý do.
+
+16.6. Check-in
+
+Lễ tân tìm reservation, xác minh guest, kiểm tra payment hoặc deposit, ghi khách đi cùng, xác nhận room, check-in và cấp key. Check-in chỉ được phép khi reservation hợp lệ, phòng sẵn sàng, business date phù hợp, nhân viên thuộc property, không có blocking issue và dữ liệu bắt buộc đã đầy đủ hoặc có supervisor override.
+
+16.7. In-house operation
+
+Trong thời gian lưu trú, Concierge xử lý request, nhà hàng hoặc minibar post charge theo loại, Housekeeping xử lý phòng, Maintenance xử lý sự cố, Front Desk thực hiện room move hoặc extension và Finance theo dõi credit. QloApps cho phép nhiều thao tác mạnh trong order detail; doanh nghiệp phải tách chúng thành permission và approval riêng thay vì trao nguyên màn hình cho mọi lễ tân. Nguồn: QloApps Orders.
+
+16.8. Room move
+
+Room move phải ghi phòng cũ, phòng mới, thời điểm, lý do, người yêu cầu, người duyệt, tình trạng đồ khách, housekeeping status phòng cũ và thay đổi giá nếu có. Upgrade miễn phí cần approval theo giá trị.
+
+16.9. Check-out
+
+Trước check-out, folio phải được kiểm tra; charge chưa post phải xử lý; payment phải cân; deposit phải được áp đúng; invoice phải được tạo; key phải đóng; phòng chuyển sang Dirty hoặc Departure Clean Required. Không được xóa charge để làm folio cân; phải dùng void có reason, reversal, adjustment hoặc credit note.
+
+16.10. Housekeeping turnover
+
+Luồng trạng thái phù hợp:
+
+Checked-out.
+
+Dirty.
+
+Assigned to Attendant.
+
+In Progress.
+
+Cleaned.
+
+Awaiting Inspection.
+
+Inspected.
+
+Vacant Ready.
+
+Nếu phát hiện sự cố:
+
+In Progress.
+
+Maintenance Required.
+
+Out of Service hoặc Out of Order.
+
+Repaired.
+
+Re-cleaned.
+
+Inspected.
+
+Ready.
+
+Nhân viên buồng không nên tự đưa một phòng hư hỏng trở lại bán.
+
+16.11. Night audit
+
+Night Auditor kiểm tra phòng, in-house, no-show, posting, payment, cash và revenue; chạy audit và khóa business date. Sau khi đóng ngày, backdate phải bị hạn chế; transaction sửa đổi phải tạo adjustment; mở lại kỳ cần quyền rất cao và lý do; audit log không được xóa.
+
+16.12. Refund và post-stay
+
+QloApps tổ chức refund thành request có khách, lý do, số tiền order, số tiền đã trả, phương thức thanh toán và trạng thái; admin có thể từ chối hoặc hoàn tất. Doanh nghiệp nên tách người yêu cầu, người duyệt và người thực hiện trả tiền. Nguồn: QloApps Refund Request.
+
+17. Công thức phân quyền dành cho khách sạn
+
+CÔNG THỨC LÕI Cho phép khi: user active AND thuộc đúng property AND thuộc đúng department AND có role phù hợp AND đang trong ca hợp lệ nếu action phụ thuộc ca AND có quyền trên reservation, stay, folio, room hoặc task AND đúng room, floor hoặc booking scope AND đối tượng ở trạng thái cho phép AND không vượt rate, refund hoặc discount limit AND có approval nếu cần AND cash drawer hoặc payment context hợp lệ.
+
+Ví dụ, một Receptionist có quyền check-in nhưng chỉ khi đang trực tại Hotel A, reservation thuộc Hotel A, ngày đến phù hợp, phòng đã được Housekeeping Supervisor xác nhận Ready, deposit đạt yêu cầu, không có blocking note, room key device thuộc quầy đó và user đang có ca mở. Có role Receptionist không có nghĩa được check-in mọi booking tại mọi khách sạn.
+
+18. Ma trận quyền mẫu cho khách sạn
+
+18.1. Reservation và Front Office
+
+Ma trận 3. Reservation và Front Office
+
+Nghiệp vụ | Reservation Agent | Receptionist | Concierge | Front Office Supervisor | Front Office Manager
+
+Xem availability | Theo property | Theo property | Chỉ xem cơ bản | Có | Có
+
+Tạo reservation | Thực hiện | Walk-in theo quyền | Không | Có | Có
+
+Sửa reservation trước check-in | Theo phạm vi | Theo arrival | Không | Có | Có
+
+Hủy booking | Trong policy | Khởi tạo | Không | Duyệt trong hạn mức | Duyệt
+
+Backdate booking | Không | Không | Không | Hạn chế | Theo quyền đặc biệt
+
+Rate override | Trong hạn mức nhỏ | Khởi tạo | Không | Duyệt mức nhỏ | Duyệt mức lớn
+
+Tạo overbooking | Không | Không | Không | Khởi tạo | Duyệt
+
+Phân phòng | Chuẩn bị hoặc pre-assign | Thực hiện | Chỉ xem | Có | Có
+
+Check-in | Không hoặc hạn chế | Thực hiện | Không | Có | Có
+
+Cấp lại key | Không | Theo quy trình | Không | Có | Có
+
+Room move | Không | Khởi tạo | Khởi tạo request | Duyệt | Duyệt
+
+Gia hạn stay | Tạo yêu cầu | Trong availability và hạn mức | Không | Duyệt | Có
+
+Check-out | Không | Thực hiện khi folio cân | Không | Có | Có
+
+Guest service request | Ghi trước arrival | Tạo hoặc cập nhật | Thực hiện | Theo dõi | Theo dõi
+
+Xem passport hoặc ID | Theo booking cần xử lý | Khi check-in | Không hoặc che | Theo case | Theo case
+
+Export guest list | Không | Không | Không | Hạn chế | Có phê duyệt
+
+18.2. Housekeeping và Maintenance
+
+Ma trận 4. Housekeeping và Maintenance
+
+Nghiệp vụ | Room Attendant | Housekeeping Supervisor | Maintenance | Front Desk | Duty Manager
+
+Xem danh sách phòng | Phòng được giao | Toàn property | Ticket được giao | Trạng thái chung | Toàn property
+
+Nhận task | Có | Phân task | Có | Tạo yêu cầu | Có
+
+Đánh dấu In Progress | Có | Có | Có | Không | Có
+
+Đánh dấu Cleaned | Có | Có | Không | Không | Có
+
+Đánh dấu Inspected | Không | Có | Không | Không | Có
+
+Báo hư hỏng | Có | Có | Có | Có | Có
+
+Đưa phòng Out of Service | Khởi tạo | Theo ngưỡng | Khởi tạo hoặc đề nghị | Khởi tạo | Duyệt
+
+Đưa phòng Out of Order dài hạn | Không | Đề nghị | Đề nghị | Không | Duyệt
+
+Đưa phòng trở lại bán | Không | Sau kiểm tra | Không tự quyết | Chỉ nhận trạng thái | Duyệt theo policy
+
+Xem guest name | Hạn chế tối thiểu | Theo nhu cầu | Hạn chế tối thiểu | Có | Có
+
+Xem payment hoặc folio | Không | Không | Không | Theo nhiệm vụ | Có
+
+Ghi minibar | Theo policy | Kiểm tra | Không | Có thể kiểm tra | Có
+
+Xác nhận lost-and-found | Tạo biên bản | Duyệt hoặc đối chiếu | Có thể tạo | Tiếp nhận khách | Giám sát
+
+18.3. Tài chính và quản trị
+
+Ma trận 5. Tài chính, doanh thu và quản trị truy cập
+
+Nghiệp vụ | Receptionist hoặc Cashier | Night Auditor | Finance | Revenue Manager | Property Manager | Access Admin
+
+Thu payment | Theo ca | Có khi trực | Có | Không | Chỉ xem | Không
+
+Sửa payment status | Không tùy ý | Adjustment có reason | Thực hiện kiểm soát | Không | Duyệt ngoại lệ | Không
+
+Void receipt | Khởi tạo | Theo hạn mức | Duyệt hoặc thực hiện | Không | Duyệt | Không
+
+Refund request | Khởi tạo | Khởi tạo | Xem | Không | Duyệt | Không
+
+Refund execution | Không | Không | Thực hiện sau duyệt | Không | Đồng duyệt mức lớn | Không
+
+Post folio charge | Theo loại | Có | Adjustment | Không | Có | Không
+
+Xóa folio charge | Không | Không | Không; dùng reversal | Không | Không | Không
+
+Night audit | Không | Thực hiện | Kiểm tra | Chỉ xem | Giám sát | Không
+
+Mở lại ngày đã khóa | Không | Không | Đề nghị | Không | Duyệt đặc biệt | Chỉ hỗ trợ kỹ thuật
+
+Cấu hình rate plan | Không | Không | Chỉ xem | Thực hiện | Duyệt chính sách | Không
+
+Thay overbooking limit | Không | Không | Không | Khởi tạo | Duyệt | Không
+
+Xem báo cáo doanh thu | Hạn chế | Theo ca hoặc ngày | Có | Có | Có | Không mặc định
+
+Export tài chính | Không | Hạn chế | Có | Hạn chế | Có | Không mặc định
+
+Quản lý user hoặc role | Không | Không | Không | Không | Duyệt yêu cầu | Thực hiện
+
+Quản lý integration hoặc API | Không | Không | Theo payment scope | Theo channel scope | Duyệt | Thực hiện
+
+Xem audit log | Của mình | Theo ca | Tài chính | Thay đổi giá | Toàn property | Quyền thay đổi truy cập
+
+19. Cách cấp trên quản lý và theo dõi nhân viên khách sạn
+
+19.1. Bảng điều hành đầu ca
+
+Front Office Supervisor hoặc Duty Manager phải biết:
+
+Arrivals hôm nay.
+
+Departures hôm nay.
+
+In-house.
+
+New bookings.
+
+Cancellations.
+
+No-show pending.
+
+Early arrivals.
+
+Late check-outs.
+
+Rooms chưa assign.
+
+Rooms chưa ready.
+
+VIP.
+
+Group arrivals.
+
+Due amount.
+
+Payment issue.
+
+Overbooking.
+
+Maintenance blocking room.
+
+Staff có mặt trong ca.
+
+19.2. Bảng Housekeeping
+
+Housekeeping Supervisor cần thấy:
+
+Dirty rooms.
+
+Departure cleans.
+
+Stay-over cleans.
+
+Priority rooms.
+
+Do Not Disturb.
+
+Rooms in progress.
+
+Cleaned awaiting inspection.
+
+Failed inspection.
+
+Maintenance issue.
+
+Out of Service.
+
+Out of Order.
+
+Attendant workload.
+
+Average cleaning time.
+
+Re-clean rate.
+
+Không nên đánh giá nhân viên buồng chỉ bằng tốc độ. Năng suất phải đi kèm inspection quality, complaint, lost-and-found compliance, damage reporting, re-clean và safety.
+
+19.3. Bảng tài chính theo ca
+
+Opening cash.
+
+Cash received.
+
+Card.
+
+Transfer.
+
+Deposit.
+
+Refund.
+
+Void.
+
+Adjustment.
+
+Closing cash.
+
+Variance.
+
+Unsettled folio.
+
+High-balance guest.
+
+City ledger.
+
+Suspicious transaction.
+
+19.4. Bảng exception
+
+Người quản lý cần tập trung vào các ngoại lệ:
+
+Room rate bị override quá mức.
+
+Complimentary room.
+
+Upgrade miễn phí.
+
+Refund.
+
+Room move nhiều lần.
+
+Booking backdate.
+
+Check-in khi phòng chưa ready.
+
+Key được cấp lại nhiều lần.
+
+Folio adjustment.
+
+Guest profile bị merge hoặc sửa lớn.
+
+Phòng bị Out of Order.
+
+Night audit bị trì hoãn.
+
+Mở lại ngày cũ.
+
+Export guest data.
+
+User được tăng quyền.
+
+API hoặc channel sync failure.
+
+19.5. Handover giữa các ca
+
+Mỗi ca phải bàn giao:
+
+Khách chưa đến.
+
+Khách chưa thanh toán.
+
+Complaint đang xử lý.
+
+Room move.
+
+VIP request.
+
+Maintenance.
+
+Wake-up call.
+
+Transport.
+
+Group.
+
+Lost-and-found.
+
+Cash variance.
+
+Booking có nguy cơ.
+
+Việc cần manager duyệt.
+
+Handover phải là record có người tạo, ca, thời điểm, người nhận, trạng thái, mức ưu tiên, liên kết reservation hoặc room và lịch sử cập nhật. Không nên chỉ dùng sổ giấy hoặc nhóm chat không liên kết với booking.
+
+20. KPI theo vị trí trong khách sạn
+
+20.1. Reservation Agent
+
+Response time.
+
+Conversion.
+
+Average lead time.
+
+Average booking value.
+
+Cancellation.
+
+No-show.
+
+Deposit compliance.
+
+Booking accuracy.
+
+Rate override.
+
+Upsell.
+
+20.2. Receptionist
+
+Check-in duration.
+
+Check-out duration.
+
+Queue wait.
+
+Guest profile completeness.
+
+Cash variance.
+
+Folio correction.
+
+Key reissue.
+
+Complaint.
+
+Room assignment error.
+
+Upsell không làm ảnh hưởng trải nghiệm.
+
+20.3. Concierge hoặc Guest Relations
+
+Request response time.
+
+Request completion.
+
+Complaint resolution.
+
+Guest feedback.
+
+Escalation.
+
+Service recovery cost.
+
+Partner booking accuracy.
+
+20.4. Housekeeping Attendant
+
+Rooms completed.
+
+On-time readiness.
+
+Inspection pass rate.
+
+Re-clean.
+
+Guest complaint.
+
+Damage reporting.
+
+Lost-and-found compliance.
+
+Supply variance.
+
+20.5. Housekeeping Supervisor
+
+Rooms ready before arrival.
+
+Backlog.
+
+Workload balance.
+
+Failed inspection.
+
+Out-of-service turnaround.
+
+Staff attendance.
+
+Linen và amenities control.
+
+20.6. Maintenance
+
+Response time.
+
+Mean time to repair.
+
+Repeat fault.
+
+Room downtime.
+
+Preventive maintenance completion.
+
+Parts cost.
+
+Safety issue closure.
+
+20.7. Night Auditor
+
+Audit completion time.
+
+Unbalanced folio.
+
+Unposted charge.
+
+Cash discrepancy.
+
+No-show accuracy.
+
+Manual adjustment.
+
+Business date delay.
+
+20.8. Revenue Manager
+
+Occupancy.
+
+ADR.
+
+RevPAR.
+
+Forecast accuracy.
+
+Channel mix.
+
+Overbooking outcome.
+
+Rate parity issue.
+
+Manual override.
+
+Unsold inventory.
+
+NGUYÊN TẮC Không nên dùng một KPI duy nhất. Ép lễ tân check-in quá nhanh có thể làm giảm việc xác minh danh tính; ép housekeeping dọn thật nhiều phòng có thể làm giảm chất lượng; ép sales tăng booking có thể làm tăng hủy và công nợ.
+
+PHẦN V. MÔ HÌNH TỔ CHỨC, NGUYÊN TẮC KIỂM SOÁT VÀ TRIỂN KHAI
+
+21. Mô hình tổ chức minh họa cho đại lý du lịch 40 người
+
+Bảng 5. Cơ cấu nhân sự mẫu cho đại lý du lịch
+
+Bộ phận | Số người | Trách nhiệm chính
+
+Reservation hoặc Sales Agent | 16 | Tư vấn, báo giá, tạo booking, theo dõi khách
+
+Ticketing Agent | 5 | Kiểm tra và phát hành ticket hoặc EMD
+
+Reissue hoặc Refund Specialist | 3 | Đổi vé, tính hoàn, xử lý case sau bán
+
+Corporate hoặc Group Agent | 3 | Khách doanh nghiệp, đoàn, policy và credit
+
+Tour Operations | 3 | Supplier, manifest, điều hành dịch vụ
+
+Customer Service hoặc Disruption | 2 | Thay đổi chuyến, khiếu nại, hỗ trợ sau bán
+
+Finance hoặc BSP Reconciliation | 2 | Payment, đối soát, refund execution, commission
+
+Team Supervisor | 3 | Queue, phê duyệt, chất lượng và phân việc
+
+Quality Assurance | 1 | Lấy mẫu, kiểm tra lỗi, đào tạo
+
+Operations Manager | 1 | Điều hành, ngoại lệ lớn, rủi ro
+
+Access hoặc System Administrator | 1 | User, role, scope, MFA, device và token
+
+Tổng | 40 | 
+
+Cách tổ chức
+
+16 Sales chia thành 4 team.
+
+Mỗi team có queue hoặc customer segment riêng.
+
+Ba supervisor quản lý theo ca hoặc loại khách.
+
+Ticketing sử dụng queue tập trung.
+
+Refund tách khỏi sales.
+
+Finance tách khỏi ticketing.
+
+QA có quyền đọc và ghi kết quả kiểm tra nhưng không sửa transaction.
+
+Access Admin chỉ quản lý danh tính và permission.
+
+22. Mô hình tổ chức minh họa cho khách sạn 40 người
+
+Bảng 6. Cơ cấu nhân sự mẫu cho khách sạn
+
+Bộ phận | Số người | Trách nhiệm chính
+
+Front Desk hoặc Reception | 8 | Check-in, check-out, room assignment, guest service
+
+Reservation | 4 | Availability, booking, guarantee và confirmation
+
+Concierge hoặc Guest Relations | 3 | Yêu cầu khách, VIP, complaint, dịch vụ bổ sung
+
+Housekeeping Attendant | 10 | Dọn phòng, minibar, lost-and-found, báo hư hỏng
+
+Housekeeping Supervisor | 2 | Phân phòng, inspection, room readiness
+
+Maintenance | 3 | Work order, sửa chữa, room downtime
+
+Night Audit | 2 | Đóng ngày, posting, cash và báo cáo
+
+Finance hoặc Cash Control | 2 | Payment, refund, reconciliation, ledger
+
+Front Office Supervisor | 2 | Điều hành ca, approval nhỏ, handover
+
+Revenue Manager | 1 | Giá, inventory, channel, forecast
+
+Group hoặc Corporate Sales | 1 | Đoàn và khách doanh nghiệp
+
+Property Manager | 1 | Tổng điều hành property
+
+PMS hoặc Access Administrator | 1 | User, role, property scope và integration
+
+Tổng | 40 | 
+
+22.1. Phân chia theo ca
+
+Front Desk và Night Audit phải gắn với shift, thường gồm ca sáng, ca chiều và ca đêm. Quyền cashier hoặc night audit có thể chỉ active trong khoảng ca được phân.
+
+Ví dụ:
+
+Một lễ tân đang trực ca sáng có quyền thu tiền tại cash drawer A.
+
+Khi kết thúc ca, quyền drawer hết hiệu lực.
+
+Người đó vẫn có role Receptionist nhưng không thể tiếp tục post cash vào ca đã đóng.
+
+Supervisor phải xác nhận chênh lệch trước khi bàn giao.
+
+Đây là phân quyền theo thời gian và ngữ cảnh, không chỉ là RBAC.
+
+23. Các lớp cấu thành một hồ sơ nhân viên hoàn chỉnh
+
+Bảng 7. Các thành phần dữ liệu và kiểm soát của một nhân viên
+
+Thành phần | Nội dung | Ý nghĩa quản trị
+
+User Account | ID đăng nhập, email, trạng thái, MFA, session, ngày hết hạn | Xác định danh tính số và quyền đăng nhập
+
+Employee Profile | Mã nhân viên, bộ phận, quản lý, ngày vào hoặc nghỉ | Cơ cấu tổ chức và vòng đời nhân sự
+
+Operational Role | Sales, Ticketing, Receptionist, Housekeeping, Finance | Loại công việc được phép thực hiện
+
+Team hoặc Department Membership | Team, ca, ngày bắt đầu và kết thúc | Tổ chức và phân tải
+
+Location Scope | Office, airport, property, floor, gate | Phạm vi địa điểm
+
+Data Scope | Booking, account, queue, room, tour được giao | Phạm vi bản ghi cụ thể
+
+Provider hoặc Channel Scope | Hãng, supplier, OTA, channel | Phạm vi đối tác hoặc kênh
+
+Action Permission | Search, create, issue, refund, check-in, audit | Hành động nguyên tử
+
+Field Permission | Passport, card, margin, commission, security note | Trường dữ liệu được xem hoặc sửa
+
+State Permission | Draft, ticketed, checked-in, closed, audited | Trạng thái nghiệp vụ được thao tác
+
+Time hoặc Shift Scope | Ca, time window, effective date | Thời điểm quyền có hiệu lực
+
+Approval Limit | Discount, refund, override, credit, cash | Ngưỡng tự quyết
+
+Device Context | POS, mobile, gate device, front desk terminal | Thiết bị được phép sử dụng
+
+Audit History | Actor, thời gian, trước và sau, reason, approval | Truy cứu trách nhiệm
+
+Không nên trộn tất cả thành một trường chức danh. Hai người cùng role Receptionist có thể thuộc hai property, hai ca, hai cash drawer và hai hạn mức khác nhau.
+
+24. Những nguyên tắc bắt buộc dùng cho cả hai ngành
+
+24.1. Tài khoản cá nhân
+
+Không được dùng chung các tài khoản kiểu reception, ticketing, cashier, nightaudit hoặc admin. Mỗi người phải có account riêng để truy ra actor, khóa riêng, thu hồi session, áp MFA, tính hiệu suất và điều tra sự cố.
+
+24.2. Role không đủ
+
+Role chỉ trả lời người này thuộc loại công việc gì. Hệ thống còn phải biết:
+
+Property hoặc office.
+
+Department.
+
+Team.
+
+Queue.
+
+Airline hoặc provider.
+
+Rate plan.
+
+Room hoặc floor.
+
+Booking ownership.
+
+Corporate account.
+
+Shift.
+
+Transaction limit.
+
+Approval limit.
+
+Temporary privilege.
+
+24.3. Mặc định từ chối
+
+User mới, role mới hoặc tính năng mới phải bắt đầu từ trạng thái không có quyền cho đến khi được cấp rõ ràng. Giao diện ẩn nút không đủ; phía server phải kiểm tra quyền trên mọi request.
+
+24.4. Maker-checker và phân tách nhiệm vụ
+
+Các nghiệp vụ sau nên tách người tạo và người duyệt.
+
+Vé máy bay
+
+Fare override.
+
+Waive penalty.
+
+Refund.
+
+Reissue giá trị lớn.
+
+Ticketing ngoài chính sách.
+
+Commission adjustment.
+
+Payment correction.
+
+Khách sạn
+
+Refund.
+
+Complimentary stay.
+
+Rate override lớn.
+
+Overbooking.
+
+Mở lại night audit.
+
+Folio adjustment lớn.
+
+Room Out of Order dài hạn.
+
+Export guest data.
+
+24.5. Quyền theo trạng thái
+
+Không chỉ hỏi nhân viên có quyền sửa reservation hay không. Phải hỏi thêm:
+
+Trước hay sau ticket.
+
+Trước hay sau check-in.
+
+Trước hay sau checkout.
+
+Coupon đã flown chưa.
+
+Business date đã khóa chưa.
+
+Refund đã hoàn tất chưa.
+
+Phòng đã inspected chưa.
+
+Một action được phép ở trạng thái Draft có thể bị cấm hoàn toàn sau khi tài chính đã ghi nhận.
+
+24.6. Quyền theo thời hạn
+
+Ví dụ:
+
+Booking Agent chỉ được sửa reservation trong một khoảng thời gian xác định.
+
+Agency partner không được hủy sau khi confirmed.
+
+Lễ tân không được backdate quá ngưỡng.
+
+Ticketing Agent chỉ được void trong cửa sổ hợp lệ.
+
+Guide chỉ xem manifest từ vài ngày trước tour đến khi tour kết thúc.
+
+Temporary refund role tự hết hạn sau ca xử lý khẩn cấp.
+
+HotelDruid thể hiện rõ pattern giới hạn thời gian sửa hoặc hủy booking theo user và trạng thái xác nhận.
+
+24.7. Quyền theo tiền và tỷ lệ
+
+Mỗi nhân viên có thể có:
+
+Discount limit.
+
+Fare override limit.
+
+Refund limit.
+
+Complimentary limit.
+
+Credit limit approval.
+
+Folio adjustment limit.
+
+Cash drawer limit.
+
+Emergency spend limit.
+
+24.8. Quyền theo thiết bị
+
+Thiết bị tại gate, quầy check-in, front desk, POS, housekeeping mobile hoặc guide app phải có device identity, token riêng, security profile, phạm vi property, event hoặc flight, khả năng revoke và lịch sử hoạt động. Không nên nhúng token user cá nhân dùng chung trong mọi thiết bị.
+
+24.9. Field-level access và data minimization
+
+Các dữ liệu cần được che đối với phần lớn nhân viên:
+
+Passport hoặc ID đầy đủ.
+
+Card data.
+
+Payment token.
+
+Bank account.
+
+Security note.
+
+Medical hoặc special assistance không liên quan.
+
+Giá vốn.
+
+Margin.
+
+Commission của người khác.
+
+API credential.
+
+Full audit log.
+
+Nhân viên có quyền mở booking chưa chắc được đọc mọi trường của booking.
+
+24.10. Không hard-delete lịch sử
+
+Không nên xóa trực tiếp ticket, payment, refund, folio charge, booking đã sử dụng, night audit, commission, room move hoặc approval. Nên sử dụng Void, Cancel, Reversal, Credit Note, Exchange, Amendment hoặc Adjustment.
+
+24.11. Audit bất biến
+
+Audit phải ghi:
+
+Actor.
+
+Role hiệu lực.
+
+Time và timezone.
+
+Device hoặc IP khi cần.
+
+Office hoặc property.
+
+Action.
+
+Object.
+
+Giá trị trước.
+
+Giá trị sau.
+
+Reason.
+
+Approval.
+
+Correlation hoặc reference ID.
+
+24.12. Rà soát quyền định kỳ
+
+Hằng tháng
+
+Tài khoản admin.
+
+Ticketing authority.
+
+Refund permission.
+
+Night audit.
+
+Rate override.
+
+Export.
+
+Dormant user.
+
+API token.
+
+Hằng quý
+
+Toàn bộ nhân viên.
+
+Người chuyển bộ phận.
+
+Người đổi property.
+
+Người đổi ca.
+
+Role cộng dồn.
+
+Quyền tạm thời quá hạn.
+
+Account bên ngoài.
+
+OWASP cảnh báo về privilege creep: nhân viên chuyển vai trò nhưng quyền cũ không được thu hồi.
+
+25. Vòng đời tài khoản nhân viên
+
+25.1. Khi nhân viên vào làm
+
+Tạo tài khoản cá nhân.
+
+Xác minh email hoặc số điện thoại công việc.
+
+Bật MFA cho role nhạy cảm.
+
+Gắn role chuẩn.
+
+Gắn office, property, department và team.
+
+Gắn ca, queue hoặc room scope.
+
+Gắn hạn mức.
+
+Ghi người phê duyệt quyền.
+
+Kiểm thử bằng tài khoản thật sự bị giới hạn.
+
+25.2. Khi chuyển bộ phận hoặc thăng chức
+
+Thu hồi role cũ trước khi gắn role mới.
+
+Chuyển booking, account, queue hoặc room task.
+
+Xử lý commission hoặc approval đang mở.
+
+Cập nhật manager.
+
+Cập nhật location và shift.
+
+Đặt ngày hết hạn cho quyền chuyển tiếp.
+
+Kiểm tra quyền hiệu lực sau khi cộng nhiều role.
+
+25.3. Khi nghỉ phép hoặc tạm ngừng
+
+Dừng phân lead hoặc task mới.
+
+Chuyển queue và khách đang mở.
+
+Có thể khóa các quyền giao dịch tài chính.
+
+Giữ lịch sử attribution.
+
+Đặt ngày tự động khôi phục hoặc yêu cầu quản lý xác nhận.
+
+25.4. Khi nghỉ việc
+
+Khóa đăng nhập ngay theo thời điểm hiệu lực.
+
+Thu hồi session, token, API key và thiết bị.
+
+Chuyển booking, customer portfolio, tour hoặc task.
+
+Thu hồi ticketing authority nội bộ.
+
+Đóng cash drawer.
+
+Xử lý commission đang treo.
+
+Giữ lịch sử transaction và audit.
+
+Rà soát export hoặc truy cập bất thường trước thời điểm nghỉ.
+
+26. Cách quản lý nhân viên theo ngày, tuần và tháng
+
+26.1. Hằng ngày
+
+Đại lý vé máy bay
+
+Booking sắp hết time limit.
+
+Paid-not-ticketed.
+
+Payment failed.
+
+Flight disruption.
+
+Refund pending.
+
+Queue backlog.
+
+Cash variance.
+
+Ticketing error.
+
+Hãng hoặc provider unavailable.
+
+Khách sạn
+
+Arrival, departure và in-house.
+
+Room readiness.
+
+Overbooking.
+
+VIP.
+
+Outstanding balance.
+
+Housekeeping backlog.
+
+Maintenance blocking.
+
+Cash variance.
+
+No-show.
+
+Night audit status.
+
+26.2. Hằng tuần
+
+Review QA.
+
+Phân tích nguyên nhân lỗi.
+
+Complaint.
+
+Staff capacity.
+
+Shift allocation.
+
+Nhu cầu đào tạo.
+
+Exception approval.
+
+Refund aging.
+
+Rate hoặc fare override.
+
+Supplier hoặc service issue.
+
+Access bất thường.
+
+26.3. Hằng tháng
+
+Revenue.
+
+Margin.
+
+Commission.
+
+Productivity.
+
+Quality.
+
+Repeat error.
+
+Fraud indicators.
+
+Settlement.
+
+Budget.
+
+Role recertification.
+
+Dormant accounts.
+
+Chính sách cần điều chỉnh.
+
+27. Mô hình dashboard dành cho cấp quản lý
+
+27.1. Dashboard vận hành
+
+Dashboard vận hành phải trả lời được bốn câu hỏi:
+
+Hôm nay có những việc gì phải hoàn thành?
+
+Việc nào đang quá hạn hoặc có nguy cơ thất bại?
+
+Ai đang phụ trách và tải công việc ra sao?
+
+Ngoại lệ nào cần cấp trên quyết định ngay?
+
+27.2. Dashboard chất lượng
+
+Lỗi theo người và theo loại nghiệp vụ.
+
+Lỗi lặp lại.
+
+Case bị reopen.
+
+Khiếu nại.
+
+Rework.
+
+Tỷ lệ phải supervisor can thiệp.
+
+Kết quả kiểm tra QA.
+
+Nhu cầu đào tạo.
+
+27.3. Dashboard tài chính và rủi ro
+
+Refund và void.
+
+Discount hoặc override.
+
+Cash variance.
+
+Chargeback.
+
+Debit memo.
+
+Unmatched payment.
+
+Commission adjustment.
+
+Complimentary hoặc goodwill.
+
+Export dữ liệu.
+
+Giao dịch ngoài giờ.
+
+27.4. Dashboard truy cập
+
+Tài khoản active hoặc dormant.
+
+Tài khoản đặc quyền.
+
+Quyền tạm thời sắp hết hạn.
+
+User có nhiều role xung đột.
+
+Login thất bại.
+
+Session hoặc token lâu ngày.
+
+Thiết bị không còn sử dụng.
+
+Role không có owner.
+
+Người có quyền ngoài office hoặc property hiện tại.
+
+28. Đối chiếu các source và chuẩn tiêu biểu
+
+Bảng 8. Giá trị tham khảo và giới hạn của từng source hoặc chuẩn
+
+Source hoặc chuẩn | Điều học được | Điểm còn thiếu nếu dùng cho doanh nghiệp lớn
+
+QloApps | Profile, View hoặc Add hoặc Edit hoặc Delete, giới hạn theo hotel, reservation, order, refund, channel, dashboard | Cần approval threshold, ca làm, maker-checker và field-level masking chi tiết hơn
+
+HotelDruid | Giới hạn room, period, rate, discount, thời gian sửa hoặc hủy và chỉ xem booking của mình | Giao diện và kiến trúc có thể cần hiện đại hóa và tích hợp thêm
+
+OCA Vertical Hotel | Tách reservation, folio, housekeeping, restaurant và reporting thành module nghiệp vụ | Cần cấu hình kỹ record rule, workflow và quyền theo property
+
+pretix | Team, event scope, API token theo team, 2FA, device profile, gate và check-in scope | Là ticketing sự kiện; không có fare, PNR, e-ticket, EMD hoặc BSP
+
+TravelTrek | Acting staff, booking deadline, restore inventory, refund request, needs-attention queue | ADMIN và AGENT quá thô cho tổ chức thật
+
+Airline demo repositories | Mô hình customer, agent, staff, booking, commission và flight administration | Không đủ bằng chứng để coi là PSS hoặc GDS sản xuất
+
+IATA NDC | Shopping, offer và order giữa hãng với travel seller | Là chuẩn trao đổi, không phải phần mềm quản trị nhân viên hoàn chỉnh
+
+IATA ONE Order | Order tích hợp xuyên lifecycle, giảm phân mảnh PNR, ticket và EMD | Cần hệ thống triển khai cụ thể và policy nội bộ
+
+IATA BSP | Ticketing authority, payment method, sales, refund, reporting và remittance | Quy định có thể phụ thuộc thị trường và chính sách hãng
+
+OWASP Authorization Guidance | Least privilege, deny by default, kiểm tra quyền trên mọi request, chống privilege creep | Cần chuyển thành policy nghiệp vụ cụ thể cho từng tổ chức
+
+Các source trên cho thấy một hệ thống tốt không chỉ có Admin và Employee. Nó cần role, functional permission, data scope, device scope, time context, transaction limit, approval và audit.
+
+29. Bộ câu hỏi thiết kế phân quyền
+
+Trước khi cấp một quyền, người thiết kế phải trả lời:
+
+Ai đang yêu cầu?
+
+Người đó thuộc vai trò, team, department và đơn vị nào?
+
+Hành động cụ thể là gì?
+
+Hành động áp dụng lên đối tượng nào?
+
+Đối tượng thuộc office, property, hãng, tour, floor hoặc queue nào?
+
+Người đó có quan hệ gì với bản ghi: owner, assignee, supervisor, approver hay auditor?
+
+Bản ghi đang ở trạng thái nào?
+
+Thời hạn hoặc ca làm có còn hiệu lực không?
+
+Giá trị giao dịch hoặc tỷ lệ override là bao nhiêu?
+
+Có cần approval hay maker-checker không?
+
+Thiết bị và session có hợp lệ không?
+
+Dữ liệu trường nào cần che?
+
+Hành động được ghi audit như thế nào?
+
+Nếu bị từ chối, case được chuyển cho ai?
+
+Nếu không trả lời được các câu hỏi trên, quyền vẫn chưa đủ rõ để đưa vào sản xuất.
+
+30. Bộ kiểm thử phân quyền trước khi go-live
+
+30.1. Kiểm thử giao diện
+
+Menu không phù hợp không xuất hiện.
+
+Nút hành động bị ẩn hoặc disable đúng.
+
+Trường nhạy cảm được che.
+
+Lý do từ chối rõ ràng.
+
+Người dùng biết cách yêu cầu phê duyệt.
+
+30.2. Kiểm thử server và API
+
+Gọi URL trực tiếp vẫn bị chặn.
+
+API không trả bản ghi ngoài scope.
+
+API không trả trường nhạy cảm.
+
+Token thiết bị chỉ gọi endpoint được phép.
+
+Role bị thu hồi có hiệu lực ngay hoặc theo SLA xác định.
+
+Quyền tạm thời tự hết hạn.
+
+30.3. Kiểm thử trạng thái
+
+Draft được sửa nhưng Ticketed hoặc Checked-out bị khóa.
+
+Coupon Flown không được refund trái chính sách.
+
+Phòng chưa Inspected không được đưa về Ready nếu policy yêu cầu.
+
+Ngày đã Night Audit không được backdate tùy ý.
+
+30.4. Kiểm thử phạm vi
+
+User Hotel A không thấy Hotel B.
+
+User Office Hà Nội không issue cho office khác khi không được cấp.
+
+Guide không thấy tour khác.
+
+Room Attendant không thấy phòng ngoài danh sách.
+
+Airport Agent không thấy chuyến hoặc gate ngoài ca.
+
+30.5. Kiểm thử hạn mức và approval
+
+Discount hoặc refund dưới ngưỡng hoạt động đúng.
+
+Vượt ngưỡng chuyển đúng approver.
+
+Người tạo không tự duyệt.
+
+Approval hết hạn không còn hiệu lực.
+
+Thay đổi sau phê duyệt làm approval cũ mất hiệu lực nếu cần.
+
+30.6. Kiểm thử audit
+
+Có actor, time, object và action.
+
+Có before và after.
+
+Có reason.
+
+Có approver.
+
+Có office hoặc property.
+
+Không thể xóa log bằng role nghiệp vụ thông thường.
+
+31. Bản chất cuối cùng của việc quản lý các nhân viên này
+
+31.1. Đối với nhân viên bán vé máy bay
+
+Phải quản lý đồng thời:
+
+Khách hoặc account phụ trách.
+
+Office.
+
+Hãng được phép thao tác.
+
+Quyền tạo booking và quyền issue ticket.
+
+Payment method.
+
+Reissue và refund limit.
+
+Quyền waive phí.
+
+Queue.
+
+Booking state.
+
+Time limit.
+
+Approval.
+
+Audit.
+
+31.2. Đối với nhân viên khách sạn
+
+Phải quản lý đồng thời:
+
+Property.
+
+Bộ phận.
+
+Ca.
+
+Reservation.
+
+Phòng hoặc tầng.
+
+Guest data.
+
+Stay state.
+
+Room state.
+
+Folio state.
+
+Cash drawer.
+
+Discount, refund và rate override limit.
+
+Manager approval.
+
+Night audit state.
+
+Audit log.
+
+31.3. Kết luận quản trị
+
+Nhân viên bán vé, lễ tân, concierge, housekeeping, maintenance, night audit, finance và system administrator không phải các cấp quyền cao thấp trên cùng một đường thẳng. Họ là những vai trò khác nhau, mỗi vai trò cần quyền trên những đối tượng khác nhau.
+
+Housekeeping Supervisor có thể quyết định phòng đã đủ điều kiện bán nhưng không có quyền refund.
+
+Ticketing Agent có thể phát hành chứng từ giá trị lớn nhưng không có quyền quản lý user.
+
+Night Auditor có thể đóng ngày kinh doanh nhưng không có quyền chỉnh rate plan.
+
+Access Administrator có thể gắn role nhưng không tự động được đọc passport hoặc folio.
+
+KẾT LUẬN CỐT LÕI Không trao toàn quyền theo một chức danh chung. Hãy ghép Role + Scope + Ownership + State + Time + Limit + Approval + Device Context + Audit thành một quyết định phân quyền hoàn chỉnh.
+
+TÀI LIỆU THAM KHẢO
+
+QloApps, Permissions: https://docs.qloapps.com/administration/permissions/
+
+QloApps, Order Preferences: https://docs.qloapps.com/preferences/orders/
+
+QloApps, Operations Today: https://docs.qloapps.com/dashboard/operations_today/
+
+QloApps, Orders: https://docs.qloapps.com/orders/orders/
+
+QloApps, Refund Requests: https://docs.qloapps.com/hrs/manage_refund_request/
+
+HotelDruid, Users Management: https://www.hoteldruid.com/en/users_management.html
+
+OCA Vertical Hotel: https://github.com/OCA/vertical-hotel
+
+pretix, Teams: https://docs.pretix.eu/guides/teams/
+
+pretix, Device Authorization: https://docs.pretix.eu/dev/_sources/api/deviceauth.rst.txt
+
+TravelTrek: https://github.com/nuru484/traveltrek
+
+Airline Reservation System Demo: https://github.com/qilem/airline-reservation-system
+
+IATA NDC Developer Portal: https://developer.iata.org/en/ndc/
+
+IATA ONE Order: https://www.iata.org/en/programs/airline-distribution/retailing/one-order/
+
+IATA BSP Manual for Agents: https://www.iata.org/contentassets/bfacf03f8e914960898e262df2777352/bsp-manual-for-agents.pdf
+
+OWASP Authorization Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html
+
+PHỤ LỤC: TỪ ĐIỂN THUẬT NGỮ
+
+Thuật ngữ | Diễn giải
+
+RBAC | Phân quyền dựa trên vai trò. Role tập hợp các permission cho một loại trách nhiệm công việc.
+
+ABAC | Phân quyền dựa trên thuộc tính như địa điểm, ca, trạng thái, số tiền hoặc loại khách.
+
+ReBAC | Phân quyền dựa trên quan hệ, ví dụ user là owner, assignee, manager hoặc approver của bản ghi.
+
+Scope | Phạm vi mà quyền có hiệu lực: property, office, hãng, channel, floor, tour hoặc queue.
+
+Ownership | Quan hệ trách nhiệm giữa user và booking, khách hàng, room task hoặc case.
+
+Maker-checker | Một người tạo hoặc đề nghị, người khác kiểm tra hoặc phê duyệt.
+
+Least privilege | Chỉ cấp mức quyền tối thiểu cần cho công việc.
+
+Deny by default | Mặc định từ chối; chỉ cho phép khi chính sách cấp rõ ràng.
+
+PNR | Passenger Name Record, bản ghi đặt chỗ truyền thống trong hàng không.
+
+NDC | New Distribution Capability, chuẩn trao đổi dữ liệu phân phối hàng không của IATA.
+
+ONE Order | Mô hình Order tích hợp nhằm giảm phân mảnh giữa PNR, e-ticket và EMD.
+
+EMD | Electronic Miscellaneous Document, chứng từ điện tử cho dịch vụ bổ sung.
+
+BSP | Billing and Settlement Plan của IATA dành cho báo cáo, billing và remittance giữa đại lý và hãng.
+
+Ticketing Authority | Thẩm quyền hãng cấp cho đại lý hoặc office để phát hành ticket.
+
+Coupon | Phần quyền vận chuyển tương ứng từng chặng trong ticket.
+
+Folio | Sổ chi phí và thanh toán của kỳ lưu trú khách sạn.
+
+Room Type | Loại phòng được bán về mặt thương mại.
+
+Physical Room | Phòng vật lý cụ thể được gán cho khách.
+
+Night Audit | Quy trình kiểm tra và đóng ngày kinh doanh của khách sạn.
+
+Business Date | Ngày nghiệp vụ của khách sạn, có thể khác ngày lịch tại thời điểm chạy ca đêm.
+
+Out of Service | Phòng tạm không dùng trong thời gian ngắn hoặc hạn chế.
+
+Out of Order | Phòng bị rút khỏi inventory do sự cố nghiêm trọng hoặc dài hơn.
+
+ADR | Average Daily Rate, giá phòng bình quân.
+
+RevPAR | Revenue per Available Room, doanh thu trên mỗi phòng sẵn có.
+
+SLA | Cam kết thời gian xử lý một công việc hoặc case.
+
+Exception Queue | Hàng đợi tập trung các giao dịch quá hạn, lỗi hoặc cần quyết định.
+
+Audit Trail | Lịch sử ai làm gì, lúc nào, trên dữ liệu nào và thay đổi trước hoặc sau ra sao.
