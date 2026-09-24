@@ -139,7 +139,9 @@ describe('RateLimiterGuard', () => {
       reflector.getAllAndOverride.mockReturnValue({
         slidingWindow: { limit: 10, windowMs: 60000 },
       });
-      mockRedis.eval.mockRejectedValue(new Error('ECONNREFUSED: Redis is down'));
+      mockRedis.eval.mockRejectedValue(
+        new Error('ECONNREFUSED: Redis is down'),
+      );
 
       const context = createMockContext({ ip: '192.168.1.100' });
       const result = await guard.canActivate(context);

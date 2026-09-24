@@ -8,12 +8,13 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import * as path from 'path';
 
 import { AppModule } from './app.module';
-import { ObservabilityLoggerService, logWithTrace } from './observability/observability.module';
+import {
+  ObservabilityLoggerService,
+  logWithTrace,
+} from './observability/observability.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-    bufferLogs: true,
-  });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   // Sử dụng Winston + OpenTelemetry Structured Logger thay thế console mặc định
   const observabilityLogger = app.get(ObservabilityLoggerService);
@@ -49,11 +50,20 @@ async function bootstrap() {
 
   await app.listen(port);
 
-  logWithTrace('info', `Traveleke API running at http://localhost:${port}/api`, {
-    port,
-    prefix: '/api',
-  });
-}
+  logWithTrace(
+    'info',
+    `Traveleke API running at http://localhost:${port}/api`,
+    {
+      port,
+      prefix: '/api',
+    },
+  );
 
+  console.log(`\n======================================================`);
+  console.log(`🚀 [Traveleke Backend] API is ready and listening!`);
+  console.log(`📍 Endpoint: http://localhost:${port}/api`);
+  console.log(`🏥 Health:   http://localhost:${port}/api/health`);
+  console.log(`======================================================\n`);
+}
 
 void bootstrap();

@@ -43,7 +43,10 @@ export class RateLimiterGuard implements CanActivate {
     const response = http.getResponse();
 
     // Nhận diện route: ví dụ auth:login hoặc bookings:create
-    const controllerName = context.getClass().name.replace('Controller', '').toLowerCase();
+    const controllerName = context
+      .getClass()
+      .name.replace('Controller', '')
+      .toLowerCase();
     const handlerName = context.getHandler().name;
     const route = `${controllerName}:${handlerName}`;
 
@@ -59,7 +62,9 @@ export class RateLimiterGuard implements CanActivate {
 
         // Trích xuất IP an toàn (hỗ trợ reverse proxy / load balancer)
         let rawIp =
-          (request.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+          (request.headers['x-forwarded-for'] as string)
+            ?.split(',')[0]
+            ?.trim() ||
           request.ip ||
           request.socket?.remoteAddress ||
           'unknown';
@@ -104,7 +109,8 @@ export class RateLimiterGuard implements CanActivate {
             {
               statusCode: HttpStatus.TOO_MANY_REQUESTS,
               error: 'Too Many Requests',
-              message: 'Too many requests from this IP. Please try again later.',
+              message:
+                'Too many requests from this IP. Please try again later.',
               retryAfter: retryAfterSeconds,
             },
             HttpStatus.TOO_MANY_REQUESTS,
@@ -156,7 +162,8 @@ export class RateLimiterGuard implements CanActivate {
             {
               statusCode: HttpStatus.TOO_MANY_REQUESTS,
               error: 'Too Many Requests',
-              message: 'Rate limit exceeded for this account. Please slow down.',
+              message:
+                'Rate limit exceeded for this account. Please slow down.',
               retryAfter,
             },
             HttpStatus.TOO_MANY_REQUESTS,

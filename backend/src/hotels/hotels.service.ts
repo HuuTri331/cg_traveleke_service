@@ -351,7 +351,9 @@ export class HotelsService {
     });
 
     if (images.length === 0) {
-      const hotel = await this.hotelsRepository.findOne({ where: { id: hotelId } });
+      const hotel = await this.hotelsRepository.findOne({
+        where: { id: hotelId },
+      });
       if (hotel?.coverImageUrl && hotel.coverImageUrl.trim()) {
         const initialImg = this.hotelImagesRepository.create({
           hotelId: hotel.id,
@@ -512,7 +514,7 @@ export class HotelsService {
         throw new BadRequestException(
           'Dữ liệu kiểu khách sạn và vị trí khách sạn chưa có trong database nên chưa tạo khách sạn được!',
         );
-}
+      }
       if (driverError.errno === 1062) {
         throw new ConflictException(
           'Dữ liệu hotel bị trùng ở trường UNIQUE (ví dụ slug).',

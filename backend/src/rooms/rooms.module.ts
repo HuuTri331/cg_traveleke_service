@@ -13,10 +13,15 @@ import { RoomService } from '../services/entities/room-service.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Room, RoomImage, RoomServiceAssignment, RoomService]),
+    TypeOrmModule.forFeature([
+      Room,
+      RoomImage,
+      RoomServiceAssignment,
+      RoomService,
+    ]),
     HotelsModule,
   ],
-  controllers: [RoomsController, HomePageRoomController,],
+  controllers: [RoomsController, HomePageRoomController],
   providers: [RoomsService],
   exports: [RoomsService],
 })

@@ -412,6 +412,7 @@ CREATE TABLE IF NOT EXISTS room_services (
     id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     category_id         BIGINT UNSIGNED NOT NULL,
     hotel_id            BIGINT UNSIGNED NULL COMMENT 'NULL = Dịch vụ chung toàn hệ thống, có ID = Dịch vụ riêng của khách sạn',
+    room_type_id        BIGINT UNSIGNED NULL COMMENT 'Phòng/Loại phòng cụ thể áp dụng nếu có',
     name                VARCHAR(150) NOT NULL,
     description         TEXT NULL,
     unit                VARCHAR(30) NOT NULL DEFAULT 'lần' COMMENT 'lần, giờ, ngày, món, bộ, suất, người, phòng',
@@ -420,6 +421,7 @@ CREATE TABLE IF NOT EXISTS room_services (
     service_type        VARCHAR(30) NOT NULL DEFAULT 'ADD_ON' COMMENT 'INCLUDED, ADD_ON, UPGRADE, HOURLY',
     quota_per_booking   SMALLINT UNSIGNED NULL COMMENT 'Số lượt miễn phí/giới hạn mỗi booking',
     quota_per_night     SMALLINT UNSIGNED NULL COMMENT 'Số lượt miễn phí mỗi đêm',
+    max_quantity        SMALLINT UNSIGNED NULL COMMENT 'Số lượng tối đa có thể đặt',
     sla_minutes         SMALLINT UNSIGNED NULL DEFAULT 30 COMMENT 'Cam kết thời gian phục vụ tính bằng phút',
     capacity_per_hour   SMALLINT UNSIGNED NULL COMMENT 'Công suất phục vụ tối đa trong 1 giờ',
     lead_time_hours     TINYINT UNSIGNED NULL DEFAULT 0 COMMENT 'Cần đặt trước bao nhiêu giờ',
@@ -636,14 +638,22 @@ CREATE TABLE IF NOT EXISTS staff_assignments (
 -- 4.5 Bảng Staff_Eligibility_Rules (Luật điều kiện nhận việc của nhân viên)
 CREATE TABLE IF NOT EXISTS staff_eligibility_rules (
     id                      BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    service_type            VARCHAR(30) NOT NULL,
-    min_skill_level         VARCHAR(20) NOT NULL DEFAULT 'BASIC',
-    required_department     VARCHAR(60) NOT NULL,
-    requires_certification  TINYINT(1) NOT NULL DEFAULT 0,
-    allows_shadow           TINYINT(1) NOT NULL DEFAULT 1,
+    rule_code               VARCHAR(60) NOT NULL,
+    case_complexity         VARCHAR(20) NOT NULL DEFAULT 'STANDARD',
+    description             TEXT NULL,
+    min_skill_level         TINYINT UNSIGNED NOT NULL DEFAULT 1,
+    required_skill_codes    JSON NULL,
+    required_language_codes JSON NULL,
+    min_years_experience    DECIMAL(4,1) NOT NULL DEFAULT 0.0,
+    min_cases_completed     SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    exclude_shadow_mode     TINYINT(1) NOT NULL DEFAULT 1,
+    require_verified_skills TINYINT(1) NOT NULL DEFAULT 0,
+    escalation_role         VARCHAR(30) NOT NULL DEFAULT 'MANAGER',
+    status                  VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
     created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT pk_staff_eligibility_rules PRIMARY KEY (id),
-    CONSTRAINT uq_eligibility_service UNIQUE (service_type)
+    CONSTRAINT uq_rule_code UNIQUE (rule_code)
 ) ENGINE=InnoDB;
 
 -- 4.6 Bảng Audit_Logs (Hệ thống truy vết & nhật ký biến động dữ liệu tự động)
@@ -880,14 +890,27 @@ INSERT INTO skill_categories (code, name, description, department, weight_multip
 ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), weight_multiplier = VALUES(weight_multiplier);
 
 -- 5.16 Seed Staff Eligibility Rules Chuẩn
-INSERT INTO staff_eligibility_rules (service_type, min_skill_level, required_department, requires_certification, allows_shadow) VALUES
-    ('HOUSEKEEPING', 'BASIC',        'HOUSEKEEPING', 0, 1),
-    ('FOODFAST',     'INTERMEDIATE', 'F&B',          0, 1),
-    ('SPA_WELLNESS', 'ADVANCED',     'SPA',          1, 1),
-    ('CONCIERGE',    'INTERMEDIATE', 'CONCIERGE',    0, 1),
-    ('TRANSPORT',    'INTERMEDIATE', 'CONCIERGE',    1, 0),
-    ('TECH_SUPPORT', 'INTERMEDIATE', 'MAINTENANCE',  0, 1)
-ON DUPLICATE KEY UPDATE min_skill_level = VALUES(min_skill_level), requires_certification = VALUES(requires_certification);
+INSERT INTO staff_eligibility_rules (
+    rule_code, case_complexity, description, min_skill_level,
+    required_skill_codes, required_language_codes, min_years_experience,
+    min_cases_completed, exclude_shadow_mode, require_verified_skills,
+    escalation_role, status
+) VALUES
+    ('RULE_STANDARD', 'STANDARD', 'Phân công chuẩn cho đơn hàng phổ thông', 1, NULL, NULL, 0.0, 0, 0, 0, 'EMPLOYEE', 'ACTIVE'),
+    ('RULE_PREMIUM',  'PREMIUM',  'Phân công cho phòng cao cấp', 2, JSON_ARRAY('SERVICE_EXCELLENCE'), JSON_ARRAY('en'), 1.0, 5, 1, 0, 'MANAGER', 'ACTIVE'),
+    ('RULE_VIP',      'VIP',      'Phục vụ khách hàng VIP / phòng Suite', 3, JSON_ARRAY('VIP_HANDLING'), JSON_ARRAY('en'), 2.0, 20, 1, 1, 'MANAGER', 'ACTIVE'),
+    ('RULE_COMPLEX',  'COMPLEX',  'Xử lý sự cố dịch vụ phức tạp / đoàn khách lớn', 4, JSON_ARRAY('PROBLEM_SOLVING', 'VIP_HANDLING'), JSON_ARRAY('en'), 3.0, 50, 1, 1, 'ADMIN', 'ACTIVE')
+ON DUPLICATE KEY UPDATE
+    description = VALUES(description),
+    min_skill_level = VALUES(min_skill_level),
+    required_skill_codes = VALUES(required_skill_codes),
+    required_language_codes = VALUES(required_language_codes),
+    min_years_experience = VALUES(min_years_experience),
+    min_cases_completed = VALUES(min_cases_completed),
+    exclude_shadow_mode = VALUES(exclude_shadow_mode),
+    require_verified_skills = VALUES(require_verified_skills),
+    escalation_role = VALUES(escalation_role),
+    status = VALUES(status);
 
 
 -- ====================================================================================================
@@ -927,6 +950,17 @@ BEGIN
     SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'address';
     IF col_cnt = 0 THEN
         ALTER TABLE users ADD COLUMN address VARCHAR(255) NULL AFTER phone;
+    END IF;
+
+    -- Đồng bộ bảng room_services nếu thiếu cột room_type_id hoặc max_quantity
+    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_services' AND COLUMN_NAME = 'room_type_id';
+    IF col_cnt = 0 THEN
+        ALTER TABLE room_services ADD COLUMN room_type_id BIGINT UNSIGNED NULL AFTER hotel_id;
+    END IF;
+
+    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_services' AND COLUMN_NAME = 'max_quantity';
+    IF col_cnt = 0 THEN
+        ALTER TABLE room_services ADD COLUMN max_quantity SMALLINT UNSIGNED NULL AFTER quota_per_night;
     END IF;
 END$$
 DELIMITER ;

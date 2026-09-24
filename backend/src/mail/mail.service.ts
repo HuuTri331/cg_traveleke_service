@@ -11,9 +11,17 @@ export class MailService {
   constructor(private readonly configService: ConfigService) {
     const host = this.configService.get<string>('MAIL_HOST', 'smtp.gmail.com');
     const port = Number(this.configService.get<number>('MAIL_PORT', 465));
-    const secure = this.configService.get<string>('MAIL_SECURE', 'true') === 'true' || port === 465;
-    const user = this.configService.get<string>('MAIL_USER', 'dangquangminhdn76@gmail.com');
-    const rawPass = this.configService.get<string>('MAIL_PASS', 'nshewochpcasfufo');
+    const secure =
+      this.configService.get<string>('MAIL_SECURE', 'true') === 'true' ||
+      port === 465;
+    const user = this.configService.get<string>(
+      'MAIL_USER',
+      'dangquangminhdn76@gmail.com',
+    );
+    const rawPass = this.configService.get<string>(
+      'MAIL_PASS',
+      'nshewochpcasfufo',
+    );
     // Bỏ qua dấu cách nếu có trong mật khẩu ứng dụng Gmail
     const pass = rawPass.replace(/\s+/g, '');
 
@@ -40,8 +48,15 @@ export class MailService {
   /**
    * Gửi email xác thực tài khoản cho khách hàng mới đăng ký
    */
-  async sendVerificationEmail(to: string, fullName: string, token: string): Promise<boolean> {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
+  async sendVerificationEmail(
+    to: string,
+    fullName: string,
+    token: string,
+  ): Promise<boolean> {
+    const frontendUrl = this.configService.get<string>(
+      'FRONTEND_URL',
+      'http://localhost:3000',
+    );
     const verifyUrl = `${frontendUrl}/verify-email?token=${token}&email=${encodeURIComponent(to)}`;
     const from = this.configService.get<string>(
       'MAIL_FROM',

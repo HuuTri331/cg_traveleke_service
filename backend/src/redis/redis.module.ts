@@ -13,9 +13,19 @@ export * from './redis.constants';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
         const logger = new Logger('RedisModule');
-        const host = configService.get<string>('REDIS_HOST') || process.env.REDIS_HOST || '127.0.0.1';
-        const port = Number(configService.get<number>('REDIS_PORT') || process.env.REDIS_PORT || 6379);
-        const password = configService.get<string>('REDIS_PASSWORD') || process.env.REDIS_PASSWORD || undefined;
+        const host =
+          configService.get<string>('REDIS_HOST') ||
+          process.env.REDIS_HOST ||
+          '127.0.0.1';
+        const port = Number(
+          configService.get<number>('REDIS_PORT') ||
+            process.env.REDIS_PORT ||
+            6379,
+        );
+        const password =
+          configService.get<string>('REDIS_PASSWORD') ||
+          process.env.REDIS_PASSWORD ||
+          undefined;
 
         const client = new Redis({
           host,
@@ -26,16 +36,21 @@ export * from './redis.constants';
           maxRetriesPerRequest: 1,
           connectTimeout: 2000,
           retryStrategy: (times) => {
-            if (times > 5) {
-              return 15000;
+            if (times > 2) {
+              logger.warn(
+                `Redis is not available at ${host}:${port}. Reconnection attempts stopped. Rate limiter will operate in fail-open mode.`,
+              );
+              return null;
             }
-            return Math.min(times * 1500, 5000);
+            return 1000;
           },
         });
 
         // Bắt sự kiện error để Node process không bị unhandled error crash
         client.on('error', (err) => {
-          logger.warn(`Redis connection warning: ${err.message}. Rate limiter will operate in fail-open mode.`);
+          logger.warn(
+            `Redis connection warning: ${err.message}. Rate limiter will operate in fail-open mode.`,
+          );
         });
 
         client.on('connect', () => {
@@ -44,7 +59,9 @@ export * from './redis.constants';
 
         // Kết nối bất đồng bộ trong background
         client.connect().catch((err) => {
-          logger.warn(`Initial Redis connection could not be established (${err.message}). Rate limiter operating in fail-open mode.`);
+          logger.warn(
+            `Initial Redis connection could not be established (${err.message}). Rate limiter operating in fail-open mode.`,
+          );
         });
 
         return client;

@@ -12,24 +12,13 @@ import { BookingsService } from './bookings.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
-      Booking,
-      BookingRoom,
-      BookingStatusLog,
-      Room,
-    ]),
+    TypeOrmModule.forFeature([Booking, BookingRoom, BookingStatusLog, Room]),
   ],
 
-  controllers: [
-    BookingsController,
-  ],
+  controllers: [BookingsController],
 
-  providers: [
-    BookingsService,
-  ],
+  providers: [BookingsService],
 
-  exports: [
-    BookingsService,
-  ],
+  exports: [BookingsService],
 })
 export class BookingsModule {}

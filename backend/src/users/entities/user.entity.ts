@@ -133,18 +133,12 @@ export class User {
   })
   roles!: Role[];
 
-  /**
-   * Getter virtual: trả về role có ưu tiên cao nhất (ADMIN > EMPLOYEE > CUSTOMER).
-   * Dùng trong Guard và AuthService để kiểm tra quyền đơn giản.
-   */
-  get role(): UserRole {
-    if (!this.roles || this.roles.length === 0) return 'CUSTOMER';
-    const priority: UserRole[] = ['ADMIN', 'EMPLOYEE', 'CUSTOMER'];
-    for (const p of priority) {
-      if (this.roles.some((r) => r.name === p)) return p;
-    }
-    return 'CUSTOMER';
-  }
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: 'CUSTOMER',
+  })
+  role!: UserRole;
 
   /**
    * Kiểm tra tài khoản đã xác thực email hay chưa.

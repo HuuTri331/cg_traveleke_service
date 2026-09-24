@@ -116,7 +116,6 @@ describe('RoomsService', () => {
       ],
     }).compile();
 
-
     service = module.get<RoomsService>(RoomsService);
     roomsRepository = module.get(getRepositoryToken(Room));
   });

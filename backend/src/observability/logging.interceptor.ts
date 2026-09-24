@@ -33,6 +33,10 @@ export class LoggingInterceptor implements NestInterceptor {
 
     const user = (req as any).user;
     const userId = user?.id ?? user?.sub ?? null;
+    const requestId =
+      (res.getHeader ? (res.getHeader('x-request-id') as string) : null) ||
+      (req.headers['x-request-id'] as string) ||
+      null;
 
     return next.handle().pipe(
       tap(() => {
@@ -48,6 +52,7 @@ export class LoggingInterceptor implements NestInterceptor {
           },
           ip: clientIp,
           user_id: userId,
+          request_id: requestId,
         };
 
         if (duration > 1500) {
@@ -83,6 +88,7 @@ export class LoggingInterceptor implements NestInterceptor {
             },
             ip: clientIp,
             user_id: userId,
+            request_id: requestId,
             error: {
               name: err?.name || 'Error',
               message: err?.message || String(err),

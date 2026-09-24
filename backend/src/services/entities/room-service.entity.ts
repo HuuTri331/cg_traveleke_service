@@ -30,7 +30,12 @@ export class RoomService {
   @Column({ name: 'hotel_id', type: 'bigint', unsigned: true, nullable: true })
   hotelId: number | null;
 
-  @Column({ name: 'room_type_id', type: 'bigint', unsigned: true, nullable: true })
+  @Column({
+    name: 'room_type_id',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
   roomTypeId: number | null;
 
   @Column({ type: 'varchar', length: 200 })
@@ -42,7 +47,13 @@ export class RoomService {
   @Column({ type: 'varchar', length: 50, default: 'lần' })
   unit: string;
 
-  @Column({ name: 'base_price', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  @Column({
+    name: 'base_price',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
   basePrice: number;
 
   @Column({ name: 'is_complimentary', type: 'tinyint', default: 0 })
@@ -56,28 +67,64 @@ export class RoomService {
   // MINIBAR  = minibar (cần tồn kho)
   // OPERATIONAL = vận hành không thu phí (dọn phòng, wake-up...)
   // ============================================================
-  @Column({ name: 'service_type', type: 'varchar', length: 30, default: 'ADD_ON' })
+  @Column({
+    name: 'service_type',
+    type: 'varchar',
+    length: 30,
+    default: 'ADD_ON',
+  })
   serviceType: ServiceType;
 
-  @Column({ name: 'quota_per_booking', type: 'smallint', unsigned: true, nullable: true })
+  @Column({
+    name: 'quota_per_booking',
+    type: 'smallint',
+    unsigned: true,
+    nullable: true,
+  })
   quotaPerBooking: number | null;
 
-  @Column({ name: 'quota_per_night', type: 'smallint', unsigned: true, nullable: true })
+  @Column({
+    name: 'quota_per_night',
+    type: 'smallint',
+    unsigned: true,
+    nullable: true,
+  })
   quotaPerNight: number | null;
 
-  @Column({ name: 'max_quantity', type: 'smallint', unsigned: true, nullable: true })
+  @Column({
+    name: 'max_quantity',
+    type: 'smallint',
+    unsigned: true,
+    nullable: true,
+  })
   maxQuantity: number | null;
 
   // SLA: thời gian tối đa hoàn tất (phút)
-  @Column({ name: 'sla_minutes', type: 'smallint', unsigned: true, nullable: true, default: 30 })
+  @Column({
+    name: 'sla_minutes',
+    type: 'smallint',
+    unsigned: true,
+    nullable: true,
+    default: 30,
+  })
   slaMinutes: number | null;
 
   // Capacity: số slot phục vụ / giờ (dùng cho Spa, Massage)
-  @Column({ name: 'capacity_per_hour', type: 'smallint', unsigned: true, nullable: true })
+  @Column({
+    name: 'capacity_per_hour',
+    type: 'smallint',
+    unsigned: true,
+    nullable: true,
+  })
   capacityPerHour: number | null;
 
   // Lead time: số giờ phải đặt trước
-  @Column({ name: 'lead_time_hours', type: 'tinyint', unsigned: true, default: 0 })
+  @Column({
+    name: 'lead_time_hours',
+    type: 'tinyint',
+    unsigned: true,
+    default: 0,
+  })
   leadTimeHours: number;
 
   // Cần phê duyệt Supervisor trước khi thực hiện
@@ -85,7 +132,12 @@ export class RoomService {
   requiresApproval: boolean;
 
   // Bộ phận chịu trách nhiệm
-  @Column({ name: 'department_owner', type: 'varchar', length: 60, nullable: true })
+  @Column({
+    name: 'department_owner',
+    type: 'varchar',
+    length: 60,
+    nullable: true,
+  })
   departmentOwner: string | null;
 
   @Column({ type: 'varchar', length: 20, default: 'ACTIVE' })

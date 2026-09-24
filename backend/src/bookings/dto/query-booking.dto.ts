@@ -1,5 +1,13 @@
 import { Type } from 'class-transformer';
-import { IsOptional, IsString, IsNumberString, IsEnum, IsInt, Min, Max } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsNumberString,
+  IsEnum,
+  IsInt,
+  Min,
+  Max,
+} from 'class-validator';
 import { BookingStatus } from '../entities/booking.entity';
 
 export class QueryBookingDto {

@@ -38,15 +38,15 @@ export class StaffSkillsController {
 
   @Get('categories')
   getAllCategories(@Query('includeInactive') includeInactive?: string) {
-    return this.staffSkillsService.getAllSkillCategories(includeInactive === 'true');
+    return this.staffSkillsService.getAllSkillCategories(
+      includeInactive === 'true',
+    );
   }
 
   @Post('categories')
   @Roles('ADMIN')
   @HttpCode(HttpStatus.CREATED)
-  createCategory(
-    @Body() body: CreateSkillCategoryDto,
-  ) {
+  createCategory(@Body() body: CreateSkillCategoryDto) {
     return this.staffSkillsService.createSkillCategory(body);
   }
 
@@ -147,9 +147,7 @@ export class StaffSkillsController {
   }
 
   @Post('check-eligibility')
-  checkEligibility(
-    @Body() body: CheckEligibilityDto,
-  ) {
+  checkEligibility(@Body() body: CheckEligibilityDto) {
     return this.staffSkillsService.checkEligibility(
       body.userId,
       body.caseComplexity,

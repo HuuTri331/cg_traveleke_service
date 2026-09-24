@@ -39,12 +39,15 @@ export function normalizePagination(
   maxLimit = 100,
 ): NormalizedPagination {
   const parsedPage = Number(query?.page);
-  const page = !isNaN(parsedPage) && parsedPage > 0 ? Math.floor(parsedPage) : 1;
+  const page =
+    !isNaN(parsedPage) && parsedPage > 0 ? Math.floor(parsedPage) : 1;
 
   const rawLimit = query?.perPage !== undefined ? query.perPage : query?.limit;
   const parsedLimit = Number(rawLimit);
   const requestedLimit =
-    !isNaN(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : defaultPerPage;
+    !isNaN(parsedLimit) && parsedLimit > 0
+      ? Math.floor(parsedLimit)
+      : defaultPerPage;
 
   const limit = Math.min(Math.max(requestedLimit, 1), maxLimit);
   const skip = (page - 1) * limit;

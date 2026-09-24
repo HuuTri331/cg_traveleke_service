@@ -3,8 +3,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { SkillCategory } from './entities/skill-category.entity';
 import { StaffSkill } from './entities/staff-skill.entity';
-import { StaffLanguageSkill, LanguageLevel } from './entities/staff-language-skill.entity';
-import { StaffEligibilityRule, CaseComplexity } from './entities/staff-eligibility-rule.entity';
+import {
+  StaffLanguageSkill,
+  LanguageLevel,
+} from './entities/staff-language-skill.entity';
+import {
+  StaffEligibilityRule,
+  CaseComplexity,
+} from './entities/staff-eligibility-rule.entity';
 
 export * from './dto/staff-skills.dto';
 import {
@@ -37,7 +43,9 @@ export class StaffSkillsService {
   // SKILL CATEGORIES
   // ============================================================
 
-  async getAllSkillCategories(includeInactive = false): Promise<SkillCategory[]> {
+  async getAllSkillCategories(
+    includeInactive = false,
+  ): Promise<SkillCategory[]> {
     const where = includeInactive ? {} : { status: 'ACTIVE' as const };
     return this.skillCategoryRepo.find({
       where,
@@ -63,10 +71,16 @@ export class StaffSkillsService {
 
   async updateSkillCategory(
     id: number,
-    data: { name?: string; description?: string; department?: string; status?: 'ACTIVE' | 'INACTIVE' },
+    data: {
+      name?: string;
+      description?: string;
+      department?: string;
+      status?: 'ACTIVE' | 'INACTIVE';
+    },
   ): Promise<SkillCategory> {
     const cat = await this.skillCategoryRepo.findOne({ where: { id } });
-    if (!cat) throw new NotFoundException(`Danh mục kỹ năng #${id} không tồn tại`);
+    if (!cat)
+      throw new NotFoundException(`Danh mục kỹ năng #${id} không tồn tại`);
     Object.assign(cat, data);
     return this.skillCategoryRepo.save(cat);
   }
@@ -83,17 +97,23 @@ export class StaffSkillsService {
     });
   }
 
-  async upsertSkill(userId: number, dto: UpsertStaffSkillDto): Promise<StaffSkill> {
+  async upsertSkill(
+    userId: number,
+    dto: UpsertStaffSkillDto,
+  ): Promise<StaffSkill> {
     // Kiểm tra kỹ năng tồn tại
-    const skillCat = await this.skillCategoryRepo.findOne({ where: { id: dto.skillId } });
-    if (!skillCat) throw new NotFoundException(`Kỹ năng #${dto.skillId} không tồn tại`);
+    const skillCat = await this.skillCategoryRepo.findOne({
+      where: { id: dto.skillId },
+    });
+    if (!skillCat)
+      throw new NotFoundException(`Kỹ năng #${dto.skillId} không tồn tại`);
 
     if (dto.level < 1 || dto.level > 5) {
       throw new Error('Level kỹ năng phải từ 1 đến 5');
     }
 
     // Tìm bản ghi cũ nếu có (upsert)
-    let existing = await this.staffSkillRepo.findOne({
+    const existing = await this.staffSkillRepo.findOne({
       where: { userId, skillId: dto.skillId },
     });
 
@@ -116,11 +136,15 @@ export class StaffSkillsService {
     return this.staffSkillRepo.save(newSkill);
   }
 
-  async removeSkill(userId: number, skillId: number): Promise<{ message: string }> {
+  async removeSkill(
+    userId: number,
+    skillId: number,
+  ): Promise<{ message: string }> {
     const existing = await this.staffSkillRepo.findOne({
       where: { userId, skillId },
     });
-    if (!existing) throw new NotFoundException('Kỹ năng này chưa được gán cho nhân viên');
+    if (!existing)
+      throw new NotFoundException('Kỹ năng này chưa được gán cho nhân viên');
     await this.staffSkillRepo.remove(existing);
     return { message: 'Đã xoá kỹ năng khỏi hồ sơ nhân viên' };
   }
@@ -129,8 +153,11 @@ export class StaffSkillsService {
     skillEntryId: number,
     verifiedBy: number,
   ): Promise<StaffSkill> {
-    const entry = await this.staffSkillRepo.findOne({ where: { id: skillEntryId } });
-    if (!entry) throw new NotFoundException(`Mục kỹ năng #${skillEntryId} không tồn tại`);
+    const entry = await this.staffSkillRepo.findOne({
+      where: { id: skillEntryId },
+    });
+    if (!entry)
+      throw new NotFoundException(`Mục kỹ năng #${skillEntryId} không tồn tại`);
     entry.verifiedBy = verifiedBy;
     entry.verifiedAt = new Date();
     return this.staffSkillRepo.save(entry);
@@ -170,12 +197,14 @@ export class StaffSkillsService {
       FROM staff_skills ss
       INNER JOIN users u ON u.id = ss.user_id AND u.status = 'ACTIVE'
       INNER JOIN skill_categories sc ON sc.id = ss.skill_id AND sc.code = ?
-      ${hotelId ? 'INNER JOIN hotel_staff hs ON hs.staff_user_id = u.id AND hs.hotel_id = ? AND hs.status = \'ACTIVE\'' : ''}
+      ${hotelId ? "INNER JOIN hotel_staff hs ON hs.staff_user_id = u.id AND hs.hotel_id = ? AND hs.status = 'ACTIVE'" : ''}
       WHERE ss.level >= ?
       ORDER BY matchScore DESC
       LIMIT 10
       `,
-      hotelId ? [skillCategoryCode, hotelId, requiredLevel] : [skillCategoryCode, requiredLevel],
+      hotelId
+        ? [skillCategoryCode, hotelId, requiredLevel]
+        : [skillCategoryCode, requiredLevel],
     );
 
     return results;
@@ -192,17 +221,23 @@ export class StaffSkillsService {
     });
   }
 
-  async upsertLanguage(userId: number, dto: UpsertLanguageSkillDto): Promise<StaffLanguageSkill> {
-    let existing = await this.languageSkillRepo.findOne({
+  async upsertLanguage(
+    userId: number,
+    dto: UpsertLanguageSkillDto,
+  ): Promise<StaffLanguageSkill> {
+    const existing = await this.languageSkillRepo.findOne({
       where: { userId, languageCode: dto.languageCode },
     });
 
     if (existing) {
       existing.languageName = dto.languageName;
       existing.level = dto.level;
-      if (dto.certificate !== undefined) existing.certificate = dto.certificate ?? null;
+      if (dto.certificate !== undefined)
+        existing.certificate = dto.certificate ?? null;
       if (dto.certificateExpiry !== undefined)
-        existing.certificateExpiry = dto.certificateExpiry ? new Date(dto.certificateExpiry) : null;
+        existing.certificateExpiry = dto.certificateExpiry
+          ? new Date(dto.certificateExpiry)
+          : null;
       return this.languageSkillRepo.save(existing);
     }
 
@@ -212,14 +247,22 @@ export class StaffSkillsService {
       languageName: dto.languageName,
       level: dto.level,
       certificate: dto.certificate ?? null,
-      certificateExpiry: dto.certificateExpiry ? new Date(dto.certificateExpiry) : null,
+      certificateExpiry: dto.certificateExpiry
+        ? new Date(dto.certificateExpiry)
+        : null,
     });
     return this.languageSkillRepo.save(newLang);
   }
 
-  async removeLanguage(userId: number, languageCode: string): Promise<{ message: string }> {
-    const existing = await this.languageSkillRepo.findOne({ where: { userId, languageCode } });
-    if (!existing) throw new NotFoundException(`Ngoại ngữ ${languageCode} chưa được gán`);
+  async removeLanguage(
+    userId: number,
+    languageCode: string,
+  ): Promise<{ message: string }> {
+    const existing = await this.languageSkillRepo.findOne({
+      where: { userId, languageCode },
+    });
+    if (!existing)
+      throw new NotFoundException(`Ngoại ngữ ${languageCode} chưa được gán`);
     await this.languageSkillRepo.remove(existing);
     return { message: `Đã xoá ngoại ngữ ${languageCode}` };
   }
@@ -235,7 +278,9 @@ export class StaffSkillsService {
     });
   }
 
-  async getRuleByComplexity(complexity: CaseComplexity): Promise<StaffEligibilityRule | null> {
+  async getRuleByComplexity(
+    complexity: CaseComplexity,
+  ): Promise<StaffEligibilityRule | null> {
     return this.eligibilityRuleRepo.findOne({
       where: { caseComplexity: complexity, status: 'ACTIVE' },
     });
@@ -255,7 +300,10 @@ export class StaffSkillsService {
     if (!rule) return { eligible: true, reasons: [] }; // Không có rule = không giới hạn
 
     const reasons: string[] = [];
-    const skills = await this.staffSkillRepo.find({ where: { userId }, relations: ['skill'] });
+    const skills = await this.staffSkillRepo.find({
+      where: { userId },
+      relations: ['skill'],
+    });
     const languages = await this.languageSkillRepo.find({ where: { userId } });
 
     // 1. Kiểm tra không đang shadow mode (nếu rule yêu cầu)
@@ -267,7 +315,9 @@ export class StaffSkillsService {
     // 2. Kiểm tra level kỹ năng tối thiểu
     const maxLevel = skills.reduce((max, s) => Math.max(max, s.level), 0);
     if (maxLevel < rule.minSkillLevel) {
-      reasons.push(`Level kỹ năng ${maxLevel}/5 chưa đạt mức tối thiểu ${rule.minSkillLevel}/5`);
+      reasons.push(
+        `Level kỹ năng ${maxLevel}/5 chưa đạt mức tối thiểu ${rule.minSkillLevel}/5`,
+      );
     }
 
     // 3. Kiểm tra kỹ năng bắt buộc
@@ -313,9 +363,18 @@ export class StaffSkillsService {
     const thirtyDaysLater = new Date();
     thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
 
-    const [totalSkillCategories, staffWithSkillsRows, avgRows, topSkillRows, langRows, expiringRows] = await Promise.all([
+    const [
+      totalSkillCategories,
+      staffWithSkillsRows,
+      avgRows,
+      topSkillRows,
+      langRows,
+      expiringRows,
+    ] = await Promise.all([
       this.skillCategoryRepo.count({ where: { status: 'ACTIVE' } }),
-      this.dataSource.query('SELECT COUNT(DISTINCT user_id) AS cnt FROM staff_skills'),
+      this.dataSource.query(
+        'SELECT COUNT(DISTINCT user_id) AS cnt FROM staff_skills',
+      ),
       this.dataSource.query('SELECT AVG(level) AS avg_level FROM staff_skills'),
       this.dataSource.query(
         `SELECT sc.name, COUNT(ss.id) AS cnt
@@ -323,7 +382,9 @@ export class StaffSkillsService {
          INNER JOIN skill_categories sc ON sc.id = ss.skill_id
          GROUP BY sc.id ORDER BY cnt DESC LIMIT 1`,
       ),
-      this.dataSource.query('SELECT COUNT(DISTINCT user_id) AS cnt FROM staff_language_skills'),
+      this.dataSource.query(
+        'SELECT COUNT(DISTINCT user_id) AS cnt FROM staff_language_skills',
+      ),
       this.dataSource.query(
         'SELECT COUNT(*) AS cnt FROM staff_skills WHERE certificate_expiry IS NOT NULL AND certificate_expiry <= ?',
         [thirtyDaysLater.toISOString().split('T')[0]],
@@ -333,7 +394,9 @@ export class StaffSkillsService {
     return {
       totalSkillCategories,
       staffWithSkills: Number(staffWithSkillsRows[0]?.cnt ?? 0),
-      averageSkillLevel: parseFloat((Number(avgRows[0]?.avg_level) || 0).toFixed(1)),
+      averageSkillLevel: parseFloat(
+        (Number(avgRows[0]?.avg_level) || 0).toFixed(1),
+      ),
       topSkill: topSkillRows[0]?.name ?? null,
       staffWithLanguages: Number(langRows[0]?.cnt ?? 0),
       expiringSoonCertificates: Number(expiringRows[0]?.cnt ?? 0),

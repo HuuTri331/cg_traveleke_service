@@ -12,8 +12,12 @@ describe('HotelsService', () => {
   beforeEach(async () => {
     mockHotelRepo = {
       create: jest.fn().mockImplementation((dto) => dto),
-      save: jest.fn().mockImplementation((dto) => Promise.resolve({ id: '1', ...dto })),
-      findOne: jest.fn().mockResolvedValue({ id: '1', name: 'Caravelle Hotel' }),
+      save: jest
+        .fn()
+        .mockImplementation((dto) => Promise.resolve({ id: '1', ...dto })),
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: '1', name: 'Caravelle Hotel' }),
       find: jest.fn().mockResolvedValue([]),
       createQueryBuilder: jest.fn(),
     };

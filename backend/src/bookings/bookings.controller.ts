@@ -27,9 +27,7 @@ import { RateLimit } from '../rate-limit/rate-limit.decorator';
 
 @Controller('bookings')
 export class BookingsController {
-  constructor(
-    private readonly bookingsService: BookingsService,
-  ) {}
+  constructor(private readonly bookingsService: BookingsService) {}
 
   // ================================
   // TẠO BOOKING (Khách hàng đăng nhập)
@@ -48,9 +46,7 @@ export class BookingsController {
       refillRate: 0.5,
     },
   })
-  create(
-    @Body() dto: CreateBookingDto,
-  ) {
+  create(@Body() dto: CreateBookingDto) {
     return this.bookingsService.create(dto);
   }
 
@@ -88,12 +84,8 @@ export class BookingsController {
   // LỊCH SỬ BOOKING CỦA USER (Customer)
   // ================================
   @Get('user/:userId')
-  findByUser(
-    @Param('userId') userId: string,
-  ) {
-    return this.bookingsService.findByUser(
-      userId,
-    );
+  findByUser(@Param('userId') userId: string) {
+    return this.bookingsService.findByUser(userId);
   }
 
   // ================================
@@ -101,9 +93,7 @@ export class BookingsController {
   // ================================
   @Get(':id')
   @UseGuards(JwtAuthGuard)
-  findOne(
-    @Param('id') id: string,
-  ) {
+  findOne(@Param('id') id: string) {
     return this.bookingsService.findOne(id);
   }
 

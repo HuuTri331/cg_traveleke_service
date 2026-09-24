@@ -1,4 +1,9 @@
-import { IsEnum, IsNotEmpty, IsNumberString, IsOptional } from 'class-validator';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsNumberString,
+  IsOptional,
+} from 'class-validator';
 
 export class AssignStaffDto {
   @IsNotEmpty({ message: 'ID khách sạn không được để trống.' })

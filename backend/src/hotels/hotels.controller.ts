@@ -60,7 +60,7 @@ export class HotelsController {
   search(@Query() query: SearchHotelDto) {
     return this.hotelsService.search(query);
   }
-  
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.hotelsService.findOne(id);
@@ -101,9 +101,7 @@ export class HotelsController {
     @Body('caption') caption?: string,
   ) {
     if (!files || files.length === 0) {
-      throw new BadRequestException(
-        'Vui lòng đính kèm ít nhất 1 file ảnh.',
-      );
+      throw new BadRequestException('Vui lòng đính kèm ít nhất 1 file ảnh.');
     }
 
     const dtos: AddHotelImageDto[] = files.map((file, index) => ({
@@ -118,10 +116,7 @@ export class HotelsController {
   @Post(':id/images')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  addImage(
-    @Param('id') id: string,
-    @Body() dto: AddHotelImageDto,
-  ) {
+  addImage(@Param('id') id: string, @Body() dto: AddHotelImageDto) {
     return this.hotelsService.addImage(id, dto);
   }
 
@@ -133,20 +128,14 @@ export class HotelsController {
   @Patch(':id/images/:imageId/primary')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  setPrimaryImage(
-    @Param('id') id: string,
-    @Param('imageId') imageId: string,
-  ) {
+  setPrimaryImage(@Param('id') id: string, @Param('imageId') imageId: string) {
     return this.hotelsService.setPrimaryImage(id, imageId);
   }
 
   @Delete(':id/images/:imageId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  deleteImage(
-    @Param('id') id: string,
-    @Param('imageId') imageId: string,
-  ) {
+  deleteImage(@Param('id') id: string, @Param('imageId') imageId: string) {
     return this.hotelsService.deleteImage(id, imageId);
   }
 }

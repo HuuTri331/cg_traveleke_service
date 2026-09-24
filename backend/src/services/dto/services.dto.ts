@@ -1,4 +1,13 @@
-import { IsString, IsOptional, IsEnum, IsInt, IsBoolean, Min, Max, IsArray } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsEnum,
+  IsInt,
+  IsBoolean,
+  Min,
+  Max,
+  IsArray,
+} from 'class-validator';
 import { ServiceType } from '../entities/room-service.entity';
 import { RecoveryType } from '../entities/service-recovery-log.entity';
 import { ServiceRequestStatus } from '../entities/service-request.entity';

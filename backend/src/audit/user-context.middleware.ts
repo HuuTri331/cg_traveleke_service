@@ -1,10 +1,18 @@
-import { Injectable, NestMiddleware } from '@nestjs/common';
+import { Injectable, NestMiddleware, Optional } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { UserContextService, UserContextStore } from './user-context.service';
+import { IdGeneratorService } from '../common/id/id-generator.service';
 
 @Injectable()
 export class UserContextMiddleware implements NestMiddleware {
-  constructor(private readonly userContextService: UserContextService) {}
+  private readonly idGen: IdGeneratorService;
+
+  constructor(
+    private readonly userContextService: UserContextService,
+    @Optional() idGenerator?: IdGeneratorService,
+  ) {
+    this.idGen = idGenerator ?? new IdGeneratorService();
+  }
 
   use(req: Request, res: Response, next: NextFunction): void {
     const rawIp =
@@ -15,14 +23,13 @@ export class UserContextMiddleware implements NestMiddleware {
 
     const userAgent = (req.headers['user-agent'] as string) || '';
     const requestId =
-      (req.headers['x-request-id'] as string) ||
-      `req-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      (req.headers['x-request-id'] as string) || this.idGen.generateUuidV7();
 
     // Gán x-request-id vào header response để dễ trace
     res.setHeader('x-request-id', requestId);
 
     // Khởi tạo store với thông tin ban đầu (userId có thể cập nhật sau khi JwtAuthGuard chạy)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const user = (req as any).user;
     const userId = user?.id ? String(user.id) : undefined;
 

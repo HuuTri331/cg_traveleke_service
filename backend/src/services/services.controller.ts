@@ -183,15 +183,11 @@ export class ServicesController {
       note?: string;
     },
   ) {
-    return this.servicesService.updateServiceRequestStatus(
-      id,
-      body.status,
-      {
-        assignedTo: body.assignedTo,
-        failureReason: body.failureReason,
-        note: body.note,
-      },
-    );
+    return this.servicesService.updateServiceRequestStatus(id, body.status, {
+      assignedTo: body.assignedTo,
+      failureReason: body.failureReason,
+      note: body.note,
+    });
   }
 
   // ============================================================

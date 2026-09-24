@@ -69,7 +69,6 @@ export class UsersController {
     };
   }
 
-
   /**
    * GET /api/users/:id
    * Xem chi tiết nhân viên — chỉ ADMIN.
@@ -165,4 +164,3 @@ export class UsersController {
     };
   }
 }
-

@@ -67,7 +67,9 @@ export class AuditSubscriber implements EntitySubscriberInterface {
   /**
    * Lọc và làm sạch object dữ liệu trước khi lưu vào audit log.
    */
-  private sanitizeData(data: Record<string, any> | null): Record<string, any> | null {
+  private sanitizeData(
+    data: Record<string, any> | null,
+  ): Record<string, any> | null {
     if (!data) return null;
     const clean: Record<string, any> = {};
     for (const [key, value] of Object.entries(data)) {
@@ -146,10 +148,7 @@ export class AuditSubscriber implements EntitySubscriberInterface {
       const context = this.userContextService.getStore();
       const databaseEntity =
         'databaseEntity' in event ? (event as any).databaseEntity : null;
-      const entityId =
-        event.entity?.id ||
-        databaseEntity?.id ||
-        'UNKNOWN';
+      const entityId = event.entity?.id || databaseEntity?.id || 'UNKNOWN';
 
       const tableName = event.metadata.tableName || event.metadata.name;
 
@@ -161,7 +160,9 @@ export class AuditSubscriber implements EntitySubscriberInterface {
         newValues,
         performedBy: context?.userId || 'SYSTEM',
         ipAddress: context?.ipAddress || null,
-        userAgent: context?.userAgent ? context.userAgent.substring(0, 255) : null,
+        userAgent: context?.userAgent
+          ? context.userAgent.substring(0, 255)
+          : null,
         requestId: context?.requestId || null,
       });
 
@@ -175,4 +176,3 @@ export class AuditSubscriber implements EntitySubscriberInterface {
     }
   }
 }
-

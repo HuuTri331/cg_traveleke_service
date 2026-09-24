@@ -40,7 +40,9 @@ export class HotelStaffService {
       throw new NotFoundException('Không tìm thấy nhân viên.');
     }
     if (staff.role === 'CUSTOMER') {
-      throw new BadRequestException('Không thể phân công khách hàng vào quản lý khách sạn.');
+      throw new BadRequestException(
+        'Không thể phân công khách hàng vào quản lý khách sạn.',
+      );
     }
 
     // Kiểm tra trùng lặp

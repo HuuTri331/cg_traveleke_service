@@ -23,7 +23,13 @@ export class RoomServiceAssignment {
   @Column({ name: 'is_complimentary', type: 'tinyint', default: 1 })
   isComplimentary: boolean;
 
-  @Column({ name: 'custom_price', type: 'decimal', precision: 12, scale: 2, nullable: true })
+  @Column({
+    name: 'custom_price',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    nullable: true,
+  })
   customPrice: number | null;
 
   @CreateDateColumn({ name: 'created_at' })

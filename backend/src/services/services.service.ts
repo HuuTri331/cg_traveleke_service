@@ -1,11 +1,23 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Optional,
+} from '@nestjs/common';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ServiceCategory } from './entities/service-category.entity';
 import { RoomService, ServiceType } from './entities/room-service.entity';
-import { ServiceRequest, ServiceRequestStatus } from './entities/service-request.entity';
+import {
+  ServiceRequest,
+  ServiceRequestStatus,
+} from './entities/service-request.entity';
 import { BookingServiceSnapshot } from './entities/booking-service-snapshot.entity';
-import { ServiceRecoveryLog, RecoveryType } from './entities/service-recovery-log.entity';
+import {
+  ServiceRecoveryLog,
+  RecoveryType,
+} from './entities/service-recovery-log.entity';
 import {
   CreateServiceCategoryDto,
   UpdateServiceCategoryDto,
@@ -35,6 +47,9 @@ export class ServicesService {
 
     @InjectRepository(ServiceRecoveryLog)
     private readonly recoveryLogRepo: Repository<ServiceRecoveryLog>,
+
+    @Optional()
+    private readonly realtimeGateway?: RealtimeGateway,
   ) {}
 
   // ============================================================
@@ -55,11 +70,14 @@ export class ServicesService {
       where: { id },
       relations: ['services'],
     });
-    if (!cat) throw new NotFoundException(`Danh mục dịch vụ #${id} không tồn tại`);
+    if (!cat)
+      throw new NotFoundException(`Danh mục dịch vụ #${id} không tồn tại`);
     return cat;
   }
 
-  async createCategory(dto: CreateServiceCategoryDto): Promise<ServiceCategory> {
+  async createCategory(
+    dto: CreateServiceCategoryDto,
+  ): Promise<ServiceCategory> {
     const cat = this.categoryRepo.create({
       code: dto.code.toUpperCase().replace(/\s+/g, '_'),
       name: dto.name,
@@ -71,7 +89,10 @@ export class ServicesService {
     return this.categoryRepo.save(cat);
   }
 
-  async updateCategory(id: number, dto: UpdateServiceCategoryDto): Promise<ServiceCategory> {
+  async updateCategory(
+    id: number,
+    dto: UpdateServiceCategoryDto,
+  ): Promise<ServiceCategory> {
     const cat = await this.getCategoryById(id);
     Object.assign(cat, dto);
     return this.categoryRepo.save(cat);
@@ -87,8 +108,12 @@ export class ServicesService {
   // ROOM SERVICES
   // ============================================================
 
-  async getAllRoomServices(hotelId?: number, categoryId?: number): Promise<RoomService[]> {
-    const qb = this.roomServiceRepo.createQueryBuilder('rs')
+  async getAllRoomServices(
+    hotelId?: number,
+    categoryId?: number,
+  ): Promise<RoomService[]> {
+    const qb = this.roomServiceRepo
+      .createQueryBuilder('rs')
       .leftJoinAndSelect('rs.category', 'cat')
       .where('rs.status = :status', { status: 'ACTIVE' });
 
@@ -99,7 +124,10 @@ export class ServicesService {
       qb.andWhere('rs.categoryId = :categoryId', { categoryId });
     }
 
-    return qb.orderBy('cat.sortOrder', 'ASC').addOrderBy('rs.name', 'ASC').getMany();
+    return qb
+      .orderBy('cat.sortOrder', 'ASC')
+      .addOrderBy('rs.name', 'ASC')
+      .getMany();
   }
 
   async getRoomServiceById(id: number): Promise<RoomService> {
@@ -135,7 +163,10 @@ export class ServicesService {
     return this.roomServiceRepo.save(svc);
   }
 
-  async updateRoomService(id: number, dto: UpdateRoomServiceDto): Promise<RoomService> {
+  async updateRoomService(
+    id: number,
+    dto: UpdateRoomServiceDto,
+  ): Promise<RoomService> {
     const svc = await this.getRoomServiceById(id);
     Object.assign(svc, dto);
     return this.roomServiceRepo.save(svc);
@@ -153,7 +184,9 @@ export class ServicesService {
   //                                                          -> FAILED -> RECOVERY
   // ============================================================
 
-  async getServiceRequestsByBooking(bookingId: number): Promise<ServiceRequest[]> {
+  async getServiceRequestsByBooking(
+    bookingId: number,
+  ): Promise<ServiceRequest[]> {
     return this.serviceRequestRepo.find({
       where: { bookingId },
       relations: ['service', 'service.category'],
@@ -166,7 +199,8 @@ export class ServicesService {
     assignedTo?: number;
     hotelId?: number;
   }): Promise<ServiceRequest[]> {
-    const qb = this.serviceRequestRepo.createQueryBuilder('sr')
+    const qb = this.serviceRequestRepo
+      .createQueryBuilder('sr')
       .leftJoinAndSelect('sr.service', 'svc')
       .leftJoinAndSelect('svc.category', 'cat');
 
@@ -174,17 +208,25 @@ export class ServicesService {
       qb.andWhere('sr.status = :status', { status: filters.status });
     }
     if (filters?.assignedTo) {
-      qb.andWhere('sr.assignedTo = :assignedTo', { assignedTo: filters.assignedTo });
+      qb.andWhere('sr.assignedTo = :assignedTo', {
+        assignedTo: filters.assignedTo,
+      });
     }
 
     return qb.orderBy('sr.createdAt', 'DESC').getMany();
   }
 
-  async createServiceRequest(dto: CreateServiceRequestDto): Promise<ServiceRequest> {
+  async createServiceRequest(
+    dto: CreateServiceRequestDto,
+  ): Promise<ServiceRequest> {
     const service = await this.getRoomServiceById(dto.serviceId);
     const quantity = dto.quantity ?? 1;
-    const totalPrice = service.isComplimentary ? 0 : Number(service.basePrice) * quantity;
-    const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : new Date();
+    const totalPrice = service.isComplimentary
+      ? 0
+      : Number(service.basePrice) * quantity;
+    const scheduledAt = dto.scheduledAt
+      ? new Date(dto.scheduledAt)
+      : new Date();
     const slaMinutes = service.slaMinutes ?? 30;
     const slaDueAt = new Date(scheduledAt.getTime() + slaMinutes * 60 * 1000);
 
@@ -201,14 +243,35 @@ export class ServicesService {
       isSlaBreahed: false,
       status: ServiceRequestStatus.PENDING,
     });
-    return this.serviceRequestRepo.save(req);
+    const saved = await this.serviceRequestRepo.save(req);
+
+    // Phát realtime notification tới Lễ tân
+    try {
+      this.realtimeGateway?.emitServiceRequested({
+        id: saved.id,
+        bookingId: saved.bookingId,
+        serviceName: saved.serviceName,
+        quantity: saved.quantity,
+        totalPrice: Number(saved.totalPrice),
+        note: saved.note ?? undefined,
+        requestedAt: new Date().toISOString(),
+      });
+    } catch {
+      // Fail-safe
+    }
+
+    return saved;
   }
 
-  async updateServiceRequest(id: number, dto: UpdateServiceRequestDto): Promise<ServiceRequest> {
+  async updateServiceRequest(
+    id: number,
+    dto: UpdateServiceRequestDto,
+  ): Promise<ServiceRequest> {
     const req = await this.serviceRequestRepo.findOne({ where: { id } });
-    if (!req) throw new NotFoundException(`Yêu cầu dịch vụ #${id} không tồn tại`);
+    if (!req)
+      throw new NotFoundException(`Yêu cầu dịch vụ #${id} không tồn tại`);
 
-    if (dto.status) req.status = dto.status as ServiceRequestStatus;
+    if (dto.status) req.status = dto.status;
     if (dto.assignedTo !== undefined) req.assignedTo = dto.assignedTo;
     if (dto.note !== undefined) req.note = dto.note;
     if (dto.completedAt) req.completedAt = new Date(dto.completedAt);
@@ -234,7 +297,8 @@ export class ServicesService {
       where: { id },
       relations: ['service'],
     });
-    if (!req) throw new NotFoundException(`Yêu cầu dịch vụ #${id} không tồn tại`);
+    if (!req)
+      throw new NotFoundException(`Yêu cầu dịch vụ #${id} không tồn tại`);
 
     const now = new Date();
 
@@ -270,7 +334,8 @@ export class ServicesService {
         req.confirmedAt = now;
         break;
       case ServiceRequestStatus.FAILED:
-        req.failureReason = payload?.failureReason ?? 'Dịch vụ gặp sự cố không hoàn tất';
+        req.failureReason =
+          payload?.failureReason ?? 'Dịch vụ gặp sự cố không hoàn tất';
         break;
       case ServiceRequestStatus.CANCELLED:
         if (payload?.note) req.note = payload.note;
@@ -292,13 +357,18 @@ export class ServicesService {
     roomTypeId?: number,
     hotelId?: number,
   ): Promise<BookingServiceSnapshot[]> {
-    const qb = this.roomServiceRepo.createQueryBuilder('rs')
+    const qb = this.roomServiceRepo
+      .createQueryBuilder('rs')
       .leftJoinAndSelect('rs.category', 'cat')
       .where('rs.status = :status', { status: 'ACTIVE' })
-      .andWhere('rs.serviceType IN (:...types)', { types: [ServiceType.INCLUDED, ServiceType.QUOTA] });
+      .andWhere('rs.serviceType IN (:...types)', {
+        types: [ServiceType.INCLUDED, ServiceType.QUOTA],
+      });
 
     if (roomTypeId) {
-      qb.andWhere('(rs.roomTypeId = :roomTypeId OR rs.roomTypeId IS NULL)', { roomTypeId });
+      qb.andWhere('(rs.roomTypeId = :roomTypeId OR rs.roomTypeId IS NULL)', {
+        roomTypeId,
+      });
     }
     if (hotelId) {
       qb.andWhere('(rs.hotelId = :hotelId OR rs.hotelId IS NULL)', { hotelId });
@@ -331,7 +401,9 @@ export class ServicesService {
     return snapshots;
   }
 
-  async getBookingSnapshots(bookingId: number): Promise<BookingServiceSnapshot[]> {
+  async getBookingSnapshots(
+    bookingId: number,
+  ): Promise<BookingServiceSnapshot[]> {
     return this.snapshotRepo.find({
       where: { bookingId },
       order: { createdAt: 'ASC' },
@@ -342,7 +414,9 @@ export class ServicesService {
   // SERVICE FAILURE & RECOVERY (Bù đắp sai lỗi dịch vụ)
   // ============================================================
 
-  async createRecoveryLog(dto: CreateServiceRecoveryLogDto): Promise<ServiceRecoveryLog> {
+  async createRecoveryLog(
+    dto: CreateServiceRecoveryLogDto,
+  ): Promise<ServiceRecoveryLog> {
     const log = this.recoveryLogRepo.create({
       serviceRequestId: dto.serviceRequestId ?? null,
       bookingId: dto.bookingId,
@@ -356,7 +430,9 @@ export class ServicesService {
     const saved = await this.recoveryLogRepo.save(log);
 
     if (dto.serviceRequestId) {
-      const req = await this.serviceRequestRepo.findOne({ where: { id: dto.serviceRequestId } });
+      const req = await this.serviceRequestRepo.findOne({
+        where: { id: dto.serviceRequestId },
+      });
       if (req) {
         req.status = ServiceRequestStatus.FAILED;
         req.recoveryAction = `${dto.recoveryType}: ${dto.actionTaken}`;
@@ -368,9 +444,13 @@ export class ServicesService {
     return saved;
   }
 
-  async approveRecoveryLog(id: number, dto: ApproveRecoveryDto): Promise<ServiceRecoveryLog> {
+  async approveRecoveryLog(
+    id: number,
+    dto: ApproveRecoveryDto,
+  ): Promise<ServiceRecoveryLog> {
     const log = await this.recoveryLogRepo.findOne({ where: { id } });
-    if (!log) throw new NotFoundException(`Biên bản recovery #${id} không tồn tại`);
+    if (!log)
+      throw new NotFoundException(`Biên bản recovery #${id} không tồn tại`);
 
     log.approvedBy = dto.approvedBy;
     log.status = dto.decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
@@ -408,8 +488,12 @@ export class ServicesService {
       this.categoryRepo.count({ where: { status: 'ACTIVE' } }),
       this.roomServiceRepo.count({ where: { status: 'ACTIVE' } }),
       this.serviceRequestRepo.count(),
-      this.serviceRequestRepo.count({ where: { status: ServiceRequestStatus.PENDING } }),
-      this.serviceRequestRepo.count({ where: { status: ServiceRequestStatus.COMPLETED } }),
+      this.serviceRequestRepo.count({
+        where: { status: ServiceRequestStatus.PENDING },
+      }),
+      this.serviceRequestRepo.count({
+        where: { status: ServiceRequestStatus.COMPLETED },
+      }),
       this.serviceRequestRepo.count({ where: { isSlaBreahed: true } }),
     ]);
 

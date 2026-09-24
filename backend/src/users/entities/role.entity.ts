@@ -18,7 +18,7 @@ export class Role {
     type: 'varchar',
     length: 50,
   })
-  name!: string;  // 'ADMIN' | 'EMPLOYEE' | 'CUSTOMER'
+  name!: string; // 'ADMIN' | 'EMPLOYEE' | 'CUSTOMER'
 
   @Column({
     name: 'display_name',

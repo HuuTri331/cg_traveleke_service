@@ -37,7 +37,10 @@ describe('PaginationHelper', () => {
     });
 
     it('should normalize non-numeric string values safely', () => {
-      const result = normalizePagination({ page: 'abc' as any, perPage: 'xyz' as any });
+      const result = normalizePagination({
+        page: 'abc' as any,
+        perPage: 'xyz' as any,
+      });
       expect(result.page).toBe(1);
       expect(result.limit).toBe(20);
       expect(result.skip).toBe(0);

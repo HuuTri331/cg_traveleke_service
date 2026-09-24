@@ -2,29 +2,25 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
 
-import {
-  DataSource,
-  Repository,
-} from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { Room } from '../rooms/entities/room.entity';
 
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { QueryBookingDto } from './dto/query-booking.dto';
 import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
-import {
-  Booking,
-  BookingStatus,
-} from './entities/booking.entity';
+import { Booking, BookingStatus } from './entities/booking.entity';
 import { BookingRoom } from './entities/booking-room.entity';
 import { BookingStatusLog } from './entities/booking-status-log.entity';
+import { IdGeneratorService } from '../common/id/id-generator.service';
 import { logWithTrace } from '../observability/trace-logger';
 import { normalizePagination, buildPaginationMeta } from '../common/pagination';
-
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 
 /**
  * State machine: Các chuyển trạng thái hợp lệ cho booking.
@@ -42,6 +38,8 @@ const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
 
 @Injectable()
 export class BookingsService {
+  private readonly idGen: IdGeneratorService;
+
   constructor(
     @InjectRepository(Booking)
     private readonly bookingRepository: Repository<Booking>,
@@ -56,7 +54,11 @@ export class BookingsService {
     private readonly roomRepository: Repository<Room>,
 
     private readonly dataSource: DataSource,
-  ) {}
+    @Optional() idGenerator?: IdGeneratorService,
+    @Optional() private readonly realtimeGateway?: RealtimeGateway,
+  ) {
+    this.idGen = idGenerator ?? new IdGeneratorService();
+  }
 
   // ============================================================
   // TẠO BOOKING (Khách hàng)
@@ -74,9 +76,7 @@ export class BookingsService {
     });
 
     if (!room) {
-      throw new NotFoundException(
-        'Không tìm thấy phòng.',
-      );
+      throw new NotFoundException('Không tìm thấy phòng.');
     }
 
     // ==========================================
@@ -86,37 +86,24 @@ export class BookingsService {
     const checkIn = new Date(dto.checkInAt);
     const checkOut = new Date(dto.checkOutAt);
 
-    if (
-      Number.isNaN(checkIn.getTime()) ||
-      Number.isNaN(checkOut.getTime())
-    ) {
-      throw new BadRequestException(
-        'Ngày nhận hoặc trả phòng không hợp lệ.',
-      );
+    if (Number.isNaN(checkIn.getTime()) || Number.isNaN(checkOut.getTime())) {
+      throw new BadRequestException('Ngày nhận hoặc trả phòng không hợp lệ.');
     }
 
     if (checkOut <= checkIn) {
-      throw new BadRequestException(
-        'Ngày trả phòng phải sau ngày nhận phòng.',
-      );
+      throw new BadRequestException('Ngày trả phòng phải sau ngày nhận phòng.');
     }
 
     // ==========================================
     // 3. TÍNH SỐ ĐÊM
     // ==========================================
 
-    const diff =
-      checkOut.getTime() -
-      checkIn.getTime();
+    const diff = checkOut.getTime() - checkIn.getTime();
 
-    const nights = Math.ceil(
-      diff / (1000 * 60 * 60 * 24),
-    );
+    const nights = Math.ceil(diff / (1000 * 60 * 60 * 24));
 
     if (nights < 1) {
-      throw new BadRequestException(
-        'Số đêm phải lớn hơn hoặc bằng 1.',
-      );
+      throw new BadRequestException('Số đêm phải lớn hơn hoặc bằng 1.');
     }
 
     // ==========================================
@@ -128,173 +115,153 @@ export class BookingsService {
       room.availableRooms !== null &&
       dto.roomCount > room.availableRooms
     ) {
-      throw new BadRequestException(
-        `Chỉ còn ${room.availableRooms} phòng.`,
-      );
+      throw new BadRequestException(`Chỉ còn ${room.availableRooms} phòng.`);
     }
 
     // ==========================================
     // 5. LẤY GIÁ TỪ DATABASE
     // ==========================================
 
-    const pricePerNight = Number(
-      room.pricePerNight,
-    );
+    const pricePerNight = Number(room.pricePerNight);
 
-    if (
-      Number.isNaN(pricePerNight) ||
-      pricePerNight < 0
-    ) {
-      throw new BadRequestException(
-        'Giá phòng không hợp lệ.',
-      );
+    if (Number.isNaN(pricePerNight) || pricePerNight < 0) {
+      throw new BadRequestException('Giá phòng không hợp lệ.');
     }
 
     // ==========================================
     // 6. TÍNH TỔNG TIỀN
     // ==========================================
 
-    const subtotal =
-      pricePerNight *
-      nights *
-      dto.roomCount;
+    const subtotal = pricePerNight * nights * dto.roomCount;
 
     // ==========================================
-    // 7. SINH BOOKING CODE
+    // 7. SINH BOOKING CODE (Business Code thân thiện cho Lễ tân và Khách hàng)
     // ==========================================
 
-    const bookingCode =
-      `BK${Date.now()}`;
+    const bookingCode = this.idGen.generateBookingCode();
 
     // ==========================================
     // 8. TRANSACTION
     // ==========================================
 
-    return this.dataSource.transaction(
-      async (manager) => {
-        const bookingRepo =
-          manager.getRepository(Booking);
+    const result = await this.dataSource.transaction(async (manager) => {
+      const bookingRepo = manager.getRepository(Booking);
 
-        const bookingRoomRepo =
-          manager.getRepository(BookingRoom);
+      const bookingRoomRepo = manager.getRepository(BookingRoom);
 
-        // ======================================
-        // INSERT BOOKINGS
-        // ======================================
+      // ======================================
+      // INSERT BOOKINGS
+      // ======================================
 
-        const booking =
-          bookingRepo.create({
-            bookingCode,
+      const booking = bookingRepo.create({
+        bookingCode,
 
-            userId: dto.userId,
+        userId: dto.userId,
 
-            hotelId: room.hotelId,
+        hotelId: room.hotelId,
 
-            tripPlanId: null,
-            handledBy: null,
+        tripPlanId: null,
+        handledBy: null,
 
-            contactName:
-              dto.contactName,
+        contactName: dto.contactName,
 
-            contactEmail:
-              dto.contactEmail,
+        contactEmail: dto.contactEmail,
 
-            contactPhone:
-              dto.contactPhone,
+        contactPhone: dto.contactPhone,
 
-            checkInAt: checkIn,
-            checkOutAt: checkOut,
+        checkInAt: checkIn,
+        checkOutAt: checkOut,
 
-            totalGuests:
-              dto.totalGuests,
+        totalGuests: dto.totalGuests,
 
-            requestedRoomCount:
-              dto.roomCount,
+        requestedRoomCount: dto.roomCount,
 
-            estimatedTotal:
-              subtotal.toFixed(2),
+        estimatedTotal: subtotal.toFixed(2),
 
-            status:
-              BookingStatus.PENDING,
+        status: BookingStatus.PENDING,
 
-            specialRequest:
-              dto.specialRequest ?? null,
+        specialRequest: dto.specialRequest ?? null,
 
-            confirmedAt: null,
-            rejectedAt: null,
-            cancelledAt: null,
-          });
+        confirmedAt: null,
+        rejectedAt: null,
+        cancelledAt: null,
+      });
 
-        const savedBooking =
-          await bookingRepo.save(
-            booking,
-          );
+      const savedBooking = await bookingRepo.save(booking);
 
-        // ======================================
-        // INSERT BOOKING_ROOMS
-        // ======================================
+      // ======================================
+      // INSERT BOOKING_ROOMS
+      // ======================================
 
-        const bookingRoom =
-          bookingRoomRepo.create({
-            bookingId:
-              savedBooking.id,
+      const bookingRoom = bookingRoomRepo.create({
+        bookingId: savedBooking.id,
 
-            roomId:
-              room.id,
+        roomId: room.id,
 
-            quantity:
-              dto.roomCount,
+        quantity: dto.roomCount,
 
-            pricePerNight:
-              pricePerNight.toFixed(2),
+        pricePerNight: pricePerNight.toFixed(2),
+
+        nights,
+
+        subtotal: subtotal.toFixed(2),
+      });
+
+      await bookingRoomRepo.save(bookingRoom);
+
+      // Tự động phân công ngầm nhân viên lễ tân phù hợp theo phân hạng phòng & năng lực
+      await this.autoAssignHotelStaffInternal(savedBooking, room, manager);
+
+      return {
+        message: 'Đặt phòng thành công.',
+
+        data: {
+          booking: savedBooking,
+
+          room: {
+            id: room.id,
+            name: room.name,
+          },
+
+          bookingRoom: {
+            roomId: room.id,
+
+            quantity: dto.roomCount,
 
             nights,
 
-            subtotal:
-              subtotal.toFixed(2),
-          });
+            pricePerNight,
 
-        await bookingRoomRepo.save(
-          bookingRoom,
-        );
-
-        // Tự động phân công ngầm nhân viên lễ tân phù hợp theo phân hạng phòng & năng lực
-        await this.autoAssignHotelStaffInternal(
-          savedBooking,
-          room,
-          manager,
-        );
-
-        return {
-          message:
-            'Đặt phòng thành công.',
-
-          data: {
-            booking:
-              savedBooking,
-
-            room: {
-              id: room.id,
-              name: room.name,
-            },
-
-            bookingRoom: {
-              roomId:
-                room.id,
-
-              quantity:
-                dto.roomCount,
-
-              nights,
-
-              pricePerNight,
-
-              subtotal,
-            },
+            subtotal,
           },
-        };
-      },
-    );
+        },
+      };
+    });
+
+    // Phát realtime notification tới Lễ tân và Quản lý khách sạn
+    try {
+      this.realtimeGateway?.emitBookingCreated({
+        id: result.data.booking.id,
+        bookingCode: result.data.booking.bookingCode,
+        hotelId: room.hotelId,
+        userId: result.data.booking.userId,
+        contactName: result.data.booking.contactName,
+        contactPhone: result.data.booking.contactPhone,
+        contactEmail: result.data.booking.contactEmail,
+        checkInAt: checkIn.toISOString(),
+        checkOutAt: checkOut.toISOString(),
+        roomName: room.name,
+        roomCount: dto.roomCount,
+        estimatedTotal: result.data.booking.estimatedTotal,
+        createdAt: result.data.booking.createdAt
+          ? new Date(result.data.booking.createdAt).toISOString()
+          : new Date().toISOString(),
+      });
+    } catch {
+      // Realtime notification failure must never break the booking creation
+    }
+
+    return result;
   }
 
   /**
@@ -402,12 +369,15 @@ export class BookingsService {
         }
       }
     } catch (err: any) {
-      logWithTrace('warn', 'Lỗi phân công tự động phòng khách sạn (không chặn luồng chính)', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      logWithTrace(
+        'warn',
+        'Lỗi phân công tự động phòng khách sạn (không chặn luồng chính)',
+        {
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
     }
   }
-
 
   // ============================================================
   // DANH SÁCH BOOKINGS (Admin/Employee)
@@ -629,7 +599,7 @@ export class BookingsService {
     if (!allowedTransitions.includes(newStatus)) {
       throw new BadRequestException(
         `Không thể chuyển trạng thái từ "${currentStatus}" sang "${newStatus}". ` +
-        `Các trạng thái hợp lệ: [${allowedTransitions.join(', ')}].`,
+          `Các trạng thái hợp lệ: [${allowedTransitions.join(', ')}].`,
       );
     }
 
@@ -664,6 +634,22 @@ export class BookingsService {
     });
 
     await this.bookingStatusLogRepository.save(statusLog);
+
+    // Phát realtime notification cập nhật trạng thái tới Khách hàng và Lễ tân
+    try {
+      this.realtimeGateway?.emitBookingStatusChanged({
+        id: booking.id,
+        bookingCode: booking.bookingCode,
+        hotelId: booking.hotelId,
+        userId: booking.userId,
+        oldStatus: currentStatus,
+        newStatus: newStatus,
+        changedAt: now.toISOString(),
+        note: dto.note ?? undefined,
+      });
+    } catch {
+      // Fail-safe: Realtime error does not break status update
+    }
 
     return {
       message: `Đã chuyển trạng thái booking ${booking.bookingCode} từ "${currentStatus}" sang "${newStatus}".`,
@@ -717,14 +703,18 @@ export class BookingsService {
     }
 
     if (targetStaff.role === 'CUSTOMER') {
-      throw new BadRequestException('Không thể phân công khách hàng làm người phụ trách phục vụ.');
+      throw new BadRequestException(
+        'Không thể phân công khách hàng làm người phụ trách phục vụ.',
+      );
     }
 
     // 3. CẬP NHẬT PHÂN CÔNG
     const oldStaffId = booking.handledBy;
     booking.handledBy = targetStaffUserId;
     booking.assignmentType = 'MANUAL';
-    booking.assignmentNote = note ?? `Quản lý/Admin đã phân công lại người phụ trách: ${targetStaff.full_name}`;
+    booking.assignmentNote =
+      note ??
+      `Quản lý/Admin đã phân công lại người phụ trách: ${targetStaff.full_name}`;
     booking.reassignedBy = changedByUserId;
     booking.reassignedAt = new Date();
 
@@ -740,6 +730,22 @@ export class BookingsService {
         changedBy: changedByUserId,
       }),
     );
+
+    // Thông báo realtime phân công lại tới Lễ tân / Quản lý
+    try {
+      this.realtimeGateway?.emitBookingStatusChanged({
+        id: booking.id,
+        bookingCode: booking.bookingCode,
+        hotelId: booking.hotelId,
+        userId: booking.userId,
+        oldStatus: booking.status,
+        newStatus: booking.status,
+        changedAt: new Date().toISOString(),
+        note: `Đã phân công lễ tân phụ trách: ${targetStaff.full_name}`,
+      });
+    } catch {
+      // Fail-safe
+    }
 
     return {
       message: `Đã phân công lại người phụ trách cho đơn đặt phòng #${booking.bookingCode} thành công.`,
@@ -853,9 +859,8 @@ export class BookingsService {
   // ============================================================
 
   async findByUser(userId: string) {
-    const bookings =
-      await this.dataSource.query(
-        `
+    const bookings = await this.dataSource.query(
+      `
       SELECT
         b.id,
         b.booking_code AS bookingCode,
@@ -904,12 +909,11 @@ export class BookingsService {
 
       ORDER BY b.created_at DESC
       `,
-        [userId],
-      );
+      [userId],
+    );
 
     return {
-      message:
-        'Lấy lịch sử đặt phòng thành công.',
+      message: 'Lấy lịch sử đặt phòng thành công.',
       data: bookings,
     };
   }
@@ -976,7 +980,10 @@ export class BookingsService {
   // NHẬT KÝ VẬN HÀNH / ACTIVITY LOGS (Admin/Employee)
   // ============================================================
   async getActivityLogs(limit = 50) {
-    const safeLimit = Math.min(100, Math.max(1, Math.floor(Number(limit) || 50)));
+    const safeLimit = Math.min(
+      100,
+      Math.max(1, Math.floor(Number(limit) || 50)),
+    );
 
     const logs = await this.dataSource.query(
       `

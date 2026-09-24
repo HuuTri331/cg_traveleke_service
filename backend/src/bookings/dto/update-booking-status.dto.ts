@@ -1,4 +1,10 @@
-import { IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 export enum BookingStatusAction {
   CONFIRMED = 'CONFIRMED',
@@ -11,7 +17,8 @@ export enum BookingStatusAction {
 export class UpdateBookingStatusDto {
   @IsNotEmpty({ message: 'Trạng thái mới không được để trống.' })
   @IsEnum(BookingStatusAction, {
-    message: 'Trạng thái không hợp lệ. Chấp nhận: CONFIRMED, REJECTED, CHECKED_IN, COMPLETED, CANCELLED.',
+    message:
+      'Trạng thái không hợp lệ. Chấp nhận: CONFIRMED, REJECTED, CHECKED_IN, COMPLETED, CANCELLED.',
   })
   status!: BookingStatusAction;
 

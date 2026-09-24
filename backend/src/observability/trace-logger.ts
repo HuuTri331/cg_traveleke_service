@@ -58,17 +58,18 @@ export class ObservabilityLoggerService implements LoggerService {
     const span = trace.getActiveSpan();
     const spanContext = span?.spanContext();
 
-    const context = params.length > 0 && typeof params[params.length - 1] === 'string'
-      ? params[params.length - 1]
-      : undefined;
+    const context =
+      params.length > 0 && typeof params[params.length - 1] === 'string'
+        ? params[params.length - 1]
+        : undefined;
 
-    const extra = params.length > 0 && typeof params[0] === 'object'
-      ? params[0]
-      : {};
+    const extra =
+      params.length > 0 && typeof params[0] === 'object' ? params[0] : {};
 
-    const formattedMessage = typeof message === 'object'
-      ? (message.message || JSON.stringify(message))
-      : String(message);
+    const formattedMessage =
+      typeof message === 'object'
+        ? message.message || JSON.stringify(message)
+        : String(message);
 
     logger.log({
       level,

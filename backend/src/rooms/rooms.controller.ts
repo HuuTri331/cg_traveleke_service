@@ -106,9 +106,7 @@ export class RoomsController {
     @Body('caption') caption?: string,
   ) {
     if (!files || files.length === 0) {
-      throw new BadRequestException(
-        'Vui lòng đính kèm ít nhất 1 file ảnh.',
-      );
+      throw new BadRequestException('Vui lòng đính kèm ít nhất 1 file ảnh.');
     }
 
     const dtos: AddRoomImageDto[] = files.map((file, index) => ({
@@ -123,10 +121,7 @@ export class RoomsController {
   @Post(':id/images')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  addImage(
-    @Param('id') id: string,
-    @Body() dto: AddRoomImageDto,
-  ) {
+  addImage(@Param('id') id: string, @Body() dto: AddRoomImageDto) {
     return this.roomsService.addImage(id, dto);
   }
 
@@ -138,20 +133,14 @@ export class RoomsController {
   @Patch(':id/images/:imageId/primary')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  setPrimaryImage(
-    @Param('id') id: string,
-    @Param('imageId') imageId: string,
-  ) {
+  setPrimaryImage(@Param('id') id: string, @Param('imageId') imageId: string) {
     return this.roomsService.setPrimaryImage(id, imageId);
   }
 
   @Delete(':id/images/:imageId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
-  deleteImage(
-    @Param('id') id: string,
-    @Param('imageId') imageId: string,
-  ) {
+  deleteImage(@Param('id') id: string, @Param('imageId') imageId: string) {
     return this.roomsService.deleteImage(id, imageId);
   }
 }

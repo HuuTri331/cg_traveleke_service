@@ -10,7 +10,8 @@ export interface UserContextStore {
 
 @Injectable()
 export class UserContextService {
-  private readonly asyncLocalStorage = new AsyncLocalStorage<UserContextStore>();
+  private readonly asyncLocalStorage =
+    new AsyncLocalStorage<UserContextStore>();
 
   /**
    * Bọc một hàm callback trong phạm vi AsyncLocalStorage context.

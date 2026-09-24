@@ -110,7 +110,11 @@ export class EmailSecurityService {
    * - Vi phạm lần 1: Khóa 10 phút.
    * - Vi phạm lần 2 trở đi: Khóa 10 giờ.
    */
-  recordViolation(clientIp: string): { tier: number; lockedUntil: number; message: string } {
+  recordViolation(clientIp: string): {
+    tier: number;
+    lockedUntil: number;
+    message: string;
+  } {
     const now = Date.now();
     const existing = this.lockoutMap.get(clientIp);
 
@@ -182,7 +186,9 @@ export class EmailSecurityService {
         normalizedUsername.includes(pattern) ||
         normalizedEmail.includes(pattern)
       ) {
-        this.logger.warn(`Phát hiện từ ngữ thô tục trong email: ${trimmed} (từ: ${pattern})`);
+        this.logger.warn(
+          `Phát hiện từ ngữ thô tục trong email: ${trimmed} (từ: ${pattern})`,
+        );
         const violation = this.recordViolation(clientIp);
         throw new HttpException(
           {
@@ -218,7 +224,9 @@ export class EmailSecurityService {
       // Gmail username phải từ 6 đến 30 ký tự
       const rawUser = username.replace(/\./g, '');
       if (rawUser.length < 6 || rawUser.length > 30) {
-        this.logger.warn(`Gmail không hợp lệ về độ dài (6-30 ký tự): ${trimmed}`);
+        this.logger.warn(
+          `Gmail không hợp lệ về độ dài (6-30 ký tự): ${trimmed}`,
+        );
         const violation = this.recordViolation(clientIp);
         throw new HttpException(
           {
@@ -249,7 +257,11 @@ export class EmailSecurityService {
       }
 
       // Không cho phép dấu chấm ở đầu, cuối hoặc 2 dấu chấm liên tiếp
-      if (username.startsWith('.') || username.endsWith('.') || username.includes('..')) {
+      if (
+        username.startsWith('.') ||
+        username.endsWith('.') ||
+        username.includes('..')
+      ) {
         this.logger.warn(`Gmail chứa dấu chấm không hợp lệ: ${trimmed}`);
         const violation = this.recordViolation(clientIp);
         throw new HttpException(
@@ -269,7 +281,9 @@ export class EmailSecurityService {
     try {
       const mxRecords = await dns.promises.resolveMx(domain);
       if (!mxRecords || mxRecords.length === 0) {
-        this.logger.warn(`Tên miền ${domain} không có bản ghi MX (không thể nhận mail).`);
+        this.logger.warn(
+          `Tên miền ${domain} không có bản ghi MX (không thể nhận mail).`,
+        );
         const violation = this.recordViolation(clientIp);
         throw new HttpException(
           {
@@ -283,7 +297,9 @@ export class EmailSecurityService {
         );
       }
     } catch (dnsErr: any) {
-      this.logger.warn(`Lỗi DNS MX lookup cho tên miền ${domain}: ${dnsErr?.message}`);
+      this.logger.warn(
+        `Lỗi DNS MX lookup cho tên miền ${domain}: ${dnsErr?.message}`,
+      );
       const violation = this.recordViolation(clientIp);
       throw new HttpException(
         {

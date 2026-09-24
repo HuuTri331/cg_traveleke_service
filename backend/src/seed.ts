@@ -151,7 +151,8 @@ async function seed() {
   const bcrypt = await import('bcrypt');
   const passwordHash = await bcrypt.hash('123456789', 12);
 
-  await connection.query(`
+  await connection.query(
+    `
     INSERT INTO users (full_name, email, password, role, status, email_verified_at)
     VALUES ('Quản Trị Viên', 'admintraveloka@gmail.com', ?, 'ADMIN', 'ACTIVE', NOW())
     ON DUPLICATE KEY UPDATE
@@ -159,7 +160,9 @@ async function seed() {
       role = 'ADMIN',
       status = 'ACTIVE',
       email_verified_at = NOW();
-  `, [passwordHash]);
+  `,
+    [passwordHash],
+  );
 
   await connection.query(`
     INSERT IGNORE INTO users_roles (user_id, role_id)
@@ -167,7 +170,8 @@ async function seed() {
     WHERE u.email = 'admintraveloka@gmail.com' AND r.name = 'ADMIN';
   `);
 
-  await connection.query(`
+  await connection.query(
+    `
     INSERT INTO users (full_name, email, password, role, status, email_verified_at)
     VALUES ('Nhân Viên', 'nhanvientraveloka@gmail.com', ?, 'EMPLOYEE', 'ACTIVE', NOW())
     ON DUPLICATE KEY UPDATE
@@ -175,7 +179,9 @@ async function seed() {
       role = 'EMPLOYEE',
       status = 'ACTIVE',
       email_verified_at = NOW();
-  `, [passwordHash]);
+  `,
+    [passwordHash],
+  );
 
   await connection.query(`
     INSERT IGNORE INTO users_roles (user_id, role_id)
@@ -183,7 +189,9 @@ async function seed() {
     WHERE u.email = 'nhanvientraveloka@gmail.com' AND r.name = 'EMPLOYEE';
   `);
   // 7. Seed Sample Hotels & Rooms if empty
-  const [hotelsCountRows]: any = await connection.query(`SELECT COUNT(*) as cnt FROM hotels`);
+  const [hotelsCountRows]: any = await connection.query(
+    `SELECT COUNT(*) as cnt FROM hotels`,
+  );
   if (hotelsCountRows[0].cnt === 0) {
     console.log('Seeding sample hotels and rooms...');
     await connection.query(`

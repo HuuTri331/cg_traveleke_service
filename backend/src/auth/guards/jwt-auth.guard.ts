@@ -7,14 +7,38 @@ import { AuthGuard } from '@nestjs/passport';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handleRequest<TUser = any>(err: any, user: any, _info: any, _context: ExecutionContext): TUser {
+  handleRequest<TUser = any>(
+    err: any,
+    user: any,
+    info: any,
+    context: ExecutionContext,
+  ): TUser {
     if (err || !user) {
-      throw new UnauthorizedException(
-        'Bạn cần đăng nhập để thực hiện thao tác này.',
+      const response = context.switchToHttp().getResponse();
+
+      let message =
+        'Bạn cần đăng nhập bằng Bearer token hợp lệ để thực hiện thao tác này.';
+      let wwwAuthenticate = 'Bearer';
+
+      if (info?.name === 'TokenExpiredError') {
+        message = 'Phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.';
+        wwwAuthenticate =
+          'Bearer error="invalid_token", error_description="The access token expired"';
+      } else if (info?.name === 'JsonWebTokenError') {
+        message = 'Mã xác thực Bearer token không hợp lệ hoặc đã bị thay đổi.';
+        wwwAuthenticate =
+          'Bearer error="invalid_token", error_description="Invalid token signature"';
+      }
+
+      if (response && typeof response.setHeader === 'function') {
+        response.setHeader('WWW-Authenticate', wwwAuthenticate);
+      }
+
+      throw (
+        err ||
+        new UnauthorizedException(message)
       );
     }
     return user as TUser;
   }
 }
-

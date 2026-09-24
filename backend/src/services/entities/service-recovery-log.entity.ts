@@ -27,7 +27,12 @@ export class ServiceRecoveryLog {
   @PrimaryGeneratedColumn({ type: 'bigint', unsigned: true })
   id: number;
 
-  @Column({ name: 'service_request_id', type: 'bigint', unsigned: true, nullable: true })
+  @Column({
+    name: 'service_request_id',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
   serviceRequestId: number | null;
 
   @Column({ name: 'booking_id', type: 'bigint', unsigned: true })
@@ -36,7 +41,12 @@ export class ServiceRecoveryLog {
   @Column({ name: 'reported_by', type: 'bigint', unsigned: true })
   reportedBy: number;
 
-  @Column({ name: 'approved_by', type: 'bigint', unsigned: true, nullable: true })
+  @Column({
+    name: 'approved_by',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
   approvedBy: number | null;
 
   @Column({ name: 'recovery_type', type: 'varchar', length: 30 })
@@ -48,7 +58,13 @@ export class ServiceRecoveryLog {
   @Column({ name: 'action_taken', type: 'text' })
   actionTaken: string;
 
-  @Column({ name: 'cost_incurred', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  @Column({
+    name: 'cost_incurred',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
   costIncurred: number;
 
   @Column({ name: 'approved_at', type: 'datetime', nullable: true })

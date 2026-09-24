@@ -46,16 +46,38 @@ export interface MeResponse {
  */
 const ROLE_PERMISSIONS: Record<string, string[]> = {
   ADMIN: [
-    'hotels.create', 'hotels.read', 'hotels.update', 'hotels.delete', 'hotels.manage_images',
-    'rooms.create',  'rooms.read',  'rooms.update',  'rooms.delete',  'rooms.manage_images',
-    'bookings.read', 'bookings.update_status', 'bookings.delete',
-    'users.read', 'users.create', 'users.update', 'users.delete',
-    'users.manage_staff', 'users.update_role', 'users.update_status',
+    'hotels.create',
+    'hotels.read',
+    'hotels.update',
+    'hotels.delete',
+    'hotels.manage_images',
+    'rooms.create',
+    'rooms.read',
+    'rooms.update',
+    'rooms.delete',
+    'rooms.manage_images',
+    'bookings.read',
+    'bookings.update_status',
+    'bookings.delete',
+    'users.read',
+    'users.create',
+    'users.update',
+    'users.delete',
+    'users.manage_staff',
+    'users.update_role',
+    'users.update_status',
   ],
   EMPLOYEE: [
-    'hotels.create', 'hotels.read', 'hotels.update', 'hotels.manage_images',
-    'rooms.create',  'rooms.read',  'rooms.update',  'rooms.manage_images',
-    'bookings.read', 'bookings.update_status',
+    'hotels.create',
+    'hotels.read',
+    'hotels.update',
+    'hotels.manage_images',
+    'rooms.create',
+    'rooms.read',
+    'rooms.update',
+    'rooms.manage_images',
+    'bookings.read',
+    'bookings.update_status',
   ],
   CUSTOMER: [],
 };
@@ -82,10 +104,14 @@ export class AuthService {
     });
 
     if (existing) {
-      throw new ConflictException('Email này đã được sử dụng bởi tài khoản khác.');
+      throw new ConflictException(
+        'Email này đã được sử dụng bởi tài khoản khác.',
+      );
     }
 
-    const customerRole = await this.rolesRepository.findOne({ where: { name: 'CUSTOMER' } });
+    const customerRole = await this.rolesRepository.findOne({
+      where: { name: 'CUSTOMER' },
+    });
 
     const hashedPassword = await bcrypt.hash(dto.password, 12);
 
@@ -98,6 +124,7 @@ export class AuthService {
       dateOfBirth: dto.dateOfBirth ?? null,
       gender: dto.gender ?? null,
       avatarUrl: avatarUrl ?? null,
+      role: 'CUSTOMER',
       status: 'ACTIVE',
       emailVerifiedAt: null,
       roles: customerRole ? [customerRole] : [],
@@ -126,10 +153,10 @@ export class AuthService {
       // Log lỗi nhưng không hủy tài khoản vừa tạo để khách hàng có thể dùng nút "Gửi lại link xác thực"
       logWithTrace('error', 'Lỗi khi gửi email xác thực lúc đăng ký', {
         email: saved.email,
-        error: mailError instanceof Error ? mailError.message : String(mailError),
+        error:
+          mailError instanceof Error ? mailError.message : String(mailError),
       });
     }
-
 
     return {
       userId: saved.id,
@@ -166,7 +193,9 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new NotFoundException('Không tìm thấy tài khoản người dùng tương ứng.');
+      throw new NotFoundException(
+        'Không tìm thấy tài khoản người dùng tương ứng.',
+      );
     }
 
     if (user.emailVerifiedAt) {
@@ -184,7 +213,8 @@ export class AuthService {
 
     return {
       success: true,
-      message: 'Xác thực tài khoản thành công! Bạn có thể đăng nhập ngay bây giờ.',
+      message:
+        'Xác thực tài khoản thành công! Bạn có thể đăng nhập ngay bây giờ.',
       email: user.email,
     };
   }
@@ -202,11 +232,15 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new NotFoundException('Không tìm thấy tài khoản với địa chỉ email này.');
+      throw new NotFoundException(
+        'Không tìm thấy tài khoản với địa chỉ email này.',
+      );
     }
 
     if (user.emailVerifiedAt) {
-      throw new BadRequestException('Tài khoản này đã được xác thực email từ trước.');
+      throw new BadRequestException(
+        'Tài khoản này đã được xác thực email từ trước.',
+      );
     }
 
     const verificationToken = this.jwtService.sign(
@@ -226,7 +260,8 @@ export class AuthService {
 
     return {
       success: true,
-      message: 'Đã gửi lại liên kết xác thực tới email của bạn. Vui lòng kiểm tra hộp thư.',
+      message:
+        'Đã gửi lại liên kết xác thực tới email của bạn. Vui lòng kiểm tra hộp thư.',
     };
   }
 
@@ -267,7 +302,8 @@ export class AuthService {
     if (user.role === 'CUSTOMER' && !user.emailVerifiedAt) {
       throw new UnauthorizedException({
         statusCode: 401,
-        message: 'Tài khoản chưa được xác thực email. Vui lòng kiểm tra email hoặc nhấn gửi lại link xác thực.',
+        message:
+          'Tài khoản chưa được xác thực email. Vui lòng kiểm tra email hoặc nhấn gửi lại link xác thực.',
         requiresVerification: true,
         email: user.email,
       });
@@ -284,8 +320,7 @@ export class AuthService {
       role: user.role,
     };
 
-    const expiresIn =
-      this.configService.get<string>('JWT_EXPIRES_IN') ?? '7d';
+    const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN') ?? '7d';
 
     const userProfile = this.getMe(user);
 

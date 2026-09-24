@@ -37,20 +37,37 @@ export class ServiceRequest {
   @Column({ name: 'service_id', type: 'bigint', unsigned: true })
   serviceId: number;
 
-  @Column({ name: 'assigned_to', type: 'bigint', unsigned: true, nullable: true })
+  @Column({
+    name: 'assigned_to',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
   assignedTo: number | null;
 
   // ---- SNAPSHOT tại thời điểm tạo request ----
   @Column({ name: 'service_name', type: 'varchar', length: 200 })
   serviceName: string;
 
-  @Column({ name: 'unit_price', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  @Column({
+    name: 'unit_price',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
   unitPrice: number;
 
   @Column({ type: 'smallint', unsigned: true, default: 1 })
   quantity: number;
 
-  @Column({ name: 'total_price', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  @Column({
+    name: 'total_price',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
   totalPrice: number;
 
   // ---- SCHEDULING ----
@@ -83,13 +100,29 @@ export class ServiceRequest {
   @Column({ name: 'failure_reason', type: 'text', nullable: true })
   failureReason: string | null;
 
-  @Column({ name: 'recovery_action', type: 'varchar', length: 200, nullable: true })
+  @Column({
+    name: 'recovery_action',
+    type: 'varchar',
+    length: 200,
+    nullable: true,
+  })
   recoveryAction: string | null;
 
-  @Column({ name: 'recovery_approved_by', type: 'bigint', unsigned: true, nullable: true })
+  @Column({
+    name: 'recovery_approved_by',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
   recoveryApprovedBy: number | null;
 
-  @Column({ name: 'recovery_cost', type: 'decimal', precision: 12, scale: 2, nullable: true })
+  @Column({
+    name: 'recovery_cost',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    nullable: true,
+  })
   recoveryCost: number | null;
 
   // ---- STATUS ----

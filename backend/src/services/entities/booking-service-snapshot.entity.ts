@@ -28,29 +28,55 @@ export class BookingServiceSnapshot {
   @Column({ name: 'service_name', type: 'varchar', length: 200 })
   serviceName: string;
 
-  @Column({ name: 'service_type', type: 'varchar', length: 30, default: ServiceType.INCLUDED })
+  @Column({
+    name: 'service_type',
+    type: 'varchar',
+    length: 30,
+    default: ServiceType.INCLUDED,
+  })
   serviceType: ServiceType;
 
-  @Column({ name: 'category_name', type: 'varchar', length: 150, nullable: true })
+  @Column({
+    name: 'category_name',
+    type: 'varchar',
+    length: 150,
+    nullable: true,
+  })
   categoryName: string | null;
 
   @Column({ type: 'varchar', length: 50, default: 'lần' })
   unit: string;
 
-  @Column({ name: 'base_price', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  @Column({
+    name: 'base_price',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
   basePrice: number;
 
   @Column({ name: 'is_complimentary', type: 'tinyint', default: 0 })
   isComplimentary: boolean;
 
   // ---- QUOTA TRACKING ----
-  @Column({ name: 'quota_included', type: 'smallint', unsigned: true, nullable: true })
+  @Column({
+    name: 'quota_included',
+    type: 'smallint',
+    unsigned: true,
+    nullable: true,
+  })
   quotaIncluded: number | null;
 
   @Column({ name: 'quota_used', type: 'smallint', unsigned: true, default: 0 })
   quotaUsed: number;
 
-  @Column({ name: 'quota_per_night', type: 'smallint', unsigned: true, nullable: true })
+  @Column({
+    name: 'quota_per_night',
+    type: 'smallint',
+    unsigned: true,
+    nullable: true,
+  })
   quotaPerNight: number | null;
 
   @Column({ type: 'varchar', length: 30, default: 'ACTIVE' })

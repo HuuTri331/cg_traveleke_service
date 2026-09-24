@@ -28,4 +28,3 @@ import { StaffSkillsService } from './staff-skills.service';
   exports: [HotelStaffService, StaffSkillsService],
 })
 export class HotelStaffModule {}
-

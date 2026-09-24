@@ -49,7 +49,10 @@ const avatarMulterOptions = {
   fileFilter: (_req: any, file: any, cb: any) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
     if (!allowed.includes(file.mimetype)) {
-      return cb(new BadRequestException('Chỉ chấp nhận ảnh JPG, PNG, WEBP.'), false);
+      return cb(
+        new BadRequestException('Chỉ chấp nhận ảnh JPG, PNG, WEBP.'),
+        false,
+      );
     }
     cb(null, true);
   },
@@ -126,7 +129,9 @@ export class AuthController {
     // 1. Kiểm tra an toàn email và xử lý khóa nếu vi phạm
     await this.emailSecurityService.validateEmail(dto.email, clientIp);
 
-    const avatarUrl = avatarFile ? `/uploads/avatars/${avatarFile.filename}` : undefined;
+    const avatarUrl = avatarFile
+      ? `/uploads/avatars/${avatarFile.filename}`
+      : undefined;
     const data = await this.authService.register(dto, avatarUrl);
     return {
       success: true,
@@ -152,13 +157,23 @@ export class AuthController {
    * Endpoint mở trực tiếp từ email (tự động chuyển hướng về trang frontend)
    */
   @Get('verify-email')
-  async verifyEmailRedirect(@Query('token') token: string, @Res() res: Response) {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
+  async verifyEmailRedirect(
+    @Query('token') token: string,
+    @Res() res: Response,
+  ) {
+    const frontendUrl = this.configService.get<string>(
+      'FRONTEND_URL',
+      'http://localhost:3000',
+    );
     try {
       await this.authService.verifyEmail(token);
-      return res.redirect(`${frontendUrl}/verify-email?verified=true&token=${encodeURIComponent(token)}`);
+      return res.redirect(
+        `${frontendUrl}/verify-email?verified=true&token=${encodeURIComponent(token)}`,
+      );
     } catch (err: any) {
-      const errorMsg = encodeURIComponent(err?.message || 'Xác thực không hợp lệ');
+      const errorMsg = encodeURIComponent(
+        err?.message || 'Xác thực không hợp lệ',
+      );
       return res.redirect(`${frontendUrl}/verify-email?error=${errorMsg}`);
     }
   }
@@ -176,7 +191,10 @@ export class AuthController {
       windowMs: 60_000,
     },
   })
-  async resendVerification(@Body() dto: ResendVerificationDto, @Req() req: Request) {
+  async resendVerification(
+    @Body() dto: ResendVerificationDto,
+    @Req() req: Request,
+  ) {
     const clientIp = this.getClientIp(req);
     // Kiểm tra lockout trước khi cho phép gửi lại
     this.emailSecurityService.checkLockout(clientIp);
@@ -206,7 +224,6 @@ export class AuthController {
       data: token,
     };
   }
-
 
   /**
    * GET /api/auth/me

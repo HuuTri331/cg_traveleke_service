@@ -53,7 +53,10 @@ try {
   otelSdk.start();
 } catch (error: any) {
   // RESILIENT PATTERN: Nếu OTel gặp trục trặc khởi động, không bao giờ làm crash ứng dụng
-  console.warn('[OpenTelemetry] Khởi tạo gặp lỗi (chế độ dự phòng):', error?.message || error);
+  console.warn(
+    '[OpenTelemetry] Khởi tạo gặp lỗi (chế độ dự phòng):',
+    error?.message || error,
+  );
 }
 
 // Graceful Shutdown khi nhận tín hiệu kết thúc từ OS / Container runtime

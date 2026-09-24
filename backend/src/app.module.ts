@@ -73,7 +73,12 @@ import { UserContextInterceptor } from './audit/user-context.interceptor';
 import { RedisModule } from './redis/redis.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { AnalyticsModule } from './analytics/analytics.module';
-import { ObservabilityModule, LoggingInterceptor } from './observability/observability.module';
+import {
+  ObservabilityModule,
+  LoggingInterceptor,
+} from './observability/observability.module';
+import { IdModule } from './common/id/id.module';
+import { RealtimeModule } from './realtime/realtime.module';
 
 @Module({
   imports: [
@@ -93,29 +98,15 @@ import { ObservabilityModule, LoggingInterceptor } from './observability/observa
       useFactory: (configService: ConfigService) => ({
         type: 'mysql',
 
-        host:
-          configService.get<string>('DB_HOST') ??
-          '127.0.0.1',
+        host: configService.get<string>('DB_HOST') ?? '127.0.0.1',
 
-        port: Number(
-          configService.get<string>('DB_PORT') ??
-            3306,
-        ),
+        port: Number(configService.get<string>('DB_PORT') ?? 3306),
 
-        username:
-          configService.getOrThrow<string>(
-            'DB_USERNAME',
-          ),
+        username: configService.getOrThrow<string>('DB_USERNAME'),
 
-        password:
-          configService.getOrThrow<string>(
-            'DB_PASSWORD',
-          ),
+        password: configService.getOrThrow<string>('DB_PASSWORD'),
 
-        database:
-          configService.getOrThrow<string>(
-            'DB_DATABASE',
-          ),
+        database: configService.getOrThrow<string>('DB_DATABASE'),
 
         autoLoadEntities: true,
 
@@ -142,11 +133,11 @@ import { ObservabilityModule, LoggingInterceptor } from './observability/observa
     RateLimitModule,
     AnalyticsModule,
     ObservabilityModule,
+    IdModule,
+    RealtimeModule,
   ],
 
-  controllers: [
-    AppController,
-  ],
+  controllers: [AppController],
 
   providers: [
     AppService,
@@ -159,7 +150,6 @@ import { ObservabilityModule, LoggingInterceptor } from './observability/observa
       useClass: UserContextInterceptor,
     },
   ],
-
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

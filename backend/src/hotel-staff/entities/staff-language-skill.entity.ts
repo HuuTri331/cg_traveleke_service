@@ -43,7 +43,12 @@ export class StaffLanguageSkill {
   @Column({ name: 'certificate_expiry', type: 'date', nullable: true })
   certificateExpiry: Date | null;
 
-  @Column({ name: 'verified_by', type: 'bigint', unsigned: true, nullable: true })
+  @Column({
+    name: 'verified_by',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
   verifiedBy: number | null;
 
   @Column({ name: 'verified_at', type: 'datetime', nullable: true })

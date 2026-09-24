@@ -31,7 +31,13 @@ export class StaffSkill {
   @Column({ type: 'tinyint', unsigned: true, default: 1 })
   level: number; // 1-5
 
-  @Column({ name: 'years_exp', type: 'decimal', precision: 4, scale: 1, nullable: true })
+  @Column({
+    name: 'years_exp',
+    type: 'decimal',
+    precision: 4,
+    scale: 1,
+    nullable: true,
+  })
   yearsExp: number | null;
 
   @Column({ type: 'varchar', length: 200, nullable: true })
@@ -43,7 +49,12 @@ export class StaffSkill {
   @Column({ type: 'text', nullable: true })
   note: string | null;
 
-  @Column({ name: 'verified_by', type: 'bigint', unsigned: true, nullable: true })
+  @Column({
+    name: 'verified_by',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
   verifiedBy: number | null;
 
   @Column({ name: 'verified_at', type: 'datetime', nullable: true })
@@ -53,11 +64,21 @@ export class StaffSkill {
   @Column({ name: 'is_shadow', type: 'tinyint', default: 0 })
   isShadow: boolean;
 
-  @Column({ name: 'shadow_mentor_id', type: 'bigint', unsigned: true, nullable: true })
+  @Column({
+    name: 'shadow_mentor_id',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
   shadowMentorId: number | null;
 
   // Mức độ eligibility cho loại case
-  @Column({ name: 'eligibility_level', type: 'varchar', length: 20, default: StaffEligibilityLevel.STANDARD })
+  @Column({
+    name: 'eligibility_level',
+    type: 'varchar',
+    length: 20,
+    default: StaffEligibilityLevel.STANDARD,
+  })
   eligibilityLevel: StaffEligibilityLevel;
 
   @CreateDateColumn({ name: 'created_at' })

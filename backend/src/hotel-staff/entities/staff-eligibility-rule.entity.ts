@@ -33,14 +33,24 @@ export class StaffEligibilityRule {
   @Column({ name: 'rule_code', type: 'varchar', length: 60, unique: true })
   ruleCode: string;
 
-  @Column({ name: 'case_complexity', type: 'varchar', length: 20, default: 'STANDARD' })
+  @Column({
+    name: 'case_complexity',
+    type: 'varchar',
+    length: 20,
+    default: 'STANDARD',
+  })
   caseComplexity: CaseComplexity;
 
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
   // ---- YÊU CẦU KỸ NĂNG ----
-  @Column({ name: 'min_skill_level', type: 'tinyint', unsigned: true, default: 1 })
+  @Column({
+    name: 'min_skill_level',
+    type: 'tinyint',
+    unsigned: true,
+    default: 1,
+  })
   minSkillLevel: number; // 1-5
 
   @Column({ name: 'required_skill_codes', type: 'json', nullable: true })
@@ -50,10 +60,21 @@ export class StaffEligibilityRule {
   requiredLanguageCodes: string[] | null; // VD: ["en", "ja"]
 
   // ---- YÊU CẦU KINH NGHIỆM ----
-  @Column({ name: 'min_years_experience', type: 'decimal', precision: 4, scale: 1, default: 0 })
+  @Column({
+    name: 'min_years_experience',
+    type: 'decimal',
+    precision: 4,
+    scale: 1,
+    default: 0,
+  })
   minYearsExperience: number;
 
-  @Column({ name: 'min_cases_completed', type: 'smallint', unsigned: true, default: 0 })
+  @Column({
+    name: 'min_cases_completed',
+    type: 'smallint',
+    unsigned: true,
+    default: 0,
+  })
   minCasesCompleted: number;
 
   // ---- ĐIỀU KIỆN LOẠI TRỪ ----
@@ -64,7 +85,12 @@ export class StaffEligibilityRule {
   requireVerifiedSkills: boolean; // Kỹ năng phải được Admin verify
 
   // ---- ESCALATION ----
-  @Column({ name: 'escalation_role', type: 'varchar', length: 30, nullable: true })
+  @Column({
+    name: 'escalation_role',
+    type: 'varchar',
+    length: 30,
+    nullable: true,
+  })
   escalationRole: string | null; // Role phải xử lý nếu không có người đủ điều kiện
 
   @Column({ type: 'varchar', length: 20, default: 'ACTIVE' })

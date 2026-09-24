@@ -38,9 +38,16 @@ function redactSensitiveData(obj: any): any {
   return clean;
 }
 
-// Custom format tự động làm sạch dữ liệu trước khi serialize sang JSON
+// Custom format tự động làm sạch dữ liệu trước khi serialize mà vẫn giữ nguyên các Symbol của Winston
 const redactFormat = format((info) => {
-  return redactSensitiveData(info);
+  for (const [key, value] of Object.entries(info)) {
+    if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+      info[key] = '[REDACTED]';
+    } else if (typeof value === 'object' && value !== null) {
+      info[key] = redactSensitiveData(value);
+    }
+  }
+  return info;
 });
 
 // Đảm bảo thư mục logs/ tồn tại nếu ghi file
@@ -54,7 +61,9 @@ if (!fs.existsSync(logsDir)) {
 }
 
 export const logger = createLogger({
-  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
+  level:
+    process.env.LOG_LEVEL ||
+    (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
   defaultMeta: {
     service: process.env.OTEL_SERVICE_NAME || 'traveleke-backend',
     environment: process.env.NODE_ENV || 'development',
@@ -68,6 +77,19 @@ export const logger = createLogger({
   transports: [
     new transports.Console({
       handleExceptions: true,
+      format:
+        process.env.NODE_ENV === 'production'
+          ? format.combine(redactFormat(), format.json())
+          : format.combine(
+              format.colorize(),
+              format.timestamp({ format: 'HH:mm:ss' }),
+              format.printf((info) => {
+                const { level, message, timestamp, context, trace_id } = info;
+                const ctx = context ? ` [${context}]` : '';
+                const traceInfo = trace_id ? ` (trace: ${trace_id})` : '';
+                return `[Traveleke] ${timestamp} ${level}${ctx}: ${message}${traceInfo}`;
+              }),
+            ),
     }),
     new transports.File({
       filename: path.join(logsDir, 'error.log'),

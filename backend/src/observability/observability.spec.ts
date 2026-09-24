@@ -9,7 +9,7 @@ describe('Observability Module', () => {
   let loggerSpy: jest.SpyInstance;
 
   beforeEach(() => {
-    loggerSpy = jest.spyOn(logger, 'log').mockImplementation(() => logger as any);
+    loggerSpy = jest.spyOn(logger, 'log').mockImplementation(() => logger);
   });
 
   afterEach(() => {
@@ -36,9 +36,11 @@ describe('Observability Module', () => {
         traceFlags: 1,
       };
 
-      const getActiveSpanSpy = jest.spyOn(trace, 'getActiveSpan').mockReturnValue({
-        spanContext: () => mockSpanContext,
-      } as any);
+      const getActiveSpanSpy = jest
+        .spyOn(trace, 'getActiveSpan')
+        .mockReturnValue({
+          spanContext: () => mockSpanContext,
+        } as any);
 
       logWithTrace('info', 'Database query executed');
 

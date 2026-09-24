@@ -1,15 +1,15 @@
 /**
  * Redis Lua Script cho Tầng 1: Sliding Window Log (Rate limiting theo IP).
- * 
+ *
  * Lưu trữ timestamp từng request vào Redis Sorted Set (ZSET).
  * Đảm bảo tính nguyên tử (atomic) và giải quyết triệt để Race Condition.
- * 
+ *
  * KEYS[1]: Redis Key (ví dụ: rl:ip:127.0.0.1:auth:login)
  * ARGV[1]: now (mili-giây hiện tại)
  * ARGV[2]: windowMs (kích thước cửa sổ trượt mili-giây, vd: 60000)
  * ARGV[3]: limit (số request tối đa trong cửa sổ)
  * ARGV[4]: requestId (UUID hoặc timestamp-randomId độc nhất)
- * 
+ *
  * Return: [allowed (0 hoặc 1), currentCount]
  */
 export const SLIDING_WINDOW_SCRIPT = `

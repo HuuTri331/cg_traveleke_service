@@ -1,15 +1,15 @@
 /**
  * Redis Lua Script cho Tầng 2: Token Bucket (Rate limiting theo User / API Key).
- * 
+ *
  * Lưu trữ trạng thái trong Redis Hash ('available', 'updatedAt').
  * Cho phép burst traffic tự nhiên và tự động refill token theo thời gian.
- * 
+ *
  * KEYS[1]: Redis Key (ví dụ: rl:user:12:bookings:create)
  * ARGV[1]: capacity (dung lượng tối đa)
  * ARGV[2]: refillRate (số token sinh thêm mỗi giây)
  * ARGV[3]: currentTime (timestamp giây dạng float hoặc integer)
  * ARGV[4]: requestCost (số token tiêu hao cho request)
- * 
+ *
  * Return: [allowed (0 hoặc 1), remainingTokens]
  */
 export const TOKEN_BUCKET_SCRIPT = `

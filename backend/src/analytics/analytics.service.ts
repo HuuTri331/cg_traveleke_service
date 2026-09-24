@@ -43,26 +43,56 @@ export class AnalyticsService {
       `);
       this.logger.log('Database table hotel_tracking_events verified.');
     } catch (error: any) {
-      this.logger.warn(`Could not verify hotel_tracking_events table: ${error.message}`);
+      this.logger.warn(
+        `Could not verify hotel_tracking_events table: ${error.message}`,
+      );
     }
   }
 
   /**
    * 1. Ghi nhận sự kiện xem chi tiết khách sạn hoặc tìm kiếm
+   * Chuẩn hóa: 1 IP (hoặc 1 User) chỉ tính 1 lượt xem trong tháng, click nhiều lần không bị cộng dồn
    */
   async trackEvent(
     dto: TrackEventDto,
     ipAddress: string,
     userId?: number | null,
   ): Promise<{ success: boolean; id: number }> {
+    const cleanIp =
+      ipAddress === '::1' || ipAddress === '::ffff:127.0.0.1' || !ipAddress
+        ? '127.0.0.1'
+        : ipAddress;
+    const hotelId = Number(dto.hotelId);
+    const uId = userId ? Number(userId) : null;
+    const eventType = dto.eventType || TrackingEventType.VIEW_DETAIL;
+
+    // Chống trùng lặp & spam: Nếu cùng 1 IP hoặc User đã xem khách sạn này trong tháng, không tạo thêm bản ghi
+    if (eventType === TrackingEventType.VIEW_DETAIL) {
+      const existing = await this.trackingRepository
+        .createQueryBuilder('hte')
+        .where('hte.hotelId = :hotelId', { hotelId })
+        .andWhere(
+          '(hte.ipAddress = :cleanIp OR (:uId IS NOT NULL AND hte.userId = :uId))',
+          { cleanIp, uId },
+        )
+        .andWhere('hte.eventType = :eventType', { eventType })
+        .andWhere('MONTH(hte.viewedAt) = MONTH(CURRENT_DATE())')
+        .andWhere('YEAR(hte.viewedAt) = YEAR(CURRENT_DATE())')
+        .getOne();
+
+      if (existing) {
+        return { success: true, id: existing.id };
+      }
+    }
+
     const priceMin = dto.priceMin ?? dto.price ?? null;
     const priceMax = dto.priceMax ?? dto.price ?? null;
 
     const event = this.trackingRepository.create({
-      hotelId: dto.hotelId,
-      eventType: dto.eventType || TrackingEventType.VIEW_DETAIL,
-      userId: userId ? Number(userId) : null,
-      ipAddress: ipAddress || '127.0.0.1',
+      hotelId,
+      eventType,
+      userId: uId,
+      ipAddress: cleanIp,
       priceMin,
       priceMax,
     });
@@ -79,6 +109,11 @@ export class AnalyticsService {
     userId?: number | null,
     limit = 8,
   ): Promise<any[]> {
+    const cleanIp =
+      ipAddress === '::1' || ipAddress === '::ffff:127.0.0.1' || !ipAddress
+        ? '127.0.0.1'
+        : ipAddress;
+
     try {
       const query = `
         SELECT 
@@ -89,18 +124,23 @@ export class AnalyticsService {
           h.address,
           h.star_rating AS starRating,
           h.cover_image_url AS coverImageUrl,
-          COALESCE(MIN(r.price_per_night), 1500000) AS minPricePerNight
+          COALESCE(room_pricing.min_price, 1500000) AS minPricePerNight
         FROM hotel_tracking_events hte
         INNER JOIN hotels h ON h.id = hte.hotel_id AND h.status = 'ACTIVE'
-        LEFT JOIN rooms r ON r.hotel_id = h.id AND r.status = 'AVAILABLE'
+        LEFT JOIN (
+          SELECT hotel_id, MIN(price_per_night) AS min_price
+          FROM rooms
+          WHERE status = 'AVAILABLE'
+          GROUP BY hotel_id
+        ) room_pricing ON room_pricing.hotel_id = h.id
         WHERE (hte.ip_address = ? OR (hte.user_id IS NOT NULL AND hte.user_id = ?))
-        GROUP BY hte.hotel_id, h.name, h.slug, h.address, h.star_rating, h.cover_image_url
+        GROUP BY hte.hotel_id, h.name, h.slug, h.address, h.star_rating, h.cover_image_url, room_pricing.min_price
         ORDER BY lastViewedAt DESC
         LIMIT ?
       `;
 
       const results = await this.dataSource.query(query, [
-        ipAddress || '127.0.0.1',
+        cleanIp,
         userId || 0,
         Number(limit),
       ]);
@@ -114,6 +154,9 @@ export class AnalyticsService {
 
   /**
    * 3. Lấy Top khách sạn được tìm kiếm và xem nhiều nhất trong tháng (cho Trang chủ)
+   * - Mỗi IP chỉ tính 1 lượt xem (COUNT DISTINCT ip_address)
+   * - Không nhân chéo với bảng rooms (loại bỏ lỗi +4 lượt xem khi có 4 phòng)
+   * - Mặc định nếu DB chưa có dữ liệu trong tháng thì trả về [] để frontend ẩn mục này
    */
   async getTopHotelsOfMonth(
     month?: number,
@@ -125,56 +168,41 @@ export class AnalyticsService {
     const targetYear = year || now.getFullYear();
 
     try {
-      // Truy vấn thống kê từ tracking events trong tháng
       const query = `
         SELECT 
           hte.hotel_id AS hotelId,
-          COUNT(*) AS totalInteractions,
+          COUNT(DISTINCT hte.ip_address) AS totalInteractions,
           COUNT(DISTINCT hte.ip_address) AS uniqueVisitors,
-          AVG(COALESCE(hte.price_min, r.price_per_night, 1500000)) AS avgSearchedPrice,
+          AVG(COALESCE(hte.price_min, room_pricing.min_price, 1500000)) AS avgSearchedPrice,
           h.name,
           h.slug,
           h.address,
           h.star_rating AS starRating,
           h.cover_image_url AS coverImageUrl,
-          COALESCE(MIN(r.price_per_night), 1200000) AS minPricePerNight
+          COALESCE(room_pricing.min_price, 1200000) AS minPricePerNight
         FROM hotel_tracking_events hte
         INNER JOIN hotels h ON h.id = hte.hotel_id AND h.status = 'ACTIVE'
-        LEFT JOIN rooms r ON r.hotel_id = h.id AND r.status = 'AVAILABLE'
+        LEFT JOIN (
+          SELECT hotel_id, MIN(price_per_night) AS min_price
+          FROM rooms
+          WHERE status = 'AVAILABLE'
+          GROUP BY hotel_id
+        ) room_pricing ON room_pricing.hotel_id = h.id
         WHERE MONTH(hte.viewed_at) = ? AND YEAR(hte.viewed_at) = ?
-        GROUP BY hte.hotel_id, h.name, h.slug, h.address, h.star_rating, h.cover_image_url
+        GROUP BY hte.hotel_id, h.name, h.slug, h.address, h.star_rating, h.cover_image_url, room_pricing.min_price
         ORDER BY totalInteractions DESC
         LIMIT ?
       `;
 
-      let rows = await this.dataSource.query(query, [
+      const rows = await this.dataSource.query(query, [
         targetMonth,
         targetYear,
         Number(limit),
       ]);
 
-      // Nếu tháng hiện tại chưa có nhiều lượt tracking (hệ thống mới bật), fallback lấy top khách sạn active để luôn hiển thị đầy đủ
+      // Khi DB chưa có dữ liệu xem phòng trong tháng: Trả về rỗng [] để ẩn mục trên giao diện
       if (!rows || rows.length === 0) {
-        const fallbackQuery = `
-          SELECT 
-            h.id AS hotelId,
-            (45 + (h.id * 12)) AS totalInteractions,
-            (25 + (h.id * 7)) AS uniqueVisitors,
-            COALESCE(MIN(r.price_per_night), 1500000) AS avgSearchedPrice,
-            h.name,
-            h.slug,
-            h.address,
-            h.star_rating AS starRating,
-            h.cover_image_url AS coverImageUrl,
-            COALESCE(MIN(r.price_per_night), 1200000) AS minPricePerNight
-          FROM hotels h
-          LEFT JOIN rooms r ON r.hotel_id = h.id AND r.status = 'AVAILABLE'
-          WHERE h.status = 'ACTIVE'
-          GROUP BY h.id, h.name, h.slug, h.address, h.star_rating, h.cover_image_url
-          ORDER BY h.star_rating DESC, h.id ASC
-          LIMIT ?
-        `;
-        rows = await this.dataSource.query(fallbackQuery, [Number(limit)]);
+        return [];
       }
 
       // Format dữ liệu kèm nhãn khoảng giá
@@ -219,26 +247,47 @@ export class AnalyticsService {
     const targetMonth = month || now.getMonth() + 1;
     const targetYear = year || now.getFullYear();
 
-    // 1. Lấy danh sách Top khách sạn
-    const topHotels = await this.getTopHotelsOfMonth(targetMonth, targetYear, 10);
+    // 1. Lấy danh sách Top khách sạn thực tế
+    const topHotels = await this.getTopHotelsOfMonth(
+      targetMonth,
+      targetYear,
+      10,
+    );
     const totalInteractions = topHotels.reduce(
       (sum, h) => sum + (h.totalInteractions || 0),
       0,
     );
 
-    // 2. Thống kê phân bố khoảng giá
+    if (topHotels.length === 0) {
+      return {
+        month: targetMonth,
+        year: targetYear,
+        summary: {
+          totalInteractions: 0,
+          topHotelName: 'Chưa có dữ liệu',
+          mostSearchedPriceRange: 'Chưa có dữ liệu',
+        },
+        priceDistribution: [],
+        topHotels: [],
+      };
+    }
+
+    // 2. Thống kê phân bố khoảng giá từ tracking thực tế
     let priceUnder1M = 0;
     let price1MTo2M = 0;
     let price2MTo35M = 0;
     let priceOver35M = 0;
 
     try {
-      const priceStats = await this.dataSource.query(`
+      const priceStats = await this.dataSource.query(
+        `
         SELECT 
           COALESCE(price_min, 1500000) AS price
         FROM hotel_tracking_events
         WHERE MONTH(viewed_at) = ? AND YEAR(viewed_at) = ?
-      `, [targetMonth, targetYear]);
+      `,
+        [targetMonth, targetYear],
+      );
 
       if (priceStats.length > 0) {
         priceStats.forEach((p: any) => {
@@ -248,21 +297,13 @@ export class AnalyticsService {
           else if (val <= 3500000) price2MTo35M++;
           else priceOver35M++;
         });
-      } else {
-        // Fallback mô phỏng phân bố tự nhiên nếu chưa có log
-        priceUnder1M = 15;
-        price1MTo2M = 48;
-        price2MTo35M = 28;
-        priceOver35M = 9;
       }
     } catch {
-      priceUnder1M = 15;
-      price1MTo2M = 48;
-      price2MTo35M = 28;
-      priceOver35M = 9;
+      // ignore
     }
 
-    const totalSample = priceUnder1M + price1MTo2M + price2MTo35M + priceOver35M || 1;
+    const totalSample =
+      priceUnder1M + price1MTo2M + price2MTo35M + priceOver35M || 1;
 
     const priceDistribution = [
       {
@@ -292,9 +333,9 @@ export class AnalyticsService {
     ];
 
     // Khoảng giá được tìm nhiều nhất
-    const mostSearchedPriceRange = [...priceDistribution].sort(
-      (a, b) => b.count - a.count,
-    )[0]?.range || '1.000.000 - 2.000.000 VNĐ';
+    const mostSearchedPriceRange =
+      [...priceDistribution].sort((a, b) => b.count - a.count)[0]?.range ||
+      '1.000.000 - 2.000.000 VNĐ';
 
     return {
       month: targetMonth,

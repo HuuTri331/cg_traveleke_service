@@ -27,13 +27,19 @@ export class AnalyticsController {
    */
   private getClientIp(req: Request): string {
     const forwarded = req.headers['x-forwarded-for'];
+    let ip = '';
     if (typeof forwarded === 'string') {
-      return forwarded.split(',')[0].trim();
+      ip = forwarded.split(',')[0].trim();
+    } else if (Array.isArray(forwarded)) {
+      ip = forwarded[0].trim();
+    } else {
+      ip = req.ip || req.socket?.remoteAddress || '127.0.0.1';
     }
-    if (Array.isArray(forwarded)) {
-      return forwarded[0].trim();
+
+    if (ip === '::1' || ip === '::ffff:127.0.0.1' || !ip) {
+      return '127.0.0.1';
     }
-    return req.ip || req.socket?.remoteAddress || '127.0.0.1';
+    return ip;
   }
 
   /**
@@ -62,10 +68,7 @@ export class AnalyticsController {
    * Lấy danh sách khách sạn khách đã xem gần đây theo IP / User
    */
   @Get('recently-viewed')
-  async getRecentlyViewed(
-    @Req() req: Request,
-    @Query('limit') limit?: number,
-  ) {
+  async getRecentlyViewed(@Req() req: Request, @Query('limit') limit?: number) {
     const ip = this.getClientIp(req);
     const user = (req as any).user;
     const userId = user?.id ?? user?.sub ?? null;
