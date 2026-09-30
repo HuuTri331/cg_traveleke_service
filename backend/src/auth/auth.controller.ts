@@ -203,10 +203,18 @@ export class AuthController {
     return result;
   }
 
+  private extractCookie(req: Request, name: string): string | undefined {
+    const header = req.headers.cookie;
+    if (!header) return undefined;
+    const match = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+    return match ? decodeURIComponent(match[1]) : undefined;
+  }
+
   /**
    * POST /api/auth/login
    * Đăng nhập và nhận JWT token (yêu cầu email đã được xác thực).
    * Tầng 1: Giới hạn tối đa 10 lần thử/phút/IP chống tấn công vét cạn mật khẩu (Brute-force).
+   * Tự động thiết lập HttpOnly Cookie cho Refresh Token để bảo vệ chống XSS token theft.
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
@@ -216,12 +224,81 @@ export class AuthController {
       windowMs: 60_000,
     },
   })
-  async login(@Body() dto: LoginDto) {
-    const token = await this.authService.login(dto);
+  async login(
+    @Body() dto: LoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const clientIp = this.getClientIp(req);
+    const userAgent = req.headers['user-agent'] as string | undefined;
+
+    const token = await this.authService.login(dto, {
+      ipAddress: clientIp,
+      userAgent,
+    });
+
+    // Thiết lập HttpOnly Cookie cho Refresh Token
+    if (token.refresh_token) {
+      res.cookie('traveleke_refresh_token', token.refresh_token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+    }
+
     return {
       success: true,
       message: 'Đăng nhập thành công.',
       data: token,
+    };
+  }
+
+  /**
+   * POST /api/auth/refresh
+   * Token Rotation Engine: Làm mới Access Token và Rotate Refresh Token (Single-Use).
+   * Phát hiện Replay Attack (Token Reuse Detection) và hủy bỏ toàn bộ Token Family nếu bị xâm phạm.
+   */
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @RateLimit({
+    slidingWindow: {
+      limit: 30,
+      windowMs: 60_000,
+    },
+  })
+  async refresh(
+    @Body() dto: { refreshToken?: string },
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const clientIp = this.getClientIp(req);
+    const userAgent = req.headers['user-agent'] as string | undefined;
+
+    const rawToken =
+      dto?.refreshToken || this.extractCookie(req, 'traveleke_refresh_token');
+
+    const result = await this.authService.rotateRefreshToken(rawToken || '', {
+      ipAddress: clientIp,
+      userAgent,
+    });
+
+    // Gán lại cookie Refresh Token mới đã được xoay vòng (Rotate)
+    if (result.refresh_token) {
+      res.cookie('traveleke_refresh_token', result.refresh_token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+    }
+
+    return {
+      success: true,
+      message: 'Làm mới phiên đăng nhập thành công.',
+      data: result,
     };
   }
 
@@ -242,14 +319,47 @@ export class AuthController {
 
   /**
    * POST /api/auth/logout
-   * Hủy bỏ phiên đăng nhập và xóa thông tin phiên ở client.
+   * Hủy bỏ phiên đăng nhập (Revoke Session / Token Family) và xóa HttpOnly Cookie.
    */
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  logout() {
+  async logout(
+    @Body() dto: { refreshToken?: string },
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const rawToken =
+      dto?.refreshToken || this.extractCookie(req, 'traveleke_refresh_token');
+
+    await this.authService.logout(rawToken);
+
+    // Xóa HttpOnly Cookie trên Client
+    res.clearCookie('traveleke_refresh_token', { path: '/' });
+
     return {
       success: true,
-      message: 'Đăng xuất thành công.',
+      message: 'Đăng xuất thành công. Phiên làm việc đã được hủy bỏ an toàn.',
+    };
+  }
+
+  /**
+   * POST /api/auth/logout-all
+   * Thu hồi toàn bộ phiên đăng nhập trên tất cả thiết bị của người dùng hiện tại.
+   */
+  @Post('logout-all')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  async logoutAll(
+    @CurrentUser() user: User,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    await this.authService.logoutAll(user.id);
+    res.clearCookie('traveleke_refresh_token', { path: '/' });
+
+    return {
+      success: true,
+      message: 'Đã đăng xuất toàn bộ phiên làm việc trên mọi thiết bị.',
     };
   }
 }
+

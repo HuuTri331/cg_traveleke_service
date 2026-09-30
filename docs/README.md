@@ -16,8 +16,10 @@
 | **7** | **Enterprise Logging & Distributed Tracing** | [`KIEN_TRUC_ENTERPRISE_OPENTELEMETRY_LOGGING_TRACING.md`](./KIEN_TRUC_ENTERPRISE_OPENTELEMETRY_LOGGING_TRACING.md) | • Tích hợp OpenTelemetry (OTel) SDK tự động trace mọi HTTP & MySQL call.<br>• Correlation ID (`trace_id`, `span_id`) gán vào Winston Structured Logger.<br>• Xuất dữ liệu qua chuẩn OTLP/HTTP về Elastic Stack / Jaeger / Grafana. |
 | **8** | **Audit Logging Engine & Rate Limiting** | [`KIEN_TRUC_ENTERPRISE_AUDIT_LOG_VA_RATE_LIMITING.md`](./KIEN_TRUC_ENTERPRISE_AUDIT_LOG_VA_RATE_LIMITING.md) | • AsyncLocalStorage lưu vết User Context xuyên suốt request pipeline.<br>• TypeORM Entity Subscriber tự động ghi nhận biến động dữ liệu (Diff Engine).<br>• Rate Limiting đa tầng bằng Redis Lua Script (Sliding Window Log & Token Bucket). |
 | **9** | **Tối ưu DB Transaction & Xử lý Deadlock** | [`KIEN_TRUC_DATABASE_TRANSACTION_DEADLOCK_VA_QUEUE_CONCURRENCY.md`](./KIEN_TRUC_DATABASE_TRANSACTION_DEADLOCK_VA_QUEUE_CONCURRENCY.md) | • Khắc phục triệt để Deadlock (MySQL Error 1213) & Lock Wait Timeout (1205).<br>• Atomic Conditional Room Update (`UPDATE ... WHERE available_rooms >= :qty`) chống Overbooking.<br>• Transaction Retry Helper với Exponential Backoff + Jitter & Redis Distributed Lock. |
+| **10** | **Authentication Cross-Subdomain, Token Rotation & BFF** | [`KIEN_TRUC_AUTHENTICATION_CROSS_SUBDOMAIN_TOKEN_ROTATION_BFF.md`](./KIEN_TRUC_AUTHENTICATION_CROSS_SUBDOMAIN_TOKEN_ROTATION_BFF.md) | • Token Rotation Engine (Single-Use Refresh Token) & Token Family.<br>• Theft Detection (Phát hiện Replay Attack / Token Reuse) tự động thu hồi phiên.<br>• Bảo vệ chống XSS với HttpOnly Cookie + Axios Interceptor Mutex (Single Flight). |
 
 ---
+
 
 
 ## 🏗️ MÔ HÌNH KIẾN TRÚC TỔNG THỂ HỆ THỐNG TRAVELEKE

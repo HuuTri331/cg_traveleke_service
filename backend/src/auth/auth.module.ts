@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { Role } from '../users/entities/role.entity';
 import { User } from '../users/entities/user.entity';
+import { RefreshToken } from './entities/refresh-token.entity';
 import { UsersModule } from '../users/users.module';
 import { MailModule } from '../mail/mail.module';
 import { AuthController } from './auth.controller';
@@ -18,7 +19,8 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     UsersModule,
     MailModule,
 
-    TypeOrmModule.forFeature([User, Role]),
+    TypeOrmModule.forFeature([User, Role, RefreshToken]),
+
 
     PassportModule.register({ defaultStrategy: 'jwt' }),
 

@@ -2,24 +2,33 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
-import { Repository } from 'typeorm';
+import * as crypto from 'crypto';
+import { DataSource, Repository } from 'typeorm';
 
 import { MailService } from '../mail/mail.service';
 import { Role } from '../users/entities/role.entity';
 import { User } from '../users/entities/user.entity';
+import {
+  RefreshToken,
+  RefreshTokenStatus,
+} from './entities/refresh-token.entity';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { logWithTrace } from '../observability/trace-logger';
+import { runWithDeadlockRetry } from '../common/database/transaction-retry.helper';
 
 export interface AuthTokenPayload {
   access_token: string;
+  refresh_token?: string;
   token_type: string;
   expires_in: string;
   user: MeResponse;
@@ -83,16 +92,69 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
 };
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
     @InjectRepository(Role)
     private readonly rolesRepository: Repository<Role>,
+    @InjectRepository(RefreshToken)
+    private readonly refreshTokenRepository: Repository<RefreshToken>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
+    private readonly dataSource: DataSource,
   ) {}
+
+  async onModuleInit() {
+    await this.ensureTableExists();
+  }
+
+  /**
+   * Khởi tạo bảng refresh_tokens nếu chưa tồn tại trong CSDL MySQL
+   */
+  async ensureTableExists(): Promise<void> {
+    try {
+      await this.dataSource.query(`
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          user_id BIGINT UNSIGNED NOT NULL,
+          session_id VARCHAR(64) NOT NULL,
+          family_id VARCHAR(64) NOT NULL,
+          token_hash VARCHAR(128) NOT NULL,
+          parent_token_id BIGINT UNSIGNED NULL,
+          status ENUM('ACTIVE', 'USED', 'REVOKED', 'EXPIRED') NOT NULL DEFAULT 'ACTIVE',
+          expires_at DATETIME NOT NULL,
+          used_at DATETIME NULL,
+          revoked_at DATETIME NULL,
+          absolute_expires_at DATETIME NOT NULL,
+          ip_address VARCHAR(45) NULL,
+          user_agent TEXT NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          INDEX idx_rf_token_hash (token_hash),
+          INDEX idx_rf_family_id (family_id),
+          INDEX idx_rf_user_id (user_id),
+          INDEX idx_rf_session_id (session_id),
+          INDEX idx_rf_status_expires (status, expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+      this.logger.log('Bảng refresh_tokens đã được khởi tạo/xác thực.');
+    } catch (err: any) {
+      this.logger.warn(`Không thể khởi tạo bảng refresh_tokens: ${err.message}`);
+    }
+  }
+
+  /**
+   * Băm mật mã Opaque Token bằng SHA-256 để lưu trữ an toàn trong Database.
+   */
+  private hashToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
 
   /**
    * Đăng ký tài khoản khách hàng mới và gửi link xác thực qua Gmail.
@@ -266,10 +328,13 @@ export class AuthService {
   }
 
   /**
-   * Xác thực email & password, trả về JWT access token.
-   * Chặn tài khoản CUSTOMER chưa xác thực email.
+   * Xác thực email & password, phát hành Access Token ngắn hạn và Opaque Refresh Token
+   * gắn với Session ID và Family ID phục vụ Token Rotation Engine.
    */
-  async login(dto: LoginDto): Promise<AuthTokenPayload> {
+  async login(
+    dto: LoginDto,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<AuthTokenPayload> {
     // Lấy user kèm password (password dùng select: false nên phải addSelect)
     const user = await this.usersRepository
       .createQueryBuilder('user')
@@ -314,21 +379,272 @@ export class AuthService {
       lastLoginAt: new Date(),
     });
 
+    // Khởi tạo Session ID và Family ID độc nhất
+    const sessionId = crypto.randomUUID();
+    const familyId = crypto.randomUUID();
+
+    // Access Token ngắn hạn (Mặc định 15 phút theo kiến trúc BFF)
+    const accessExpiresIn =
+      this.configService.get<string>('JWT_ACCESS_EXPIRES_IN') ?? '15m';
+
     const payload = {
       sub: user.id,
       email: user.email,
       role: user.role,
+      sessionId,
     };
 
-    const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN') ?? '7d';
+    const access_token = this.jwtService.sign(payload, {
+      expiresIn: accessExpiresIn as any,
+    });
+
+    // Tạo Opaque Refresh Token có độ hỗn loạn mật mã học cao (48 bytes base64url)
+    const rawRefreshToken = crypto.randomBytes(48).toString('base64url');
+    const tokenHash = this.hashToken(rawRefreshToken);
+
+    const now = new Date();
+    const refreshTtlDays = Number(
+      this.configService.get<number>('JWT_REFRESH_EXPIRES_DAYS') ?? 7,
+    );
+    const absoluteLifetimeDays = Number(
+      this.configService.get<number>('SESSION_ABSOLUTE_LIFETIME_DAYS') ?? 30,
+    );
+
+    const expiresAt = new Date(now.getTime() + refreshTtlDays * 86400000);
+    const absoluteExpiresAt = new Date(
+      now.getTime() + absoluteLifetimeDays * 86400000,
+    );
+
+    const refreshTokenRecord = this.refreshTokenRepository.create({
+      userId: user.id,
+      sessionId,
+      familyId,
+      tokenHash,
+      parentTokenId: null,
+      status: RefreshTokenStatus.ACTIVE,
+      expiresAt,
+      usedAt: null,
+      revokedAt: null,
+      absoluteExpiresAt,
+      ipAddress: meta?.ipAddress ?? null,
+      userAgent: meta?.userAgent ?? null,
+    });
+
+    await this.refreshTokenRepository.save(refreshTokenRecord);
 
     const userProfile = this.getMe(user);
 
     return {
-      access_token: this.jwtService.sign(payload),
+      access_token,
+      refresh_token: rawRefreshToken,
       token_type: 'Bearer',
-      expires_in: expiresIn,
+      expires_in: accessExpiresIn,
       user: userProfile,
+    };
+  }
+
+  /**
+   * Cơ chế Token Rotation Engine với Reuse Detection (Theft Detection):
+   * Mỗi Refresh Token chỉ được sử dụng 1 lần duy nhất (Single-Use).
+   * Khi phát hiện Token cũ (USED hoặc REVOKED) bị gửi lại, hệ thống lập tức
+   * vô hiệu hóa toàn bộ Token Family tương ứng để bảo vệ người dùng khỏi tấn công Replay Attack.
+   */
+  async rotateRefreshToken(
+    rawToken: string,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ) {
+    if (!rawToken || typeof rawToken !== 'string') {
+      throw new UnauthorizedException('Mã Refresh Token không hợp lệ.');
+    }
+
+    const tokenHash = this.hashToken(rawToken);
+
+    const tokenRecord = await this.refreshTokenRepository.findOne({
+      where: { tokenHash },
+    });
+
+    if (!tokenRecord) {
+      throw new UnauthorizedException(
+        'Mã Refresh Token không tồn tại hoặc đã bị hủy.',
+      );
+    }
+
+    // ============================================================
+    // THEFT / REUSE DETECTION:
+    // Nếu token đã USED hoặc REVOKED xuất hiện trở lại -> Tấn công Token Theft / Replay!
+    // ============================================================
+    if (
+      tokenRecord.status === RefreshTokenStatus.USED ||
+      tokenRecord.status === RefreshTokenStatus.REVOKED
+    ) {
+      logWithTrace(
+        'warn',
+        '[SECURITY ALERT] Phát hiện Refresh Token đã qua sử dụng bị gửi lại (Token Reuse / Replay Attack). Đang thu hồi toàn bộ Token Family!',
+        {
+          userId: tokenRecord.userId,
+          sessionId: tokenRecord.sessionId,
+          familyId: tokenRecord.familyId,
+          ipAddress: meta?.ipAddress,
+          userAgent: meta?.userAgent,
+        },
+      );
+
+      // Thu hồi toàn bộ Token Family
+      await this.refreshTokenRepository.update(
+        { familyId: tokenRecord.familyId },
+        {
+          status: RefreshTokenStatus.REVOKED,
+          revokedAt: new Date(),
+        },
+      );
+
+      throw new UnauthorizedException(
+        'Cảnh báo an ninh: Phiên làm việc của bạn có dấu hiệu bị can thiệp trái phép (Token Replay). Toàn bộ phiên đã bị hủy bỏ. Vui lòng đăng nhập lại.',
+      );
+    }
+
+    // Kiểm tra hết hạn TTL tương đối hoặc Absolute Session Lifetime
+    const now = new Date();
+    if (
+      tokenRecord.status === RefreshTokenStatus.EXPIRED ||
+      tokenRecord.expiresAt.getTime() < now.getTime() ||
+      tokenRecord.absoluteExpiresAt.getTime() < now.getTime()
+    ) {
+      await this.refreshTokenRepository.update(tokenRecord.id, {
+        status: RefreshTokenStatus.EXPIRED,
+      });
+      throw new UnauthorizedException(
+        'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
+      );
+    }
+
+    // Kiểm tra tài khoản người dùng
+    const user = await this.usersRepository.findOne({
+      where: { id: tokenRecord.userId },
+    });
+
+    if (!user || user.status !== 'ACTIVE' || user.deletedAt) {
+      throw new UnauthorizedException(
+        'Tài khoản không tồn tại hoặc đã bị khóa.',
+      );
+    }
+
+    // ============================================================
+    // ATOMIC TOKEN ROTATION TRONG DATABASE TRANSACTION
+    // ============================================================
+    const result = await runWithDeadlockRetry(
+      this.dataSource,
+      async (manager) => {
+        const repo = manager.getRepository(RefreshToken);
+
+        // 1. Đánh dấu token cũ là USED
+        await repo.update(tokenRecord.id, {
+          status: RefreshTokenStatus.USED,
+          usedAt: now,
+        });
+
+        // 2. Tạo successor Refresh Token mới thuộc cùng Family
+        const newRawRefreshToken = crypto.randomBytes(48).toString('base64url');
+        const newTokenHash = this.hashToken(newRawRefreshToken);
+
+        const refreshTtlDays = Number(
+          this.configService.get<number>('JWT_REFRESH_EXPIRES_DAYS') ?? 7,
+        );
+        let newExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400000);
+        // Không vượt quá Absolute Session Expiration
+        if (newExpiresAt.getTime() > tokenRecord.absoluteExpiresAt.getTime()) {
+          newExpiresAt = tokenRecord.absoluteExpiresAt;
+        }
+
+        const successor = repo.create({
+          userId: user.id,
+          sessionId: tokenRecord.sessionId,
+          familyId: tokenRecord.familyId,
+          tokenHash: newTokenHash,
+          parentTokenId: tokenRecord.id,
+          status: RefreshTokenStatus.ACTIVE,
+          expiresAt: newExpiresAt,
+          usedAt: null,
+          revokedAt: null,
+          absoluteExpiresAt: tokenRecord.absoluteExpiresAt,
+          ipAddress: meta?.ipAddress ?? null,
+          userAgent: meta?.userAgent ?? null,
+        });
+
+        await repo.save(successor);
+
+        // 3. Ký Access Token ngắn hạn mới
+        const accessExpiresIn =
+          this.configService.get<string>('JWT_ACCESS_EXPIRES_IN') ?? '15m';
+
+        const access_token = this.jwtService.sign(
+          {
+            sub: user.id,
+            email: user.email,
+            role: user.role,
+            sessionId: tokenRecord.sessionId,
+          },
+          { expiresIn: accessExpiresIn as any },
+        );
+
+        return {
+          access_token,
+          refresh_token: newRawRefreshToken,
+          token_type: 'Bearer',
+          expires_in: accessExpiresIn,
+          user: this.getMe(user),
+        };
+      },
+      { contextName: 'AuthService.rotateRefreshToken' },
+    );
+
+    return result;
+  }
+
+  /**
+   * Đăng xuất và thu hồi phiên làm việc (Revoke Session & Token Family)
+   */
+  async logout(rawRefreshToken?: string, sessionId?: string, userId?: string) {
+    if (rawRefreshToken) {
+      const tokenHash = this.hashToken(rawRefreshToken);
+      const token = await this.refreshTokenRepository.findOne({
+        where: { tokenHash },
+      });
+      if (token) {
+        await this.refreshTokenRepository.update(
+          { familyId: token.familyId },
+          { status: RefreshTokenStatus.REVOKED, revokedAt: new Date() },
+        );
+      }
+    } else if (sessionId) {
+      await this.refreshTokenRepository.update(
+        { sessionId },
+        { status: RefreshTokenStatus.REVOKED, revokedAt: new Date() },
+      );
+    } else if (userId) {
+      await this.refreshTokenRepository.update(
+        { userId, status: RefreshTokenStatus.ACTIVE },
+        { status: RefreshTokenStatus.REVOKED, revokedAt: new Date() },
+      );
+    }
+
+    return {
+      success: true,
+      message: 'Đăng xuất thành công. Phiên làm việc đã bị hủy bỏ an toàn.',
+    };
+  }
+
+  /**
+   * Thu hồi toàn bộ phiên đăng nhập trên tất cả thiết bị của người dùng
+   */
+  async logoutAll(userId: string) {
+    await this.refreshTokenRepository.update(
+      { userId, status: RefreshTokenStatus.ACTIVE },
+      { status: RefreshTokenStatus.REVOKED, revokedAt: new Date() },
+    );
+    return {
+      success: true,
+      message: 'Đã hủy bỏ toàn bộ phiên làm việc trên mọi thiết bị.',
     };
   }
 
@@ -354,3 +670,4 @@ export class AuthService {
     };
   }
 }
+
