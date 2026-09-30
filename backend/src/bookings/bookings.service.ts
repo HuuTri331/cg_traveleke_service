@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
   Optional,
@@ -8,6 +10,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 
 import { DataSource, Repository } from 'typeorm';
+import Redis from 'ioredis';
 
 import { Room } from '../rooms/entities/room.entity';
 
@@ -21,6 +24,12 @@ import { IdGeneratorService } from '../common/id/id-generator.service';
 import { logWithTrace } from '../observability/trace-logger';
 import { normalizePagination, buildPaginationMeta } from '../common/pagination';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { REDIS_CLIENT } from '../redis/redis.constants';
+import { RedisLockService } from '../redis/redis-lock.service';
+import {
+  runWithDeadlockRetry,
+  deterministicSort,
+} from '../common/database/transaction-retry.helper';
 
 /**
  * State machine: Các chuyển trạng thái hợp lệ cho booking.
@@ -56,6 +65,11 @@ export class BookingsService {
     private readonly dataSource: DataSource,
     @Optional() idGenerator?: IdGeneratorService,
     @Optional() private readonly realtimeGateway?: RealtimeGateway,
+    @Optional()
+    @Inject(REDIS_CLIENT)
+    private readonly redisClient?: Redis,
+    @Optional()
+    private readonly redisLockService?: RedisLockService,
   ) {
     this.idGen = idGenerator ?? new IdGeneratorService();
   }
@@ -65,6 +79,22 @@ export class BookingsService {
   // ============================================================
 
   async create(dto: CreateBookingDto) {
+    // ==========================================
+    // 0. IDEMPOTENCY CHECK (Chống trùng lặp đơn khi mạng lag / client retry)
+    // ==========================================
+    if (dto.idempotencyKey && this.redisClient) {
+      try {
+        const cached = await this.redisClient.get(
+          `idempotency:booking:${dto.idempotencyKey}`,
+        );
+        if (cached) {
+          return JSON.parse(cached);
+        }
+      } catch {
+        // Fail-open: Redis đọc lỗi không chặn luồng tạo booking
+      }
+    }
+
     // ==========================================
     // 1. TÌM PHÒNG
     // ==========================================
@@ -107,7 +137,7 @@ export class BookingsService {
     }
 
     // ==========================================
-    // 4. KIỂM TRA SỐ PHÒNG
+    // 4. KIỂM TRA SỐ PHÒNG BAN ĐẦU
     // ==========================================
 
     if (
@@ -141,104 +171,147 @@ export class BookingsService {
     const bookingCode = this.idGen.generateBookingCode();
 
     // ==========================================
-    // 8. TRANSACTION
+    // 8. TRANSACTION VỚI DEADLOCK RETRY & ATOMIC CONDITIONAL UPDATE
     // ==========================================
 
-    const result = await this.dataSource.transaction(async (manager) => {
-      const bookingRepo = manager.getRepository(Booking);
-
-      const bookingRoomRepo = manager.getRepository(BookingRoom);
-
-      // ======================================
-      // INSERT BOOKINGS
-      // ======================================
-
-      const booking = bookingRepo.create({
-        bookingCode,
-
-        userId: dto.userId,
-
-        hotelId: room.hotelId,
-
-        tripPlanId: null,
-        handledBy: null,
-
-        contactName: dto.contactName,
-
-        contactEmail: dto.contactEmail,
-
-        contactPhone: dto.contactPhone,
-
-        checkInAt: checkIn,
-        checkOutAt: checkOut,
-
-        totalGuests: dto.totalGuests,
-
-        requestedRoomCount: dto.roomCount,
-
-        estimatedTotal: subtotal.toFixed(2),
-
-        status: BookingStatus.PENDING,
-
-        specialRequest: dto.specialRequest ?? null,
-
-        confirmedAt: null,
-        rejectedAt: null,
-        cancelledAt: null,
-      });
-
-      const savedBooking = await bookingRepo.save(booking);
-
-      // ======================================
-      // INSERT BOOKING_ROOMS
-      // ======================================
-
-      const bookingRoom = bookingRoomRepo.create({
-        bookingId: savedBooking.id,
-
-        roomId: room.id,
-
-        quantity: dto.roomCount,
-
-        pricePerNight: pricePerNight.toFixed(2),
-
-        nights,
-
-        subtotal: subtotal.toFixed(2),
-      });
-
-      await bookingRoomRepo.save(bookingRoom);
-
-      // Tự động phân công ngầm nhân viên lễ tân phù hợp theo phân hạng phòng & năng lực
-      await this.autoAssignHotelStaffInternal(savedBooking, room, manager);
-
-      return {
-        message: 'Đặt phòng thành công.',
-
-        data: {
-          booking: savedBooking,
-
-          room: {
-            id: room.id,
-            name: room.name,
-          },
-
-          bookingRoom: {
+    const result = await runWithDeadlockRetry(
+      this.dataSource,
+      async (manager) => {
+        // ======================================
+        // 8.1 ATOMIC INVENTORY DECREMENT (Conditional UPDATE)
+        // Loại bỏ hoàn toàn Race condition & Lost update khi nhiều Worker/Request cùng đặt phòng
+        // ======================================
+        const reserveResult = await manager
+          .createQueryBuilder()
+          .update(Room)
+          .set({
+            availableRooms: () => 'available_rooms - :roomCount',
+          })
+          .where('id = :roomId AND available_rooms >= :roomCount', {
             roomId: room.id,
+            roomCount: dto.roomCount,
+          })
+          .execute();
 
-            quantity: dto.roomCount,
+        if (!reserveResult.affected || reserveResult.affected === 0) {
+          throw new ConflictException(
+            `Phòng "${room.name}" hiện không đủ số lượng khả dụng hoặc đã hết chỗ trong lúc giao dịch xử lý.`,
+          );
+        }
 
-            nights,
+        const bookingRepo = manager.getRepository(Booking);
+        const bookingRoomRepo = manager.getRepository(BookingRoom);
 
-            pricePerNight,
+        // ======================================
+        // INSERT BOOKINGS
+        // ======================================
 
-            subtotal,
+        const booking = bookingRepo.create({
+          bookingCode,
+
+          userId: dto.userId,
+
+          hotelId: room.hotelId,
+
+          tripPlanId: null,
+          handledBy: null,
+
+          contactName: dto.contactName,
+
+          contactEmail: dto.contactEmail,
+
+          contactPhone: dto.contactPhone,
+
+          checkInAt: checkIn,
+          checkOutAt: checkOut,
+
+          totalGuests: dto.totalGuests,
+
+          requestedRoomCount: dto.roomCount,
+
+          estimatedTotal: subtotal.toFixed(2),
+
+          status: BookingStatus.PENDING,
+
+          specialRequest: dto.specialRequest ?? null,
+
+          confirmedAt: null,
+          rejectedAt: null,
+          cancelledAt: null,
+        });
+
+        const savedBooking = await bookingRepo.save(booking);
+
+        // ======================================
+        // INSERT BOOKING_ROOMS
+        // ======================================
+
+        const bookingRoom = bookingRoomRepo.create({
+          bookingId: savedBooking.id,
+
+          roomId: room.id,
+
+          quantity: dto.roomCount,
+
+          pricePerNight: pricePerNight.toFixed(2),
+
+          nights,
+
+          subtotal: subtotal.toFixed(2),
+        });
+
+        await bookingRoomRepo.save(bookingRoom);
+
+        // Tự động phân công ngầm nhân viên lễ tân phù hợp theo phân hạng phòng & năng lực
+        await this.autoAssignHotelStaffInternal(savedBooking, room, manager);
+
+        return {
+          message: 'Đặt phòng thành công.',
+
+          data: {
+            booking: savedBooking,
+
+            room: {
+              id: room.id,
+              name: room.name,
+            },
+
+            bookingRoom: {
+              roomId: room.id,
+
+              quantity: dto.roomCount,
+
+              nights,
+
+              pricePerNight,
+
+              subtotal,
+            },
           },
-        },
-      };
-    });
+        };
+      },
+      {
+        contextName: 'BookingsService.create',
+        maxRetries: 3,
+        baseDelayMs: 50,
+      },
+    );
 
-    // Phát realtime notification tới Lễ tân và Quản lý khách sạn
+    // Lưu Idempotency Cache trong 24 giờ sau khi commit thành công
+    if (dto.idempotencyKey && this.redisClient) {
+      try {
+        await this.redisClient.set(
+          `idempotency:booking:${dto.idempotencyKey}`,
+          JSON.stringify(result),
+          'EX',
+          86400,
+        );
+      } catch {
+        // Fail-open
+      }
+    }
+
+    // Phát realtime notification tới Lễ tân và Quản lý khách sạn (ngoài transaction boundary)
     try {
       this.realtimeGateway?.emitBookingCreated({
         id: result.data.booking.id,
@@ -263,6 +336,7 @@ export class BookingsService {
 
     return result;
   }
+
 
   /**
    * Tự động phân công ngầm nhân viên lễ tân dựa vào phân hạng phòng & năng lực nhân sự
@@ -583,68 +657,120 @@ export class BookingsService {
     dto: UpdateBookingStatusDto,
     changedByUserId: string,
   ) {
-    const booking = await this.bookingRepository.findOne({
-      where: { id: bookingId },
-    });
+    const result = await runWithDeadlockRetry(
+      this.dataSource,
+      async (manager) => {
+        const bookingRepo = manager.getRepository(Booking);
+        const bookingRoomRepo = manager.getRepository(BookingRoom);
+        const statusLogRepo = manager.getRepository(BookingStatusLog);
 
-    if (!booking) {
-      throw new NotFoundException('Không tìm thấy booking.');
-    }
+        const booking = await bookingRepo.findOne({
+          where: { id: bookingId },
+        });
 
-    const currentStatus = booking.status;
-    const newStatus = dto.status;
+        if (!booking) {
+          throw new NotFoundException('Không tìm thấy booking.');
+        }
 
-    // Kiểm tra state machine
-    const allowedTransitions = VALID_STATUS_TRANSITIONS[currentStatus] ?? [];
-    if (!allowedTransitions.includes(newStatus)) {
-      throw new BadRequestException(
-        `Không thể chuyển trạng thái từ "${currentStatus}" sang "${newStatus}". ` +
-          `Các trạng thái hợp lệ: [${allowedTransitions.join(', ')}].`,
-      );
-    }
+        const currentStatus = booking.status;
+        const newStatus = dto.status;
 
-    // Cập nhật trạng thái và timestamps tương ứng
-    booking.status = newStatus as unknown as BookingStatus;
-    if (!booking.handledBy) {
-      booking.handledBy = changedByUserId;
-    }
+        // Kiểm tra state machine
+        const allowedTransitions = VALID_STATUS_TRANSITIONS[currentStatus] ?? [];
+        if (!allowedTransitions.includes(newStatus)) {
+          throw new BadRequestException(
+            `Không thể chuyển trạng thái từ "${currentStatus}" sang "${newStatus}". ` +
+              `Các trạng thái hợp lệ: [${allowedTransitions.join(', ')}].`,
+          );
+        }
 
-    const now = new Date();
-    switch (newStatus) {
-      case 'CONFIRMED':
-        booking.confirmedAt = now;
-        break;
-      case 'REJECTED':
-        booking.rejectedAt = now;
-        break;
-      case 'CANCELLED':
-        booking.cancelledAt = now;
-        break;
-    }
+        // ==========================================
+        // HOÀN TRẢ TỒN KHO PHÒNG (INVENTORY REFUND) ATOMIC
+        // Khi hủy hoặc từ chối đơn, hoàn lại số phòng khả dụng vào Database
+        // ==========================================
+        if (newStatus === 'CANCELLED' || newStatus === 'REJECTED') {
+          const bookingRooms = await bookingRoomRepo.find({
+            where: { bookingId: booking.id },
+          });
 
-    await this.bookingRepository.save(booking);
+          // Áp dụng Deterministic Lock Ordering: Sort danh sách Room ID theo thứ tự cố định
+          // nhằm loại bỏ hoàn toàn chu trình Deadlock giữa các worker hủy đơn đồng thời
+          const sortedRooms = deterministicSort(
+            bookingRooms,
+            (br) => br.roomId,
+          );
 
-    // Ghi log thay đổi trạng thái
-    const statusLog = this.bookingStatusLogRepository.create({
-      bookingId: booking.id,
-      changedBy: changedByUserId,
-      oldStatus: currentStatus,
-      newStatus: newStatus,
-      note: dto.note ?? null,
-    });
+          for (const br of sortedRooms) {
+            await manager
+              .createQueryBuilder()
+              .update(Room)
+              .set({
+                availableRooms: () => 'available_rooms + :qty',
+              })
+              .where('id = :roomId', {
+                roomId: br.roomId,
+                qty: br.quantity,
+              })
+              .execute();
+          }
+        }
 
-    await this.bookingStatusLogRepository.save(statusLog);
+        // Cập nhật trạng thái và timestamps tương ứng
+        booking.status = newStatus as unknown as BookingStatus;
+        if (!booking.handledBy) {
+          booking.handledBy = changedByUserId;
+        }
 
-    // Phát realtime notification cập nhật trạng thái tới Khách hàng và Lễ tân
+        const now = new Date();
+        switch (newStatus) {
+          case 'CONFIRMED':
+            booking.confirmedAt = now;
+            break;
+          case 'REJECTED':
+            booking.rejectedAt = now;
+            break;
+          case 'CANCELLED':
+            booking.cancelledAt = now;
+            break;
+        }
+
+        const savedBooking = await bookingRepo.save(booking);
+
+        // Ghi log thay đổi trạng thái trong cùng transaction
+        const statusLog = statusLogRepo.create({
+          bookingId: booking.id,
+          changedBy: changedByUserId,
+          oldStatus: currentStatus,
+          newStatus: newStatus,
+          note: dto.note ?? null,
+        });
+
+        await statusLogRepo.save(statusLog);
+
+        return {
+          savedBooking,
+          currentStatus,
+          newStatus,
+          now,
+        };
+      },
+      {
+        contextName: 'BookingsService.updateStatus',
+        maxRetries: 3,
+        baseDelayMs: 50,
+      },
+    );
+
+    // Phát realtime notification cập nhật trạng thái tới Khách hàng và Lễ tân (NGOÀI TRANSACTION)
     try {
       this.realtimeGateway?.emitBookingStatusChanged({
-        id: booking.id,
-        bookingCode: booking.bookingCode,
-        hotelId: booking.hotelId,
-        userId: booking.userId,
-        oldStatus: currentStatus,
-        newStatus: newStatus,
-        changedAt: now.toISOString(),
+        id: result.savedBooking.id,
+        bookingCode: result.savedBooking.bookingCode,
+        hotelId: result.savedBooking.hotelId,
+        userId: result.savedBooking.userId,
+        oldStatus: result.currentStatus,
+        newStatus: result.newStatus,
+        changedAt: result.now.toISOString(),
         note: dto.note ?? undefined,
       });
     } catch {
@@ -652,8 +778,8 @@ export class BookingsService {
     }
 
     return {
-      message: `Đã chuyển trạng thái booking ${booking.bookingCode} từ "${currentStatus}" sang "${newStatus}".`,
-      data: booking,
+      message: `Đã chuyển trạng thái booking ${result.savedBooking.bookingCode} từ "${result.currentStatus}" sang "${result.newStatus}".`,
+      data: result.savedBooking,
     };
   }
 
@@ -708,30 +834,39 @@ export class BookingsService {
       );
     }
 
-    // 3. CẬP NHẬT PHÂN CÔNG
+    // 3. CẬP NHẬT PHÂN CÔNG & GHI LOG VẬN HÀNH TRONG TRANSACTION VỚI DEADLOCK RETRY
     const oldStaffId = booking.handledBy;
-    booking.handledBy = targetStaffUserId;
-    booking.assignmentType = 'MANUAL';
-    booking.assignmentNote =
+    const noteText =
       note ??
       `Quản lý/Admin đã phân công lại người phụ trách: ${targetStaff.full_name}`;
-    booking.reassignedBy = changedByUserId;
-    booking.reassignedAt = new Date();
 
-    const saved = await this.bookingRepository.save(booking);
+    const saved = await runWithDeadlockRetry(
+      this.dataSource,
+      async (manager) => {
+        booking.handledBy = targetStaffUserId;
+        booking.assignmentType = 'MANUAL';
+        booking.assignmentNote = noteText;
+        booking.reassignedBy = changedByUserId;
+        booking.reassignedAt = new Date();
 
-    // 4. GHI LOG VẬN HÀNH
-    await this.bookingStatusLogRepository.save(
-      this.bookingStatusLogRepository.create({
-        bookingId: booking.id,
-        oldStatus: booking.status,
-        newStatus: booking.status,
-        note: `[PHÂN CÔNG LẠI] Đổi nhân viên phụ trách từ #${oldStaffId ?? 'Chưa có'} sang ${targetStaff.full_name} (#${targetStaff.id}). Lý do: ${note || 'Quản trị viên điều chỉnh thủ công'}`,
-        changedBy: changedByUserId,
-      }),
+        const updated = await manager.getRepository(Booking).save(booking);
+
+        await manager.getRepository(BookingStatusLog).save(
+          manager.getRepository(BookingStatusLog).create({
+            bookingId: booking.id,
+            oldStatus: booking.status,
+            newStatus: booking.status,
+            note: `[PHÂN CÔNG LẠI] Đổi nhân viên phụ trách từ #${oldStaffId ?? 'Chưa có'} sang ${targetStaff.full_name} (#${targetStaff.id}). Lý do: ${note || 'Quản trị viên điều chỉnh thủ công'}`,
+            changedBy: changedByUserId,
+          }),
+        );
+
+        return updated;
+      },
+      { contextName: 'BookingsService.reassignStaff' },
     );
 
-    // Thông báo realtime phân công lại tới Lễ tân / Quản lý
+    // Thông báo realtime phân công lại tới Lễ tân / Quản lý (sau commit)
     try {
       this.realtimeGateway?.emitBookingStatusChanged({
         id: booking.id,
@@ -757,6 +892,7 @@ export class BookingsService {
       },
     };
   }
+
 
   // ============================================================
   // DANH SÁCH NHÂN VIÊN KHẢ DỤNG CHO ĐƠN ĐẶT PHÒNG

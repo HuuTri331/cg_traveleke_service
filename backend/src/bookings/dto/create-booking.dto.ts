@@ -47,4 +47,13 @@ export class CreateBookingDto {
   @IsOptional()
   @IsString()
   specialRequest?: string;
+
+  /**
+   * Idempotency Key gửi từ Client để chống Duplicate Booking khi mạng chập chờn hoặc retry
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  idempotencyKey?: string;
 }
+
