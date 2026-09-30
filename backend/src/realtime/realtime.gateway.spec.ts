@@ -7,6 +7,14 @@ describe('RealtimeGateway', () => {
 
   const mockSocket = {
     id: 'mock-socket-123',
+    data: {
+      user: {
+        id: 'usr-999',
+        sub: 'usr-999',
+        role: 'STAFF',
+        hotelId: 5,
+      },
+    },
     join: jest.fn(),
     leave: jest.fn(),
   };
@@ -14,6 +22,7 @@ describe('RealtimeGateway', () => {
   const mockServer = {
     to: jest.fn().mockReturnThis(),
     emit: jest.fn(),
+    use: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -31,12 +40,24 @@ describe('RealtimeGateway', () => {
   });
 
   describe('room subscriptions', () => {
-    it('should join hotel room on subscribe:hotel', () => {
+    it('should join hotel room on subscribe:hotel if authorized staff', () => {
       const result = gateway.handleSubscribeHotel(mockSocket as any, {
         hotelId: 5,
       });
       expect(mockSocket.join).toHaveBeenCalledWith('hotel:5');
       expect(result).toEqual({ event: 'subscribed', room: 'hotel:5' });
+    });
+
+    it('should reject subscribe:hotel if user is customer', () => {
+      const customerSocket = {
+        ...mockSocket,
+        data: { user: { role: 'CUSTOMER', sub: 'cust-1' } },
+      };
+      const result = gateway.handleSubscribeHotel(customerSocket as any, {
+        hotelId: 5,
+      });
+      expect(customerSocket.join).not.toHaveBeenCalled();
+      expect(result).toEqual({ event: 'error', message: 'Forbidden: Staff access required' });
     });
 
     it('should leave hotel room on unsubscribe:hotel', () => {
@@ -47,7 +68,7 @@ describe('RealtimeGateway', () => {
       expect(result).toEqual({ event: 'unsubscribed', room: 'hotel:5' });
     });
 
-    it('should join user room on subscribe:user', () => {
+    it('should join user room on subscribe:user for own id', () => {
       const result = gateway.handleSubscribeUser(mockSocket as any, {
         userId: 'usr-999',
       });
@@ -55,12 +76,42 @@ describe('RealtimeGateway', () => {
       expect(result).toEqual({ event: 'subscribed', room: 'user:usr-999' });
     });
 
-    it('should join staff notifications channel on subscribe:staff', () => {
+    it('should reject subscribe:user if user attempts to spy on another user', () => {
+      const customerSocket = {
+        ...mockSocket,
+        data: { user: { role: 'CUSTOMER', sub: 'cust-1' } },
+        join: jest.fn(),
+      };
+      const result = gateway.handleSubscribeUser(customerSocket as any, {
+        userId: 'cust-victim-99',
+      });
+      expect(customerSocket.join).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        event: 'error',
+        message: 'Forbidden: Cannot subscribe to another user room',
+      });
+    });
+
+    it('should join staff notifications channel on subscribe:staff if staff/admin', () => {
       const result = gateway.handleSubscribeStaff(mockSocket as any);
       expect(mockSocket.join).toHaveBeenCalledWith('staff:notifications');
       expect(result).toEqual({
         event: 'subscribed',
         room: 'staff:notifications',
+      });
+    });
+
+    it('should reject subscribe:staff if user is not staff or admin', () => {
+      const unauthorizedSocket = {
+        ...mockSocket,
+        data: { user: { role: 'CUSTOMER', sub: 'cust-1' } },
+        join: jest.fn(),
+      };
+      const result = gateway.handleSubscribeStaff(unauthorizedSocket as any);
+      expect(unauthorizedSocket.join).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        event: 'error',
+        message: 'Forbidden: Staff access required',
       });
     });
   });

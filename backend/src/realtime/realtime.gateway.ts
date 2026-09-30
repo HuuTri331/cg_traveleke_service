@@ -8,7 +8,9 @@ import {
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import {
   REALTIME_EVENTS,
@@ -33,12 +35,55 @@ export class RealtimeGateway
   @WebSocketServer()
   server: Server;
 
+  constructor(
+    @Optional() private readonly jwtService?: JwtService,
+    @Optional() private readonly configService?: ConfigService,
+  ) {}
+
   afterInit(server: Server) {
     this.logger.log('🚀 [RealtimeGateway] WebSocket server initialized successfully.');
+
+    // Handshake Authentication Middleware theo chuẩn bài viết
+    server.use((socket: Socket, next) => {
+      try {
+        const token =
+          socket.handshake.auth?.token ||
+          (socket.handshake.headers?.authorization
+            ? socket.handshake.headers.authorization.replace(/^Bearer\s+/i, '')
+            : null);
+
+        if (token && this.jwtService) {
+          const secret =
+            this.configService?.get<string>('JWT_SECRET') ||
+            process.env.JWT_SECRET ||
+            'traveleke-super-secret-key-production-change-me';
+
+          const payload = this.jwtService.verify(token, { secret });
+          socket.data.user = payload;
+          this.logger.log(
+            `🔐 [Handshake] Authenticated socket ${socket.id} (user: ${payload.sub || payload.id}, role: ${payload.role})`,
+          );
+        } else {
+          socket.data.user = null;
+        }
+        return next();
+      } catch (err: any) {
+        this.logger.warn(`⚠️ [Handshake] Auth failed for socket ${socket.id}: ${err.message}`);
+        // Nếu có token gửi lên nhưng token bị sai hoặc hết hạn -> từ chối connection ngay tại handshake
+        if (socket.handshake.auth?.token) {
+          return next(new Error('Authentication error: invalid or expired token'));
+        }
+        socket.data.user = null;
+        return next();
+      }
+    });
   }
 
   handleConnection(client: Socket) {
-    this.logger.log(`🔌 Client connected: ${client.id}`);
+    const user = client.data?.user;
+    this.logger.log(
+      `🔌 Client connected: ${client.id} ${user ? `(Authenticated: ${user.sub || user.id})` : '(Anonymous)'}`,
+    );
   }
 
   handleDisconnect(client: Socket) {
@@ -59,6 +104,15 @@ export class RealtimeGateway
     @MessageBody() data: { hotelId: number | string },
   ) {
     if (!data?.hotelId) return;
+
+    const user = client.data?.user;
+    if (user && user.role !== 'ADMIN' && user.role !== 'STAFF') {
+      this.logger.warn(
+        `⛔ [Security] Unauthorized subscribe:hotel from socket ${client.id} (role: ${user.role})`,
+      );
+      return { event: 'error', message: 'Forbidden: Staff access required' };
+    }
+
     const room = `hotel:${data.hotelId}`;
     client.join(room);
     this.logger.log(`Client ${client.id} joined room ${room}`);
@@ -87,6 +141,19 @@ export class RealtimeGateway
     @MessageBody() data: { userId: string | number },
   ) {
     if (!data?.userId) return;
+
+    const user = client.data?.user;
+    const targetUserId = String(data.userId);
+    const authUserId = String(user?.sub || user?.id || '');
+
+    // Nếu đã đăng nhập và không phải ADMIN, không được phép nghe lén phòng của user khác
+    if (user && user.role !== 'ADMIN' && authUserId && targetUserId !== authUserId) {
+      this.logger.warn(
+        `⛔ [Security] User ${authUserId} attempted to spy on room of user ${targetUserId}`,
+      );
+      return { event: 'error', message: 'Forbidden: Cannot subscribe to another user room' };
+    }
+
     const room = `user:${data.userId}`;
     client.join(room);
     this.logger.log(`Client ${client.id} joined personal room ${room}`);
@@ -111,6 +178,14 @@ export class RealtimeGateway
    */
   @SubscribeMessage('subscribe:staff')
   handleSubscribeStaff(@ConnectedSocket() client: Socket) {
+    const user = client.data?.user;
+    if (user && user.role !== 'ADMIN' && user.role !== 'STAFF') {
+      this.logger.warn(
+        `⛔ [Security] Unauthorized subscribe:staff from socket ${client.id} (role: ${user.role})`,
+      );
+      return { event: 'error', message: 'Forbidden: Staff access required' };
+    }
+
     const room = 'staff:notifications';
     client.join(room);
     this.logger.log(`Client ${client.id} joined staff channel ${room}`);
