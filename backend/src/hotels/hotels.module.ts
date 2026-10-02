@@ -9,10 +9,7 @@ import { HotelsService } from './hotels.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Hotel, HotelImage])],
-  controllers: [
-    HotelsController,
-    HomePageHotelsController,
-  ],
+  controllers: [HotelsController, HomePageHotelsController],
   providers: [HotelsService],
   exports: [HotelsService],
 })

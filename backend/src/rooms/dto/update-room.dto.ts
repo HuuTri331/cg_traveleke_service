@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsEnum,
   IsInt,
   IsNumber,
@@ -132,4 +133,10 @@ export class UpdateRoomDto {
       'Trạng thái phòng không hợp lệ (chỉ chấp nhận: AVAILABLE, UNAVAILABLE, MAINTENANCE)',
   })
   status?: RoomStatus;
+
+  @IsOptional()
+  @IsArray({ message: 'Danh sách dịch vụ (serviceIds) phải là một mảng' })
+  @Type(() => Number)
+  @IsInt({ each: true, message: 'ID dịch vụ phải là số nguyên' })
+  serviceIds?: number[];
 }

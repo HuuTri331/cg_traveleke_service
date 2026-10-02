@@ -3,6 +3,7 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
@@ -28,7 +29,9 @@ export class RolesGuard implements CanActivate {
     const { user } = context.switchToHttp().getRequest<{ user: User }>();
 
     if (!user) {
-      throw new ForbiddenException('Bạn chưa đăng nhập.');
+      throw new UnauthorizedException(
+        'Bạn cần đăng nhập bằng Bearer token hợp lệ để thực hiện thao tác này.',
+      );
     }
 
     if (!requiredRoles.includes(user.role)) {

@@ -16,6 +16,9 @@ import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomImage } from './entities/room-image.entity';
 import { Room, RoomStatus } from './entities/room.entity';
 import { SearchRoomDto } from './dto/search-room.dto';
+import { RoomServiceAssignment } from './entities/room-service-assignment.entity';
+import { RoomService } from '../services/entities/room-service.entity';
+import { normalizePagination, buildPaginationMeta } from '../common/pagination';
 
 export const MAX_ROOM_IMAGES = 5;
 
@@ -26,6 +29,10 @@ export class RoomsService {
     private readonly roomsRepository: Repository<Room>,
     @InjectRepository(RoomImage)
     private readonly roomImagesRepository: Repository<RoomImage>,
+    @InjectRepository(RoomServiceAssignment)
+    private readonly rsaRepository: Repository<RoomServiceAssignment>,
+    @InjectRepository(RoomService)
+    private readonly roomServicesRepository: Repository<RoomService>,
     private readonly hotelsService: HotelsService,
   ) {}
 
@@ -81,6 +88,27 @@ export class RoomsService {
         );
       }
 
+      // Gán dịch vụ cho phòng: nếu dto.serviceIds có thì gán theo danh sách đó,
+      // nếu không có thì mặc định tự động gán toàn bộ dịch vụ MIỄN PHÍ đang hoạt động!
+      let serviceIdsToAssign = dto.serviceIds;
+      if (!serviceIdsToAssign || serviceIdsToAssign.length === 0) {
+        const defaultFreeServices = await this.roomServicesRepository.find({
+          where: { isComplimentary: true, status: 'ACTIVE' },
+        });
+        serviceIdsToAssign = defaultFreeServices.map((s) => Number(s.id));
+      }
+
+      if (serviceIdsToAssign && serviceIdsToAssign.length > 0) {
+        const assignments = serviceIdsToAssign.map((sId) =>
+          this.rsaRepository.create({
+            roomId: Number(savedRoom.id),
+            serviceId: sId,
+            isComplimentary: true,
+          }),
+        );
+        await this.rsaRepository.save(assignments);
+      }
+
       return savedRoom;
     } catch (error) {
       this.rethrowDatabaseError(error);
@@ -88,8 +116,7 @@ export class RoomsService {
   }
 
   async findAll(query: QueryRoomDto) {
-    const page = query.page ?? 1;
-    const perPage = query.perPage ?? 20;
+    const { page, limit, skip, perPage } = normalizePagination(query, 20, 100);
 
     const qb = this.roomsRepository
       .createQueryBuilder('room')
@@ -136,195 +163,193 @@ export class RoomsService {
       });
     }
 
-    qb.skip((page - 1) * perPage).take(perPage);
+    qb.skip(skip).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
 
     return {
       data,
-      meta: {
+      meta: buildPaginationMeta({
         page,
-        perPage,
+        limit,
         total,
-        totalPages: Math.ceil(total / perPage),
-      },
+        dataLength: data.length,
+      }),
     };
   }
 
   async search(query: SearchRoomDto) {
-  const {
-    keyword,
-    hotelId,
-    minPrice,
-    maxPrice,
-    maxAdults,
-    maxChildren,
-    bedType,
-    minRating,
-    status,
-    page = 1,
-    limit = 12,
-  } = query;
+    const { page, limit, skip, perPage } = normalizePagination(query, 12, 100);
+    const {
+      keyword,
+      hotelId,
+      minPrice,
+      maxPrice,
+      maxAdults,
+      maxChildren,
+      bedType,
+      minRating,
+      status,
+    } = query;
 
-  // ============================================================
-  // KIỂM TRA KHOẢNG GIÁ
-  // ============================================================
+    // ============================================================
+    // KIỂM TRA KHOẢNG GIÁ
+    // ============================================================
 
-  if (
-    minPrice !== undefined &&
-    maxPrice !== undefined &&
-    minPrice > maxPrice
-  ) {
-    throw new BadRequestException(
-      'Giá tối thiểu (minPrice) không được lớn hơn giá tối đa (maxPrice).',
-    );
-  }
+    if (
+      minPrice !== undefined &&
+      maxPrice !== undefined &&
+      minPrice > maxPrice
+    ) {
+      throw new BadRequestException(
+        'Giá tối thiểu (minPrice) không được lớn hơn giá tối đa (maxPrice).',
+      );
+    }
 
-  // ============================================================
-  // QUERY ROOM
-  // ============================================================
+    // ============================================================
+    // QUERY ROOM
+    // ============================================================
 
-  const qb = this.roomsRepository
-    .createQueryBuilder('room')
-    .leftJoinAndSelect('room.images', 'images');
+    const qb = this.roomsRepository
+      .createQueryBuilder('room')
+      .leftJoinAndSelect('room.images', 'images');
 
-  // ============================================================
-  // SEARCH TỪ KHÓA
-  // ============================================================
+    // ============================================================
+    // SEARCH TỪ KHÓA
+    // ============================================================
 
-  if (keyword?.trim()) {
-    const searchKeyword = `%${keyword.trim()}%`;
+    if (keyword?.trim()) {
+      const searchKeyword = `%${keyword.trim()}%`;
 
-    qb.andWhere(
-      `(
+      qb.andWhere(
+        `(
         room.name LIKE :keyword
         OR room.description LIKE :keyword
         OR room.bed_type LIKE :keyword
       )`,
-      {
-        keyword: searchKeyword,
-      },
-    );
+        {
+          keyword: searchKeyword,
+        },
+      );
+    }
+
+    // ============================================================
+    // KHÁCH SẠN
+    // ============================================================
+
+    if (hotelId !== undefined) {
+      qb.andWhere('room.hotel_id = :hotelId', {
+        hotelId,
+      });
+    }
+
+    // ============================================================
+    // GIÁ TỐI THIỂU
+    // ============================================================
+
+    if (minPrice !== undefined) {
+      qb.andWhere('room.price_per_night >= :minPrice', {
+        minPrice,
+      });
+    }
+
+    // ============================================================
+    // GIÁ TỐI ĐA
+    // ============================================================
+
+    if (maxPrice !== undefined) {
+      qb.andWhere('room.price_per_night <= :maxPrice', {
+        maxPrice,
+      });
+    }
+
+    // ============================================================
+    // SỐ NGƯỜI LỚN
+    // ============================================================
+
+    if (maxAdults !== undefined) {
+      qb.andWhere('room.max_adults >= :maxAdults', {
+        maxAdults,
+      });
+    }
+
+    // ============================================================
+    // SỐ TRẺ EM
+    // ============================================================
+
+    if (maxChildren !== undefined) {
+      qb.andWhere('room.max_children >= :maxChildren', {
+        maxChildren,
+      });
+    }
+
+    // ============================================================
+    // LOẠI GIƯỜNG
+    // ============================================================
+
+    if (bedType?.trim()) {
+      qb.andWhere('room.bed_type LIKE :bedType', {
+        bedType: `%${bedType.trim()}%`,
+      });
+    }
+
+    // ============================================================
+    // ĐÁNH GIÁ
+    // ============================================================
+
+    if (minRating !== undefined) {
+      qb.andWhere('room.rating >= :minRating', {
+        minRating,
+      });
+    }
+
+    // ============================================================
+    // TRẠNG THÁI PHÒNG
+    // ============================================================
+
+    if (status !== undefined) {
+      qb.andWhere('room.status = :status', {
+        status,
+      });
+    }
+
+    // ============================================================
+    // PHÒNG PHẢI CÒN SỐ LƯỢNG
+    // ============================================================
+
+    qb.andWhere('room.available_rooms > 0');
+
+    // ============================================================
+    // SẮP XẾP
+    // ============================================================
+
+    qb.orderBy('room.id', 'DESC');
+
+    // Sắp xếp ảnh theo thứ tự
+    qb.addOrderBy('images.sortOrder', 'ASC');
+
+    // ============================================================
+    // PHÂN TRANG
+    // ============================================================
+
+    qb.skip(skip).take(limit);
+
+    // ============================================================
+    // THỰC THI QUERY
+    // ============================================================
+
+    const [data, total] = await qb.getManyAndCount();
+
+    return {
+      data,
+      meta: buildPaginationMeta({
+        page,
+        limit,
+        total,
+        dataLength: data.length,
+      }),
+    };
   }
-
-  // ============================================================
-  // KHÁCH SẠN
-  // ============================================================
-
-  if (hotelId !== undefined) {
-    qb.andWhere('room.hotel_id = :hotelId', {
-      hotelId,
-    });
-  }
-
-  // ============================================================
-  // GIÁ TỐI THIỂU
-  // ============================================================
-
-  if (minPrice !== undefined) {
-    qb.andWhere('room.price_per_night >= :minPrice', {
-      minPrice,
-    });
-  }
-
-  // ============================================================
-  // GIÁ TỐI ĐA
-  // ============================================================
-
-  if (maxPrice !== undefined) {
-    qb.andWhere('room.price_per_night <= :maxPrice', {
-      maxPrice,
-    });
-  }
-
-  // ============================================================
-  // SỐ NGƯỜI LỚN
-  // ============================================================
-
-  if (maxAdults !== undefined) {
-    qb.andWhere('room.max_adults >= :maxAdults', {
-      maxAdults,
-    });
-  }
-
-  // ============================================================
-  // SỐ TRẺ EM
-  // ============================================================
-
-  if (maxChildren !== undefined) {
-    qb.andWhere('room.max_children >= :maxChildren', {
-      maxChildren,
-    });
-  }
-
-  // ============================================================
-  // LOẠI GIƯỜNG
-  // ============================================================
-
-  if (bedType?.trim()) {
-    qb.andWhere('room.bed_type LIKE :bedType', {
-      bedType: `%${bedType.trim()}%`,
-    });
-  }
-
-  // ============================================================
-  // ĐÁNH GIÁ
-  // ============================================================
-
-  if (minRating !== undefined) {
-    qb.andWhere('room.rating >= :minRating', {
-      minRating,
-    });
-  }
-
-  // ============================================================
-  // TRẠNG THÁI PHÒNG
-  // ============================================================
-
-  if (status !== undefined) {
-    qb.andWhere('room.status = :status', {
-      status,
-    });
-  }
-
-  // ============================================================
-  // PHÒNG PHẢI CÒN SỐ LƯỢNG
-  // ============================================================
-
-  qb.andWhere('room.available_rooms > 0');
-
-  // ============================================================
-  // SẮP XẾP
-  // ============================================================
-
-  qb.orderBy('room.id', 'DESC');
-
-  // Sắp xếp ảnh theo thứ tự
-  qb.addOrderBy('images.sortOrder', 'ASC');
-
-  // ============================================================
-  // PHÂN TRANG
-  // ============================================================
-
-  qb.skip((page - 1) * limit).take(limit);
-
-  // ============================================================
-  // THỰC THI QUERY
-  // ============================================================
-
-  const [data, total] = await qb.getManyAndCount();
-
-  return {
-    data,
-
-    meta: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
-  };
-}
 
   async findOne(id: string): Promise<Room> {
     this.assertValidId(id);
@@ -343,7 +368,35 @@ export class RoomsService {
     });
 
     room.images = images;
+    (room as any).services = await this.getRoomServices(Number(id));
     return room;
+  }
+
+  async getRoomServices(roomId: number) {
+    const assignments = await this.rsaRepository
+      .createQueryBuilder('rsa')
+      .leftJoinAndSelect('rsa.service', 'service')
+      .leftJoinAndSelect('service.category', 'category')
+      .where('rsa.room_id = :roomId', { roomId })
+      .getMany();
+
+    return assignments.map((a) => ({
+      id: a.service?.id,
+      name: a.service?.name,
+      description: a.service?.description,
+      unit: a.service?.unit,
+      basePrice: a.service?.basePrice,
+      isComplimentary: a.service?.isComplimentary,
+      serviceType: a.service?.serviceType,
+      category: a.service?.category
+        ? {
+            id: a.service.category.id,
+            code: a.service.category.code,
+            name: a.service.category.name,
+            icon: a.service.category.icon,
+          }
+        : null,
+    }));
   }
 
   async update(id: string, dto: UpdateRoomDto): Promise<Room> {
@@ -428,8 +481,24 @@ export class RoomsService {
       room.status = dto.status;
     }
 
+    if (dto.serviceIds !== undefined) {
+      await this.rsaRepository.delete({ roomId: Number(room.id) });
+      if (dto.serviceIds.length > 0) {
+        const assignments = dto.serviceIds.map((sId) =>
+          this.rsaRepository.create({
+            roomId: Number(room.id),
+            serviceId: sId,
+            isComplimentary: true,
+          }),
+        );
+        await this.rsaRepository.save(assignments);
+      }
+    }
+
     try {
-      return await this.roomsRepository.save(room);
+      const saved = await this.roomsRepository.save(room);
+      (saved as any).services = await this.getRoomServices(Number(saved.id));
+      return saved;
     } catch (error) {
       this.rethrowDatabaseError(error);
     }
@@ -513,7 +582,9 @@ export class RoomsService {
     });
 
     if (images.length === 0) {
-      const room = await this.roomsRepository.findOne({ where: { id: roomId } });
+      const room = await this.roomsRepository.findOne({
+        where: { id: roomId },
+      });
       if (room?.coverImageUrl && room.coverImageUrl.trim()) {
         const initialImg = this.roomImagesRepository.create({
           roomId: room.id,

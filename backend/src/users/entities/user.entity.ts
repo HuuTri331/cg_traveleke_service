@@ -48,6 +48,13 @@ export class User {
   @Column({
     type: 'varchar',
     length: 255,
+    nullable: true,
+  })
+  address!: string | null;
+
+  @Column({
+    type: 'varchar',
+    length: 255,
     select: false,
   })
   password!: string;
@@ -115,54 +122,28 @@ export class User {
   deletedAt!: Date | null;
 
   /**
-   * User có thể có nhiều Role.
-   *
-   * users
-   *   ↓
-   * users_roles
-   *   ↓
-   * roles
+   * Quan hệ nhiều-nhiều với Role qua bảng users_roles.
+   * Eager loading để luôn lấy kèm roles khi query user.
    */
   @ManyToMany(() => Role, { eager: true })
   @JoinTable({
     name: 'users_roles',
-
-    joinColumn: {
-      name: 'user_id',
-      referencedColumnName: 'id',
-    },
-
-    inverseJoinColumn: {
-      name: 'role_id',
-      referencedColumnName: 'id',
-    },
+    joinColumn: { name: 'user_id', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'role_id', referencedColumnName: 'id' },
   })
   roles!: Role[];
 
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: 'CUSTOMER',
+  })
+  role!: UserRole;
+
   /**
-   * Role ưu tiên:
-   *
-   * ADMIN > EMPLOYEE > CUSTOMER
-   *
-   * Getter này không tạo cột role trong database.
+   * Kiểm tra tài khoản đã xác thực email hay chưa.
    */
-  get role(): UserRole {
-    if (!this.roles || this.roles.length === 0) {
-      return 'CUSTOMER';
-    }
-
-    const priority: UserRole[] = [
-      'ADMIN',
-      'EMPLOYEE',
-      'CUSTOMER',
-    ];
-
-    for (const role of priority) {
-      if (this.roles.some((r) => r.name === role)) {
-        return role;
-      }
-    }
-
-    return 'CUSTOMER';
+  get isEmailVerified(): boolean {
+    return this.emailVerifiedAt !== null;
   }
 }

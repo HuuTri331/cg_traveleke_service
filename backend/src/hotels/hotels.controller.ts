@@ -26,17 +26,20 @@ import { SearchHotelDto } from './dto/search-hotel.dto';
 
 import { HotelsService } from './hotels.service';
 import { createMulterOptions } from './upload-image.config';
+import { RateLimiterGuard } from '../rate-limit/rate-limiter.guard';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 
 @Controller('hotels')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(RateLimiterGuard)
 export class HotelsController {
   constructor(private readonly hotelsService: HotelsService) {}
 
   // ============================================================
-  // KHÁCH SẠN
+  // KHÁCH SẠN (PUBLIC ĐỌC & TÌM KIẾM CHO KHÁCH HÀNG)
   // ============================================================
 
   @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   create(@Body() dto: CreateHotelDto) {
     return this.hotelsService.create(dto);
@@ -48,22 +51,30 @@ export class HotelsController {
   }
 
   @Get('search')
+  @RateLimit({
+    slidingWindow: {
+      limit: 120,
+      windowMs: 60_000,
+    },
+  })
   search(@Query() query: SearchHotelDto) {
     return this.hotelsService.search(query);
   }
-  
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.hotelsService.findOne(id);
   }
 
   @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   update(@Param('id') id: string, @Body() dto: UpdateHotelDto) {
     return this.hotelsService.update(id, dto);
   }
 
   @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   remove(@Param('id') id: string) {
     return this.hotelsService.remove(id);
@@ -75,7 +86,14 @@ export class HotelsController {
   // ============================================================
 
   @Post(':id/images/upload')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
+  @RateLimit({
+    slidingWindow: {
+      limit: 20,
+      windowMs: 60_000,
+    },
+  })
   @UseInterceptors(AnyFilesInterceptor(createMulterOptions('hotels')))
   uploadImages(
     @Param('id') id: string,
@@ -83,9 +101,7 @@ export class HotelsController {
     @Body('caption') caption?: string,
   ) {
     if (!files || files.length === 0) {
-      throw new BadRequestException(
-        'Vui lòng đính kèm ít nhất 1 file ảnh.',
-      );
+      throw new BadRequestException('Vui lòng đính kèm ít nhất 1 file ảnh.');
     }
 
     const dtos: AddHotelImageDto[] = files.map((file, index) => ({
@@ -98,11 +114,9 @@ export class HotelsController {
   }
 
   @Post(':id/images')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  addImage(
-    @Param('id') id: string,
-    @Body() dto: AddHotelImageDto,
-  ) {
+  addImage(@Param('id') id: string, @Body() dto: AddHotelImageDto) {
     return this.hotelsService.addImage(id, dto);
   }
 
@@ -112,20 +126,16 @@ export class HotelsController {
   }
 
   @Patch(':id/images/:imageId/primary')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  setPrimaryImage(
-    @Param('id') id: string,
-    @Param('imageId') imageId: string,
-  ) {
+  setPrimaryImage(@Param('id') id: string, @Param('imageId') imageId: string) {
     return this.hotelsService.setPrimaryImage(id, imageId);
   }
 
   @Delete(':id/images/:imageId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  deleteImage(
-    @Param('id') id: string,
-    @Param('imageId') imageId: string,
-  ) {
+  deleteImage(@Param('id') id: string, @Param('imageId') imageId: string) {
     return this.hotelsService.deleteImage(id, imageId);
   }
 }

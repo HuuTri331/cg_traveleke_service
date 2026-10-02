@@ -19,11 +19,16 @@ export class UpdateStaffDto {
   phone?: string;
 
   @IsOptional()
-  @IsDateString({}, { message: 'Ngày sinh không hợp lệ (định dạng YYYY-MM-DD)' })
+  @IsDateString(
+    {},
+    { message: 'Ngày sinh không hợp lệ (định dạng YYYY-MM-DD)' },
+  )
   dateOfBirth?: string;
 
   @IsOptional()
-  @IsEnum(['MALE', 'FEMALE', 'OTHER'], { message: 'Giới tính phải là MALE, FEMALE hoặc OTHER' })
+  @IsEnum(['MALE', 'FEMALE', 'OTHER'], {
+    message: 'Giới tính phải là MALE, FEMALE hoặc OTHER',
+  })
   gender?: 'MALE' | 'FEMALE' | 'OTHER';
 
   @IsOptional()

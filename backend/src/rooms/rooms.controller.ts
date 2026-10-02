@@ -26,47 +26,60 @@ import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomsService } from './rooms.service';
 
 import { SearchRoomDto } from './dto/search-room.dto';
+import { RateLimiterGuard } from '../rate-limit/rate-limiter.guard';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 
 @Controller('rooms')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(RateLimiterGuard)
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
 
   // ============================================================
-  // CRUD PHÒNG
+  // CRUD PHÒNG (PUBLIC ĐỌC & TÌM KIẾM CHO KHÁCH HÀNG)
   // ============================================================
 
   @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   create(@Body() dto: CreateRoomDto) {
     return this.roomsService.create(dto);
   }
 
   @Get()
-  @Roles('ADMIN', 'EMPLOYEE')
   findAll(@Query() query: QueryRoomDto) {
     return this.roomsService.findAll(query);
   }
 
   @Get('search')
-  @Roles('ADMIN', 'EMPLOYEE')
+  @RateLimit({
+    slidingWindow: {
+      limit: 120,
+      windowMs: 60_000,
+    },
+  })
   search(@Query() query: SearchRoomDto) {
     return this.roomsService.search(query);
   }
 
   @Get(':id')
-  @Roles('ADMIN', 'EMPLOYEE')
   findOne(@Param('id') id: string) {
     return this.roomsService.findOne(id);
   }
 
+  @Get(':id/services')
+  getRoomServices(@Param('id') id: string) {
+    return this.roomsService.getRoomServices(Number(id));
+  }
+
   @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   update(@Param('id') id: string, @Body() dto: UpdateRoomDto) {
     return this.roomsService.update(id, dto);
   }
 
   @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   remove(@Param('id') id: string) {
     return this.roomsService.remove(id);
@@ -78,7 +91,14 @@ export class RoomsController {
   // ============================================================
 
   @Post(':id/images/upload')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
+  @RateLimit({
+    slidingWindow: {
+      limit: 20,
+      windowMs: 60_000,
+    },
+  })
   @UseInterceptors(AnyFilesInterceptor(createMulterOptions('rooms')))
   uploadImages(
     @Param('id') id: string,
@@ -86,9 +106,7 @@ export class RoomsController {
     @Body('caption') caption?: string,
   ) {
     if (!files || files.length === 0) {
-      throw new BadRequestException(
-        'Vui lòng đính kèm ít nhất 1 file ảnh.',
-      );
+      throw new BadRequestException('Vui lòng đính kèm ít nhất 1 file ảnh.');
     }
 
     const dtos: AddRoomImageDto[] = files.map((file, index) => ({
@@ -101,35 +119,28 @@ export class RoomsController {
   }
 
   @Post(':id/images')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  addImage(
-    @Param('id') id: string,
-    @Body() dto: AddRoomImageDto,
-  ) {
+  addImage(@Param('id') id: string, @Body() dto: AddRoomImageDto) {
     return this.roomsService.addImage(id, dto);
   }
 
   @Get(':id/images')
-  @Roles('ADMIN', 'EMPLOYEE')
   getImages(@Param('id') id: string) {
     return this.roomsService.getImages(id);
   }
 
   @Patch(':id/images/:imageId/primary')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  setPrimaryImage(
-    @Param('id') id: string,
-    @Param('imageId') imageId: string,
-  ) {
+  setPrimaryImage(@Param('id') id: string, @Param('imageId') imageId: string) {
     return this.roomsService.setPrimaryImage(id, imageId);
   }
 
   @Delete(':id/images/:imageId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
-  deleteImage(
-    @Param('id') id: string,
-    @Param('imageId') imageId: string,
-  ) {
+  deleteImage(@Param('id') id: string, @Param('imageId') imageId: string) {
     return this.roomsService.deleteImage(id, imageId);
   }
 }
