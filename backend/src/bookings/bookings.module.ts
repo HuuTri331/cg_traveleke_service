@@ -9,16 +9,30 @@ import { BookingStatusLog } from './entities/booking-status-log.entity';
 
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
+import { RoomAvailabilityService } from './room-availability.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Booking, BookingRoom, BookingStatusLog, Room]),
+    TypeOrmModule.forFeature([
+      Booking,
+      BookingRoom,
+      BookingStatusLog,
+      Room,
+    ]),
   ],
 
-  controllers: [BookingsController],
+  controllers: [
+    BookingsController,
+  ],
 
-  providers: [BookingsService],
+  providers: [
+    BookingsService,
+    RoomAvailabilityService,
+  ],
 
-  exports: [BookingsService],
+  exports: [
+    BookingsService,
+    RoomAvailabilityService,
+  ],
 })
 export class BookingsModule {}

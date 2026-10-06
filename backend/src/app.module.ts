@@ -79,6 +79,7 @@ import {
 } from './observability/observability.module';
 import { IdModule } from './common/id/id.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   imports: [
@@ -135,6 +136,7 @@ import { RealtimeModule } from './realtime/realtime.module';
     ObservabilityModule,
     IdModule,
     RealtimeModule,
+    ChatModule,
   ],
 
   controllers: [AppController],
