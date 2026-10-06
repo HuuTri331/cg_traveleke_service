@@ -20,6 +20,7 @@ import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
 import { Booking, BookingStatus } from './entities/booking.entity';
 import { BookingRoom } from './entities/booking-room.entity';
 import { BookingStatusLog } from './entities/booking-status-log.entity';
+import { RoomAvailabilityService } from './room-availability.service';
 import { IdGeneratorService } from '../common/id/id-generator.service';
 import { logWithTrace } from '../observability/trace-logger';
 import { normalizePagination, buildPaginationMeta } from '../common/pagination';
@@ -61,6 +62,8 @@ export class BookingsService {
 
     @InjectRepository(Room)
     private readonly roomRepository: Repository<Room>,
+
+    private readonly roomAvailabilityService: RoomAvailabilityService,
 
     private readonly dataSource: DataSource,
     @Optional() idGenerator?: IdGeneratorService,
@@ -137,15 +140,21 @@ export class BookingsService {
     }
 
     // ==========================================
-    // 4. KIỂM TRA SỐ PHÒNG BAN ĐẦU
+    // 4. KIỂM TRA PHÒNG TRỐNG THEO NGÀY
     // ==========================================
 
-    if (
-      room.availableRooms !== undefined &&
-      room.availableRooms !== null &&
-      dto.roomCount > room.availableRooms
-    ) {
-      throw new BadRequestException(`Chỉ còn ${room.availableRooms} phòng.`);
+    const availability =
+      await this.roomAvailabilityService.getAvailability(
+        room.id,
+        checkIn,
+        checkOut,
+      );
+
+    if (dto.roomCount > availability.remainingRooms) {
+      throw new ConflictException(
+        `Phòng "${room.name}" chỉ còn ${availability.remainingRooms} phòng ` +
+          `trong khoảng thời gian đã chọn.`,
+      );
     }
 
     // ==========================================
@@ -174,37 +183,103 @@ export class BookingsService {
     // 8. TRANSACTION VỚI DEADLOCK RETRY & ATOMIC CONDITIONAL UPDATE
     // ==========================================
 
-    const result = await runWithDeadlockRetry(
-      this.dataSource,
-      async (manager) => {
-        // ======================================
-        // 8.1 ATOMIC INVENTORY DECREMENT (Conditional UPDATE)
-        // Loại bỏ hoàn toàn Race condition & Lost update khi nhiều Worker/Request cùng đặt phòng
-        // ======================================
-        const reserveResult = await manager
-          .createQueryBuilder()
-          .update(Room)
-          .set({
-            availableRooms: () => 'available_rooms - :roomCount',
-          })
-          .where('id = :roomId AND available_rooms >= :roomCount', {
-            roomId: room.id,
-            roomCount: dto.roomCount,
-          })
-          .execute();
+   const result = await runWithDeadlockRetry(
+  this.dataSource,
+  async (manager) => {
+    // ======================================
+    // 8.1 KHÓA ROOM ĐỂ CHỐNG ĐẶT TRÙNG ĐỒNG THỜI
+    // ======================================
 
-        if (!reserveResult.affected || reserveResult.affected === 0) {
-          throw new ConflictException(
-            `Phòng "${room.name}" hiện không đủ số lượng khả dụng hoặc đã hết chỗ trong lúc giao dịch xử lý.`,
-          );
-        }
+    const lockedRoom = await manager
+      .getRepository(Room)
+      .createQueryBuilder('room')
+      .setLock('pessimistic_write')
+      .where('room.id = :roomId', {
+        roomId: room.id,
+      })
+      .getOne();
 
-        const bookingRepo = manager.getRepository(Booking);
-        const bookingRoomRepo = manager.getRepository(BookingRoom);
+    if (!lockedRoom) {
+      throw new NotFoundException(
+        'Không tìm thấy phòng trong quá trình đặt phòng.',
+      );
+    }
 
-        // ======================================
-        // INSERT BOOKINGS
-        // ======================================
+    // ======================================
+    // 8.2 KIỂM TRA SỐ PHÒNG ĐÃ ĐƯỢC GIỮ
+    // TRONG KHOẢNG NGÀY YÊU CẦU
+    // ======================================
+
+    const rawAvailability = await manager
+      .getRepository(BookingRoom)
+      .createQueryBuilder('bookingRoom')
+      .innerJoin(
+        Booking,
+        'booking',
+        'booking.id = bookingRoom.booking_id',
+      )
+      .select(
+        'COALESCE(SUM(bookingRoom.quantity), 0)',
+        'bookedRooms',
+      )
+      .where(
+        'bookingRoom.room_id = :roomId',
+        {
+          roomId: lockedRoom.id,
+        },
+      )
+      .andWhere(
+        'booking.status IN (:...statuses)',
+        {
+          statuses: [
+            BookingStatus.PENDING,
+            BookingStatus.CONFIRMED,
+            BookingStatus.CHECKED_IN,
+          ],
+        },
+      )
+      .andWhere(
+        'booking.check_in_at < :checkOut',
+        {
+          checkOut,
+        },
+      )
+      .andWhere(
+        'booking.check_out_at > :checkIn',
+        {
+          checkIn,
+        },
+      )
+      .getRawOne<{
+        bookedRooms: string | number | null;
+      }>();
+
+    const bookedRooms = Number(
+      rawAvailability?.bookedRooms ?? 0,
+    );
+
+    const totalRooms = Number(
+      lockedRoom.totalRooms,
+    );
+
+    const remainingRooms = Math.max(
+      totalRooms - bookedRooms,
+      0,
+    );
+
+    if (dto.roomCount > remainingRooms) {
+      throw new ConflictException(
+        `Phòng "${lockedRoom.name}" chỉ còn ${remainingRooms} phòng ` +
+          `trong khoảng thời gian đã chọn.`,
+      );
+    }
+
+    const bookingRepo = manager.getRepository(Booking);
+    const bookingRoomRepo = manager.getRepository(BookingRoom);
+
+    // ======================================
+    // INSERT BOOKINGS
+    // ======================================
 
         const booking = bookingRepo.create({
           bookingCode,
@@ -689,32 +764,31 @@ export class BookingsService {
         // Khi hủy hoặc từ chối đơn, hoàn lại số phòng khả dụng vào Database
         // ==========================================
         if (newStatus === 'CANCELLED' || newStatus === 'REJECTED') {
-          const bookingRooms = await bookingRoomRepo.find({
-            where: { bookingId: booking.id },
-          });
+        const bookingRooms = await bookingRoomRepo.find({
+          where: { bookingId: booking.id },
+        });
 
-          // Áp dụng Deterministic Lock Ordering: Sort danh sách Room ID theo thứ tự cố định
-          // nhằm loại bỏ hoàn toàn chu trình Deadlock giữa các worker hủy đơn đồng thời
-          const sortedRooms = deterministicSort(
-            bookingRooms,
-            (br) => br.roomId,
-          );
+        // Áp dụng Deterministic Lock Ordering: Sort danh sách Room ID theo thứ tự cố định
+        // nhằm loại bỏ hoàn toàn chu trình Deadlock giữa các worker hủy đơn đồng thời
+        const sortedRooms = deterministicSort(
+          bookingRooms,
+          (br) => br.roomId,
+        );
 
-          for (const br of sortedRooms) {
-            await manager
-              .createQueryBuilder()
-              .update(Room)
-              .set({
-                availableRooms: () => 'available_rooms + :qty',
-              })
-              .where('id = :roomId', {
-                roomId: br.roomId,
-                qty: br.quantity,
-              })
-              .execute();
-          }
+        for (const br of sortedRooms) {
+          await manager
+            .createQueryBuilder()
+            .update(Room)
+            .set({
+              availableRooms: () => 'available_rooms + :qty',
+            })
+            .where('id = :roomId', {
+              roomId: br.roomId,
+              qty: br.quantity,
+            })
+            .execute();
         }
-
+      }
         // Cập nhật trạng thái và timestamps tương ứng
         booking.status = newStatus as unknown as BookingStatus;
         if (!booking.handledBy) {
