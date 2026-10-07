@@ -18,10 +18,10 @@ export class MailService {
       'MAIL_USER',
       'dangquangminhdn76@gmail.com',
     );
-    const rawPass = this.configService.get<string>(
-      'MAIL_PASS',
-      'nshewochpcasfufo',
-    );
+    const rawPass =
+      this.configService.get<string>('MAIL_PASS') ||
+      process.env.MAIL_PASS ||
+      '';
     // Bỏ qua dấu cách nếu có trong mật khẩu ứng dụng Gmail
     const pass = rawPass.replace(/\s+/g, '');
 
@@ -132,6 +132,199 @@ export class MailService {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed to send verification email to ${to}: ${msg}`);
       throw new Error(`Không thể gửi email xác thực: ${msg}`);
+    }
+  }
+
+  /**
+   * Section 37: Gửi email xác nhận thanh toán thành công (VNPay)
+   */
+  async sendPaymentSuccessEmail(
+    to: string,
+    data: {
+      bookingCode: string;
+      contactName: string;
+      amount: number | string;
+      vnpTransactionNo: string;
+      checkInAt: Date | string;
+      checkOutAt: Date | string;
+      hotelName?: string;
+      roomName?: string;
+    },
+  ): Promise<boolean> {
+    const from = this.configService.get<string>(
+      'MAIL_FROM',
+      '"Traveleke" <dangquangminhdn76@gmail.com>',
+    );
+    const formattedAmount = Number(data.amount).toLocaleString('vi-VN');
+
+    const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="vi">
+    <head>
+      <meta charset="UTF-8">
+      <style>
+        body { margin:0; padding:0; background:#f4f7fb; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+        .box { max-width:600px; margin:30px auto; background:#ffffff; border-radius:14px; overflow:hidden; box-shadow:0 4px 18px rgba(0,0,0,0.06); }
+        .hdr { background:#0284c7; padding:28px 24px; text-align:center; color:#ffffff; }
+        .content { padding:28px 24px; color:#334155; line-height:1.6; }
+        .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #f1f5f9; font-size:14px; }
+        .label { color:#64748b; }
+        .val { font-weight:600; color:#0f172a; }
+        .ftr { background:#f8fafc; padding:18px; text-align:center; font-size:12px; color:#94a3b8; }
+      </style>
+    </head>
+    <body>
+      <div class="box">
+        <div class="hdr">
+          <h2 style="margin:0;">✅ Thanh Toán Đặt Phòng Thành Công</h2>
+          <p style="margin:6px 0 0 0; font-size:14px; opacity:0.9;">Cổng thanh toán VNPay</p>
+        </div>
+        <div class="content">
+          <p>Xin chào <strong>${data.contactName}</strong>,</p>
+          <p>Traveleke đã nhận được khoản thanh toán cho đơn đặt phòng của bạn. Trạng thái hiện tại: <strong>Đã thanh toán - Đang chờ khách sạn xác nhận</strong>.</p>
+          <div style="background:#f8fafc; border-radius:10px; padding:16px; margin:20px 0;">
+            <div class="row"><span class="label">Mã đặt phòng:</span><span class="val">${data.bookingCode}</span></div>
+            <div class="row"><span class="label">Số tiền:</span><span class="val" style="color:#0284c7;">${formattedAmount} VND</span></div>
+            <div class="row"><span class="label">Mã giao dịch VNPay:</span><span class="val">${data.vnpTransactionNo}</span></div>
+            <div class="row"><span class="label">Thời gian nhận phòng:</span><span class="val">${new Date(data.checkInAt).toLocaleString('vi-VN')}</span></div>
+            <div class="row"><span class="label">Thời gian trả phòng:</span><span class="val">${new Date(data.checkOutAt).toLocaleString('vi-VN')}</span></div>
+          </div>
+          <p style="font-size:13px; color:#64748b;">Khách sạn sẽ hoàn tất tiếp nhận phòng và gửi thông báo xác nhận tới bạn sớm nhất.</p>
+        </div>
+        <div class="ftr">© 2026 Traveleke Inc. Mọi quyền được bảo lưu.</div>
+      </div>
+    </body>
+    </html>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from,
+        to,
+        subject: `✅ [Traveleke] Thanh toán thành công đơn đặt phòng #${data.bookingCode}`,
+        html: htmlContent,
+      });
+      return true;
+    } catch (err: any) {
+      this.logger.error(`Lỗi gửi mail thanh toán thành công: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Section 38: Gửi email khi Lễ tân / Quản lý xác nhận booking (PENDING -> CONFIRMED)
+   */
+  async sendBookingConfirmedEmail(
+    to: string,
+    data: {
+      bookingCode: string;
+      contactName: string;
+      hotelName?: string;
+      checkInAt: Date | string;
+    },
+  ): Promise<boolean> {
+    const from = this.configService.get<string>(
+      'MAIL_FROM',
+      '"Traveleke" <dangquangminhdn76@gmail.com>',
+    );
+
+    const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="vi">
+    <body>
+      <div style="max-width:600px; margin:20px auto; font-family:sans-serif; background:#fff; border-radius:12px; border:1px solid #e2e8f0; padding:24px;">
+        <h2 style="color:#16a34a; margin-top:0;">🎉 Khách Sạn Đã Xác Nhận Đơn Đặt Phòng</h2>
+        <p>Xin chào <strong>${data.contactName}</strong>,</p>
+        <p>Đơn đặt phòng <strong>#${data.bookingCode}</strong> của bạn đã được khách sạn xác nhận giữ chỗ hoàn tất!</p>
+        <p>Thời gian check-in: <strong>${new Date(data.checkInAt).toLocaleString('vi-VN')}</strong></p>
+        <p>Chúc bạn có một chuyến đi tuyệt vời cùng Traveleke!</p>
+      </div>
+    </body>
+    </html>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from,
+        to,
+        subject: `🎉 [Traveleke] Khách sạn đã xác nhận đơn #${data.bookingCode}`,
+        html: htmlContent,
+      });
+      return true;
+    } catch (err: any) {
+      this.logger.error(`Lỗi gửi mail xác nhận booking: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Gửi email thông báo đơn hết hạn thanh toán
+   */
+  async sendPaymentExpiredEmail(
+    to: string,
+    data: {
+      bookingCode: string;
+      contactName: string;
+    },
+  ): Promise<boolean> {
+    const from = this.configService.get<string>(
+      'MAIL_FROM',
+      '"Traveleke" <dangquangminhdn76@gmail.com>',
+    );
+
+    const htmlContent = `
+    <div style="font-family:sans-serif; padding:20px;">
+      <h3>Đơn đặt phòng #${data.bookingCode} đã hết hạn thanh toán</h3>
+      <p>Xin chào ${data.contactName}, đơn hàng #${data.bookingCode} đã hết thời gian thanh toán 15 phút. Nếu vẫn có nhu cầu đặt phòng, vui lòng truy cập Traveleke để tiến hành đặt lại.</p>
+    </div>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from,
+        to,
+        subject: `⏰ [Traveleke] Đơn đặt phòng #${data.bookingCode} đã hết hạn thanh toán`,
+        html: htmlContent,
+      });
+      return true;
+    } catch (err: any) {
+      return false;
+    }
+  }
+
+  /**
+   * Gửi email hoàn tiền thành công
+   */
+  async sendRefundSuccessEmail(
+    to: string,
+    data: {
+      bookingCode: string;
+      contactName: string;
+      refundAmount: number | string;
+    },
+  ): Promise<boolean> {
+    const from = this.configService.get<string>(
+      'MAIL_FROM',
+      '"Traveleke" <dangquangminhdn76@gmail.com>',
+    );
+
+    const htmlContent = `
+    <div style="font-family:sans-serif; padding:20px;">
+      <h3>Hoàn tiền thành công cho đơn đặt phòng #${data.bookingCode}</h3>
+      <p>Xin chào ${data.contactName}, số tiền ${Number(data.refundAmount).toLocaleString('vi-VN')} VND đã được thực hiện lệnh hoàn tiền về phương thức thanh toán ban đầu của bạn.</p>
+    </div>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from,
+        to,
+        subject: `💳 [Traveleke] Thông báo hoàn tiền cho đơn #${data.bookingCode}`,
+        html: htmlContent,
+      });
+      return true;
+    } catch (err: any) {
+      return false;
     }
   }
 }

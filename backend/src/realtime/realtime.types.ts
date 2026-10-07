@@ -7,6 +7,13 @@ export const REALTIME_EVENTS = {
   // Booking events
   BOOKING_CREATED: 'booking.created',
   BOOKING_STATUS_CHANGED: 'booking.status_changed',
+  BOOKING_READY_FOR_CONFIRMATION: 'booking.ready_for_confirmation',
+  BOOKING_PAYMENT_EXPIRED: 'booking.payment_expired',
+
+  // Payment & Inventory events
+  PAYMENT_STATUS_CHANGED: 'payment.status_changed',
+  INVENTORY_UPDATED: 'inventory.updated',
+  REFUND_STATUS_CHANGED: 'refund.status_changed',
 
   // Room service request events
   SERVICE_REQUESTED: 'service.requested',

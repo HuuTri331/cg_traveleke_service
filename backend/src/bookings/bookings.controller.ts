@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 
@@ -46,8 +47,35 @@ export class BookingsController {
       refillRate: 0.5,
     },
   })
-  create(@Body() dto: CreateBookingDto) {
-    return this.bookingsService.create(dto);
+  create(
+    @Body() dto: CreateBookingDto,
+    @CurrentUser() user: User,
+    @Req() req: any,
+  ) {
+    dto.userId = user.id;
+    const ip =
+      (req.headers?.['x-forwarded-for'] as string) ||
+      req.socket?.remoteAddress ||
+      '127.0.0.1';
+    return this.bookingsService.create(dto, ip.split(',')[0].trim());
+  }
+
+  // ================================
+  // THỬ LẠI THANH TOÁN (Payment Retry - Section 31)
+  // POST /bookings/:id/payment-attempts
+  // ================================
+  @Post(':id/payment-attempts')
+  @UseGuards(JwtAuthGuard)
+  retryPayment(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+    @Req() req: any,
+  ) {
+    const ip =
+      (req.headers?.['x-forwarded-for'] as string) ||
+      req.socket?.remoteAddress ||
+      '127.0.0.1';
+    return this.bookingsService.retryPayment(id, user.id, ip.split(',')[0].trim());
   }
 
   // ================================
@@ -81,9 +109,20 @@ export class BookingsController {
   }
 
   // ================================
-  // LỊCH SỬ BOOKING CỦA USER (Customer)
+  // LỊCH SỬ BOOKING CỦA USER HIỆN TẠI (Customer JWT)
+  // ================================
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  findMyBookings(@CurrentUser() user: User) {
+    return this.bookingsService.findByUser(user.id);
+  }
+
+  // ================================
+  // LỊCH SỬ BOOKING THEO USER ID (Admin/Employee tra cứu)
   // ================================
   @Get('user/:userId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'EMPLOYEE')
   findByUser(@Param('userId') userId: string) {
     return this.bookingsService.findByUser(userId);
   }

@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
   Optional,
+  forwardRef,
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
@@ -36,14 +37,19 @@ import {
  * Key = trạng thái hiện tại, Value = danh sách trạng thái có thể chuyển sang.
  */
 const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
+  PAYMENT_PENDING: ['PENDING', 'PAYMENT_EXPIRED', 'CANCELLED', 'PAYMENT_REVIEW'],
   PENDING: ['CONFIRMED', 'REJECTED', 'CANCELLED'],
   CONFIRMED: ['CHECKED_IN', 'CANCELLED'],
   CHECKED_IN: ['COMPLETED'],
-  // Các trạng thái cuối: REJECTED, COMPLETED, CANCELLED → không chuyển tiếp được
+  PAYMENT_REVIEW: ['PENDING', 'CANCELLED'],
+  // Các trạng thái cuối: REJECTED, COMPLETED, CANCELLED, PAYMENT_EXPIRED → không chuyển tiếp được
+  PAYMENT_EXPIRED: [],
   REJECTED: [],
   COMPLETED: [],
   CANCELLED: [],
 };
+
+import { PaymentsService } from '../payments/payments.service';
 
 @Injectable()
 export class BookingsService {
@@ -70,15 +76,56 @@ export class BookingsService {
     private readonly redisClient?: Redis,
     @Optional()
     private readonly redisLockService?: RedisLockService,
+    @Optional()
+    @Inject(forwardRef(() => PaymentsService))
+    private readonly paymentsService?: PaymentsService,
   ) {
     this.idGen = idGenerator ?? new IdGeneratorService();
+  }
+
+  async autoAssignStaffForPaidBooking(bookingId: string, manager: any): Promise<void> {
+    const booking = await manager.getRepository(Booking).findOne({
+      where: { id: bookingId },
+    });
+    if (!booking) return;
+
+    const bookingRoom = await manager.getRepository(BookingRoom).findOne({
+      where: { bookingId },
+    });
+    if (!bookingRoom) return;
+
+    const room = await manager.getRepository(Room).findOne({
+      where: { id: bookingRoom.roomId },
+    });
+    if (!room) return;
+
+    await this.autoAssignHotelStaffInternal(booking, room, manager);
+  }
+
+  async retryPayment(bookingId: string, userId: string, clientIp = '127.0.0.1') {
+    if (!this.paymentsService) {
+      throw new BadRequestException('Dịch vụ thanh toán chưa sẵn sàng.');
+    }
+    return this.paymentsService.retryPayment(bookingId, userId, clientIp);
   }
 
   // ============================================================
   // TẠO BOOKING (Khách hàng)
   // ============================================================
 
-  async create(dto: CreateBookingDto) {
+  async create(dto: CreateBookingDto, clientIp = '127.0.0.1') {
+    if (this.paymentsService && dto.userId) {
+      const session = await this.paymentsService.createCheckoutSession(
+        dto,
+        dto.userId,
+        clientIp,
+      );
+      return {
+        message: 'Tạo đơn đặt phòng thành công, vui lòng tiến hành thanh toán.',
+        data: session,
+      };
+    }
+
     // ==========================================
     // 0. IDEMPOTENCY CHECK (Chống trùng lặp đơn khi mạng lag / client retry)
     // ==========================================
@@ -493,6 +540,10 @@ export class BookingsService {
         'staff.full_name AS handledByName',
         'staff.email AS handledByEmail',
         'staff.role AS handledByRole',
+        '(SELECT pt.status FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS paymentStatus',
+        '(SELECT pt.vnp_transaction_no FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS vnpTransactionNo',
+        '(SELECT pt.amount FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS paidAmount',
+        '(SELECT bh.status FROM booking_holds bh WHERE bh.booking_id = b.id LIMIT 1) AS holdStatus',
       ])
       .from('bookings', 'b')
       .leftJoin('hotels', 'h', 'h.id = b.hotel_id')
@@ -597,7 +648,13 @@ export class BookingsService {
 
         staff.full_name AS handledByName,
         staff.email AS handledByEmail,
-        staff.role AS handledByRole
+        staff.role AS handledByRole,
+
+        (SELECT pt.status FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS paymentStatus,
+        (SELECT pt.vnp_transaction_no FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS vnpTransactionNo,
+        (SELECT pt.amount FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS paidAmount,
+        (SELECT pt.paid_at FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS paidAt,
+        (SELECT bh.status FROM booking_holds bh WHERE bh.booking_id = b.id LIMIT 1) AS holdStatus
 
       FROM bookings b
       LEFT JOIN booking_rooms br ON br.booking_id = b.id
@@ -1028,7 +1085,13 @@ export class BookingsService {
         r.cover_image_url AS roomImage,
 
         h.name AS hotelName,
-        h.address AS hotelAddress
+        h.address AS hotelAddress,
+
+        (SELECT pt.status FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS paymentStatus,
+        (SELECT pt.vnp_transaction_no FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS vnpTransactionNo,
+        (SELECT pt.gateway_expire_at FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS gatewayExpireAt,
+        (SELECT bh.hold_expires_at FROM booking_holds bh WHERE bh.booking_id = b.id LIMIT 1) AS holdExpiresAt,
+        (SELECT bh.status FROM booking_holds bh WHERE bh.booking_id = b.id LIMIT 1) AS holdStatus
 
       FROM bookings b
 
@@ -1062,21 +1125,36 @@ export class BookingsService {
     const [bookingStats] = await this.dataSource.query(`
       SELECT
         COUNT(*) AS totalBookings,
+        SUM(CASE WHEN status = 'PAYMENT_PENDING' THEN 1 ELSE 0 END) AS paymentPendingBookings,
         SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) AS pendingBookings,
         SUM(CASE WHEN status = 'CONFIRMED' THEN 1 ELSE 0 END) AS confirmedBookings,
         SUM(CASE WHEN status = 'CHECKED_IN' THEN 1 ELSE 0 END) AS checkedInBookings,
         SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completedBookings,
         SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejectedBookings,
         SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelledBookings,
-        COALESCE(SUM(estimated_total), 0) AS totalRevenue
+        SUM(CASE WHEN status = 'PAYMENT_EXPIRED' THEN 1 ELSE 0 END) AS paymentExpiredBookings
       FROM bookings
+    `);
+
+    // Section 55: Doanh thu thực tế chỉ tính từ các giao dịch thanh toán thành công (PAID) trừ tiền hoàn (refund)
+    const [revenueStats] = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN status = 'PAID' THEN amount ELSE 0 END) - SUM(refund_amount), 0) AS totalRevenue
+      FROM payment_transactions
     `);
 
     const [monthlyStats] = await this.dataSource.query(`
       SELECT
-        COUNT(*) AS monthlyBookings,
-        COALESCE(SUM(estimated_total), 0) AS monthlyRevenue
+        COUNT(*) AS monthlyBookings
       FROM bookings
+      WHERE MONTH(created_at) = MONTH(CURRENT_DATE())
+        AND YEAR(created_at) = YEAR(CURRENT_DATE())
+    `);
+
+    const [monthlyRevenueStats] = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN status = 'PAID' THEN amount ELSE 0 END) - SUM(refund_amount), 0) AS monthlyRevenue
+      FROM payment_transactions
       WHERE MONTH(created_at) = MONTH(CURRENT_DATE())
         AND YEAR(created_at) = YEAR(CURRENT_DATE())
     `);
@@ -1099,15 +1177,17 @@ export class BookingsService {
         totalRooms: Number(roomCount?.total || 0),
         totalCustomers: Number(customerCount?.total || 0),
         totalBookings: Number(bookingStats?.totalBookings || 0),
+        paymentPendingBookings: Number(bookingStats?.paymentPendingBookings || 0),
         pendingBookings: Number(bookingStats?.pendingBookings || 0),
         confirmedBookings: Number(bookingStats?.confirmedBookings || 0),
         checkedInBookings: Number(bookingStats?.checkedInBookings || 0),
         completedBookings: Number(bookingStats?.completedBookings || 0),
         rejectedBookings: Number(bookingStats?.rejectedBookings || 0),
         cancelledBookings: Number(bookingStats?.cancelledBookings || 0),
-        totalRevenue: Number(bookingStats?.totalRevenue || 0),
+        paymentExpiredBookings: Number(bookingStats?.paymentExpiredBookings || 0),
+        totalRevenue: Number(revenueStats?.totalRevenue || 0),
         monthlyBookings: Number(monthlyStats?.monthlyBookings || 0),
-        monthlyRevenue: Number(monthlyStats?.monthlyRevenue || 0),
+        monthlyRevenue: Number(monthlyRevenueStats?.monthlyRevenue || 0),
       },
     };
   }

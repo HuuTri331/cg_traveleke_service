@@ -11,7 +11,7 @@ describe('RealtimeGateway', () => {
       user: {
         id: 'usr-999',
         sub: 'usr-999',
-        role: 'STAFF',
+        role: 'EMPLOYEE',
         hotelId: 5,
       },
     },

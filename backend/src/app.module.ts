@@ -79,6 +79,10 @@ import {
 } from './observability/observability.module';
 import { IdModule } from './common/id/id.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { InventoryModule } from './inventory/inventory.module';
+import { PaymentsModule } from './payments/payments.module';
+import { OutboxModule } from './outbox/outbox.module';
+import { WorkersModule } from './workers/workers.module';
 
 @Module({
   imports: [
@@ -135,6 +139,10 @@ import { RealtimeModule } from './realtime/realtime.module';
     ObservabilityModule,
     IdModule,
     RealtimeModule,
+    InventoryModule,
+    PaymentsModule,
+    OutboxModule,
+    WorkersModule,
   ],
 
   controllers: [AppController],

@@ -56,7 +56,7 @@ export class RealtimeGateway
           const secret =
             this.configService?.get<string>('JWT_SECRET') ||
             process.env.JWT_SECRET ||
-            'traveleke-super-secret-key-production-change-me';
+            '';
 
           const payload = this.jwtService.verify(token, { secret });
           socket.data.user = payload;
@@ -106,7 +106,7 @@ export class RealtimeGateway
     if (!data?.hotelId) return;
 
     const user = client.data?.user;
-    if (user && user.role !== 'ADMIN' && user.role !== 'STAFF') {
+    if (user && user.role !== 'ADMIN' && user.role !== 'EMPLOYEE') {
       this.logger.warn(
         `⛔ [Security] Unauthorized subscribe:hotel from socket ${client.id} (role: ${user.role})`,
       );
@@ -179,7 +179,7 @@ export class RealtimeGateway
   @SubscribeMessage('subscribe:staff')
   handleSubscribeStaff(@ConnectedSocket() client: Socket) {
     const user = client.data?.user;
-    if (user && user.role !== 'ADMIN' && user.role !== 'STAFF') {
+    if (user && user.role !== 'ADMIN' && user.role !== 'EMPLOYEE') {
       this.logger.warn(
         `⛔ [Security] Unauthorized subscribe:staff from socket ${client.id} (role: ${user.role})`,
       );
@@ -277,5 +277,85 @@ export class RealtimeGateway
     }
 
     this.logger.log(`[Realtime] Emitted system notification: ${payload.title}`);
+  }
+
+  /**
+   * Phát sự kiện thay đổi trạng thái thanh toán (PAID, FAILED, EXPIRED, etc.)
+   */
+  emitPaymentStatusChanged(payload: {
+    bookingId: string;
+    bookingCode: string;
+    status: string;
+    userId?: string;
+  }) {
+    if (!this.server) return;
+    let emitter = this.server.to('staff:notifications');
+    if (payload.userId) {
+      emitter = emitter.to(`user:${payload.userId}`);
+    }
+    emitter.emit(REALTIME_EVENTS.PAYMENT_STATUS_CHANGED, payload);
+    this.logger.log(
+      `[Realtime] Emitted ${REALTIME_EVENTS.PAYMENT_STATUS_CHANGED} for booking ${payload.bookingCode}: ${payload.status}`,
+    );
+  }
+
+  /**
+   * Phát sự kiện booking đã thanh toán và sẵn sàng để Lễ tân/Quản lý duyệt (PAYMENT PAID -> PENDING)
+   */
+  emitBookingReadyForConfirmation(payload: any) {
+    if (!this.server) return;
+    const hotelRoom = payload.hotelId ? `hotel:${payload.hotelId}` : null;
+    let emitter = this.server.to('staff:notifications');
+    if (hotelRoom) {
+      emitter = emitter.to(hotelRoom);
+    }
+    emitter.emit(REALTIME_EVENTS.BOOKING_READY_FOR_CONFIRMATION, payload);
+    this.logger.log(
+      `[Realtime] Emitted ${REALTIME_EVENTS.BOOKING_READY_FOR_CONFIRMATION} for booking ${payload.bookingCode}`,
+    );
+  }
+
+  /**
+   * Phát sự kiện booking hết hạn thanh toán
+   */
+  emitBookingPaymentExpired(payload: {
+    bookingId: string;
+    bookingCode: string;
+    userId?: string;
+    hotelId?: string;
+  }) {
+    if (!this.server) return;
+    let emitter = this.server.to('staff:notifications');
+    if (payload.hotelId) {
+      emitter = emitter.to(`hotel:${payload.hotelId}`);
+    }
+    if (payload.userId) {
+      emitter = emitter.to(`user:${payload.userId}`);
+    }
+    emitter.emit(REALTIME_EVENTS.BOOKING_PAYMENT_EXPIRED, payload);
+    this.logger.log(
+      `[Realtime] Emitted ${REALTIME_EVENTS.BOOKING_PAYMENT_EXPIRED} for booking ${payload.bookingCode}`,
+    );
+  }
+
+  /**
+   * Phát sự kiện cập nhật tồn phòng (inventory updated)
+   */
+  emitInventoryUpdated(payload: { roomId: string; hotelId: string }) {
+    if (!this.server) return;
+    this.server
+      .to(`hotel:${payload.hotelId}`)
+      .to('staff:notifications')
+      .emit(REALTIME_EVENTS.INVENTORY_UPDATED, payload);
+  }
+
+  /**
+   * Phát sự kiện trạng thái hoàn tiền
+   */
+  emitRefundStatusChanged(payload: any) {
+    if (!this.server) return;
+    this.server
+      .to('staff:notifications')
+      .emit(REALTIME_EVENTS.REFUND_STATUS_CHANGED, payload);
   }
 }

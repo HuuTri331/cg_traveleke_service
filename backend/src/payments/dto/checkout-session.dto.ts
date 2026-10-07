@@ -1,5 +1,4 @@
 import { Type } from 'class-transformer';
-
 import {
   IsDateString,
   IsEmail,
@@ -10,13 +9,13 @@ import {
   Min,
 } from 'class-validator';
 
-export class CreateBookingDto {
+export class CheckoutSessionDto {
   @IsString()
   roomId!: string;
 
   @IsOptional()
   @IsString()
-  userId?: string;
+  hotelId?: string;
 
   @IsDateString()
   checkInAt!: string;
@@ -27,12 +26,12 @@ export class CreateBookingDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  totalGuests!: number;
+  roomCount!: number;
 
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  roomCount!: number;
+  totalGuests!: number;
 
   @IsString()
   @MaxLength(150)
@@ -49,12 +48,8 @@ export class CreateBookingDto {
   @IsString()
   specialRequest?: string;
 
-  /**
-   * Idempotency Key gửi từ Client để chống Duplicate Booking khi mạng chập chờn hoặc retry
-   */
   @IsOptional()
   @IsString()
   @MaxLength(100)
   idempotencyKey?: string;
 }
-
