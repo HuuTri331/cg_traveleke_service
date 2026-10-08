@@ -10,6 +10,7 @@ import { HotelStaff } from '../hotel-staff/entities/hotel-staff.entity';
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
 import { BookingAccessService } from './services/booking-access.service';
+import { RoomAvailabilityService } from './room-availability.service';
 import { InventoryModule } from '../inventory/inventory.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { OutboxModule } from '../outbox/outbox.module';
@@ -30,7 +31,7 @@ import { RedisModule } from '../redis/redis.module';
     RedisModule,
   ],
   controllers: [BookingsController],
-  providers: [BookingsService, BookingAccessService],
-  exports: [BookingsService, BookingAccessService],
+  providers: [BookingsService, BookingAccessService, RoomAvailabilityService],
+  exports: [BookingsService, BookingAccessService, RoomAvailabilityService],
 })
 export class BookingsModule {}
