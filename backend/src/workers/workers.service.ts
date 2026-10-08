@@ -45,9 +45,8 @@ export class WorkersService {
     this.isProcessingOutbox = true;
 
     try {
-      const events = await this.outboxService.fetchPendingEvents(20);
+      const events = await this.outboxService.claimPendingEvents('WorkerInstance-1', 20);
       for (const event of events) {
-        await this.outboxService.markProcessing(event.id);
         try {
           const payload = event.payload;
 
@@ -98,22 +97,25 @@ export class WorkersService {
               });
               break;
 
+            case 'refund.requested':
             case 'refund.process':
               const refundRes = await this.vnpayService.refund({
                 txnRef: payload.txnRef,
                 amount: Number(payload.amount),
                 transactionNo: payload.transactionNo,
-                transactionDate: new Date(payload.transactionDate),
+                transactionDate: new Date(payload.transactionDate || Date.now()),
                 createBy: 'AutoRefundWorker',
               });
 
               if (refundRes?.vnp_ResponseCode === '00') {
-                await this.dataSource
-                  .getRepository(PaymentTransaction)
-                  .update(payload.paymentId, {
-                    status: PaymentTransactionStatus.REFUNDED,
-                    refundedAt: new Date(),
-                  });
+                if (payload.paymentId) {
+                  await this.dataSource
+                    .getRepository(PaymentTransaction)
+                    .update(payload.paymentId, {
+                      status: PaymentTransactionStatus.REFUNDED,
+                      refundedAt: new Date(),
+                    });
+                }
                 this.realtimeGateway.emitRefundStatusChanged({
                   paymentId: payload.paymentId,
                   status: 'REFUNDED',

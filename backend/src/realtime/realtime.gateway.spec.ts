@@ -40,20 +40,20 @@ describe('RealtimeGateway', () => {
   });
 
   describe('room subscriptions', () => {
-    it('should join hotel room on subscribe:hotel if authorized staff', () => {
-      const result = gateway.handleSubscribeHotel(mockSocket as any, {
+    it('should join hotel room on subscribe:hotel if authorized staff', async () => {
+      const result = await gateway.handleSubscribeHotel(mockSocket as any, {
         hotelId: 5,
       });
       expect(mockSocket.join).toHaveBeenCalledWith('hotel:5');
       expect(result).toEqual({ event: 'subscribed', room: 'hotel:5' });
     });
 
-    it('should reject subscribe:hotel if user is customer', () => {
+    it('should reject subscribe:hotel if user is customer', async () => {
       const customerSocket = {
         ...mockSocket,
         data: { user: { role: 'CUSTOMER', sub: 'cust-1' } },
       };
-      const result = gateway.handleSubscribeHotel(customerSocket as any, {
+      const result = await gateway.handleSubscribeHotel(customerSocket as any, {
         hotelId: 5,
       });
       expect(customerSocket.join).not.toHaveBeenCalled();

@@ -132,8 +132,8 @@ export class BookingsController {
   // ================================
   @Get(':id')
   @UseGuards(JwtAuthGuard)
-  findOne(@Param('id') id: string) {
-    return this.bookingsService.findOne(id);
+  findOne(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.bookingsService.findOne(id, user);
   }
 
   // ================================
@@ -148,7 +148,7 @@ export class BookingsController {
     @Body() dto: UpdateBookingStatusDto,
     @CurrentUser() user: User,
   ) {
-    const result = await this.bookingsService.updateStatus(id, dto, user.id);
+    const result = await this.bookingsService.updateStatus(id, dto, user.id, user);
     return {
       success: true,
       ...result,

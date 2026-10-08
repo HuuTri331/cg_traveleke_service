@@ -31,6 +31,9 @@ import {
   runWithDeadlockRetry,
   deterministicSort,
 } from '../common/database/transaction-retry.helper';
+import { BookingAccessService } from './services/booking-access.service';
+import { InventoryService } from '../inventory/inventory.service';
+import { User } from '../users/entities/user.entity';
 
 /**
  * State machine: Các chuyển trạng thái hợp lệ cho booking.
@@ -38,7 +41,7 @@ import {
  */
 const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
   PAYMENT_PENDING: ['PENDING', 'PAYMENT_EXPIRED', 'CANCELLED', 'PAYMENT_REVIEW'],
-  PENDING: ['CONFIRMED', 'REJECTED', 'CANCELLED'],
+  PENDING: ['CONFIRMED', 'CANCELLED'],
   CONFIRMED: ['CHECKED_IN', 'CANCELLED'],
   CHECKED_IN: ['COMPLETED'],
   PAYMENT_REVIEW: ['PENDING', 'CANCELLED'],
@@ -79,6 +82,10 @@ export class BookingsService {
     @Optional()
     @Inject(forwardRef(() => PaymentsService))
     private readonly paymentsService?: PaymentsService,
+    @Optional()
+    private readonly bookingAccessService?: BookingAccessService,
+    @Optional()
+    private readonly inventoryService?: InventoryService,
   ) {
     this.idGen = idGenerator ?? new IdGeneratorService();
   }
@@ -601,7 +608,7 @@ export class BookingsService {
   // CHI TIẾT BOOKING
   // ============================================================
 
-  async findOne(id: string) {
+  async findOne(id: string, user?: User) {
     const bookings = await this.dataSource.query(
       `
       SELECT
@@ -671,6 +678,16 @@ export class BookingsService {
       throw new NotFoundException('Không tìm thấy booking.');
     }
 
+    const bookingData = bookings[0];
+
+    // Resource authorization check
+    if (user && this.bookingAccessService) {
+      await this.bookingAccessService.assertCanView(
+        { userId: bookingData.userId, hotelId: bookingData.hotelId },
+        user,
+      );
+    }
+
     // Lấy lịch sử trạng thái
     const statusLogs = await this.dataSource.query(
       `
@@ -689,7 +706,6 @@ export class BookingsService {
       [id],
     );
 
-    const bookingData = bookings[0];
     const canReassign =
       bookingData.status !== BookingStatus.CHECKED_IN &&
       bookingData.status !== BookingStatus.COMPLETED &&
@@ -713,6 +729,7 @@ export class BookingsService {
     bookingId: string,
     dto: UpdateBookingStatusDto,
     changedByUserId: string,
+    user?: User,
   ) {
     const result = await runWithDeadlockRetry(
       this.dataSource,
@@ -729,8 +746,19 @@ export class BookingsService {
           throw new NotFoundException('Không tìm thấy booking.');
         }
 
+        if (user && this.bookingAccessService) {
+          await this.bookingAccessService.assertCanManage(booking, user);
+        }
+
         const currentStatus = booking.status;
         const newStatus = dto.status;
+
+        // PAID booking cannot be rejected directly (Section 6)
+        if (currentStatus === BookingStatus.PENDING && newStatus === 'REJECTED') {
+          throw new BadRequestException(
+            'Đơn hàng đã thanh toán không thể từ chối trực tiếp. Vui lòng sử dụng quy trình Yêu cầu Hủy / Hoàn tiền (Cancellation Request).',
+          );
+        }
 
         // Kiểm tra state machine
         const allowedTransitions = VALID_STATUS_TRANSITIONS[currentStatus] ?? [];
@@ -742,33 +770,16 @@ export class BookingsService {
         }
 
         // ==========================================
-        // HOÀN TRẢ TỒN KHO PHÒNG (INVENTORY REFUND) ATOMIC
-        // Khi hủy hoặc từ chối đơn, hoàn lại số phòng khả dụng vào Database
+        // HOÀN TRẢ TỒN KHO PHÒNG (COMMITTED -> RELEASED) (Section 5)
+        // Không dùng rooms.available_rooms global
         // ==========================================
-        if (newStatus === 'CANCELLED' || newStatus === 'REJECTED') {
-          const bookingRooms = await bookingRoomRepo.find({
-            where: { bookingId: booking.id },
-          });
-
-          // Áp dụng Deterministic Lock Ordering: Sort danh sách Room ID theo thứ tự cố định
-          // nhằm loại bỏ hoàn toàn chu trình Deadlock giữa các worker hủy đơn đồng thời
-          const sortedRooms = deterministicSort(
-            bookingRooms,
-            (br) => br.roomId,
-          );
-
-          for (const br of sortedRooms) {
-            await manager
-              .createQueryBuilder()
-              .update(Room)
-              .set({
-                availableRooms: () => 'available_rooms + :qty',
-              })
-              .where('id = :roomId', {
-                roomId: br.roomId,
-                qty: br.quantity,
-              })
-              .execute();
+        if (newStatus === 'CANCELLED') {
+          if (this.inventoryService) {
+            await this.inventoryService.releaseCommittedHold(
+              booking.id,
+              dto.note || 'CANCELLED',
+              manager,
+            );
           }
         }
 

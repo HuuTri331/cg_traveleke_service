@@ -83,6 +83,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { PaymentsModule } from './payments/payments.module';
 import { OutboxModule } from './outbox/outbox.module';
 import { WorkersModule } from './workers/workers.module';
+import { CancellationsModule } from './cancellations/cancellations.module';
 
 @Module({
   imports: [
@@ -143,6 +144,7 @@ import { WorkersModule } from './workers/workers.module';
     PaymentsModule,
     OutboxModule,
     WorkersModule,
+    CancellationsModule,
   ],
 
   controllers: [AppController],

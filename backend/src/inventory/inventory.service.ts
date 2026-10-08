@@ -30,6 +30,8 @@ export class InventoryService {
   /**
    * Tính toán số phòng đã bị chiếm dụng (occupied) trong khoảng thời gian [checkInAt, checkOutAt)
    * Occupied = tổng quantity của COMMITTED holds + active HELD holds (hold_expires_at > NOW())
+   * Overlap condition chuẩn:
+   * existing.checkInAt < requested.checkOutAt AND existing.checkOutAt > requested.checkInAt
    */
   async getOccupiedRooms(
     roomId: string,
@@ -93,10 +95,10 @@ export class InventoryService {
   }
 
   /**
-   * Giữ chỗ tạm thời (HOLD) theo khoảng thời gian lưu trú [checkInAt, checkOutAt)
-   * Sử dụng Redis Lock + MySQL Pessimistic Row Lock (SELECT FOR UPDATE) + Deadlock Retry
+   * Tạo bản ghi giữ chỗ ban đầu (duy nhất 1 row cho 1 booking)
+   * Sử dụng Redis Lock + MySQL Pessimistic Row Lock (SELECT FOR UPDATE)
    */
-  async reserveHold(
+  async createInitialHold(
     params: {
       bookingId: string;
       roomId: string;
@@ -154,23 +156,41 @@ export class InventoryService {
         );
       }
 
-      // 3. Create BookingHold
+      // 3. Create single BookingHold
       const holdExpiresAt = new Date(Date.now() + holdMinutes * 60 * 1000);
       const holdRepo = manager.getRepository(BookingHold);
-      const hold = holdRepo.create({
-        bookingId,
-        roomId,
-        quantity,
-        checkInAt,
-        checkOutAt,
-        status: BookingHoldStatus.HELD,
-        holdExpiresAt,
+
+      // Check existing row if any to respect unique constraint
+      let hold = await holdRepo.findOne({
+        where: { bookingId },
+        lock: { mode: 'pessimistic_write' },
       });
+
+      if (!hold) {
+        hold = holdRepo.create({
+          bookingId,
+          roomId,
+          quantity,
+          checkInAt,
+          checkOutAt,
+          status: BookingHoldStatus.HELD,
+          holdExpiresAt,
+        });
+      } else {
+        hold.roomId = roomId;
+        hold.quantity = quantity;
+        hold.checkInAt = checkInAt;
+        hold.checkOutAt = checkOutAt;
+        hold.status = BookingHoldStatus.HELD;
+        hold.holdExpiresAt = holdExpiresAt;
+        hold.releasedAt = null;
+        hold.releaseReason = null;
+        hold.committedAt = null;
+      }
 
       return await holdRepo.save(hold);
     };
 
-    // Use Redis lock for contention reduction if available, else run directly
     const lockKey = `inventory:room:${roomId}`;
     if (this.redisLockService) {
       return await this.redisLockService.withLock(lockKey, 5000, async () => {
@@ -192,6 +212,100 @@ export class InventoryService {
   }
 
   /**
+   * Giữ chỗ tương thích (reserveHold delegates to createInitialHold)
+   */
+  async reserveHold(
+    params: {
+      bookingId: string;
+      roomId: string;
+      quantity: number;
+      checkInAt: Date;
+      checkOutAt: Date;
+      holdMinutes?: number;
+    },
+    externalManager?: EntityManager,
+  ): Promise<BookingHold> {
+    return this.createInitialHold(params, externalManager);
+  }
+
+  /**
+   * Khóa và lấy bản ghi hold với pessimistic_write
+   */
+  async getHoldForUpdate(
+    bookingId: string,
+    manager: EntityManager,
+  ): Promise<BookingHold | null> {
+    const repo = manager.getRepository(BookingHold);
+    return await repo.findOne({
+      where: { bookingId },
+      lock: { mode: 'pessimistic_write' },
+    });
+  }
+
+  /**
+   * Tái sử dụng hoặc reacquire lại hold khi người dùng bấm thanh toán lại (Retry)
+   * Tuyệt đối KHÔNG INSERT row mới để đảm bảo 1 booking chỉ có 1 hold row duy nhất.
+   */
+  async reuseOrReacquireHold(
+    bookingId: string,
+    manager: EntityManager,
+  ): Promise<BookingHold> {
+    const repo = manager.getRepository(BookingHold);
+
+    const hold = await repo.findOne({
+      where: { bookingId },
+      lock: { mode: 'pessimistic_write' },
+    });
+
+    if (!hold) {
+      throw new NotFoundException('Không tìm thấy thông tin giữ phòng cho đơn này.');
+    }
+
+    const now = new Date();
+
+    // 1. Đang HELD và còn hạn -> Tái sử dụng hold hiện tại
+    if (hold.status === BookingHoldStatus.HELD && hold.holdExpiresAt > now) {
+      return hold;
+    }
+
+    // 2. Đã COMMITTED -> Đơn đã thanh toán, không cho retry
+    if (hold.status === BookingHoldStatus.COMMITTED) {
+      return hold;
+    }
+
+    // 3. RELEASED hoặc EXPIRED -> Kiểm tra số phòng trống và reacquire trên CÙNG 1 ROW
+    const room = await manager.getRepository(Room).findOne({
+      where: { id: hold.roomId },
+      lock: { mode: 'pessimistic_write' },
+    });
+
+    if (!room || room.status !== RoomStatus.AVAILABLE) {
+      throw new ConflictException('Loại phòng này hiện không khả dụng để đặt.');
+    }
+
+    const occupied = await this.getOccupiedRooms(
+      hold.roomId,
+      hold.checkInAt,
+      hold.checkOutAt,
+      manager,
+    );
+
+    if (room.totalRooms - occupied < hold.quantity) {
+      throw new ConflictException(
+        'Loại phòng này vừa hết trong thời gian bạn chọn.',
+      );
+    }
+
+    hold.status = BookingHoldStatus.HELD;
+    hold.holdExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    hold.releasedAt = null;
+    hold.releaseReason = null;
+    hold.committedAt = null;
+
+    return await repo.save(hold);
+  }
+
+  /**
    * Commit hold khi payment thành công: HELD -> COMMITTED
    */
   async commitHold(
@@ -201,6 +315,7 @@ export class InventoryService {
     const holdRepo = manager.getRepository(BookingHold);
     const hold = await holdRepo.findOne({
       where: { bookingId, status: BookingHoldStatus.HELD },
+      lock: { mode: 'pessimistic_write' },
     });
 
     if (!hold) {
@@ -213,7 +328,7 @@ export class InventoryService {
   }
 
   /**
-   * Giải phóng hold: HELD -> RELEASED
+   * Giải phóng hold: HELD -> RELEASED (hết hạn / timeout)
    */
   async releaseHold(
     bookingId: string,
@@ -223,6 +338,7 @@ export class InventoryService {
     const holdRepo = manager.getRepository(BookingHold);
     const hold = await holdRepo.findOne({
       where: { bookingId, status: BookingHoldStatus.HELD },
+      lock: { mode: 'pessimistic_write' },
     });
 
     if (!hold) {
@@ -236,7 +352,32 @@ export class InventoryService {
   }
 
   /**
-   * Thử re-acquire inventory trong tình huống Late IPN sau khi hold đã release (Section 33)
+   * Giải phóng hold đã COMMITTED khi đơn đặt phòng được Hủy hợp lệ (Cancellation Approved)
+   * COMMITTED -> RELEASED
+   */
+  async releaseCommittedHold(
+    bookingId: string,
+    reason: string,
+    manager: EntityManager,
+  ): Promise<BookingHold | null> {
+    const holdRepo = manager.getRepository(BookingHold);
+    const hold = await holdRepo.findOne({
+      where: { bookingId, status: BookingHoldStatus.COMMITTED },
+      lock: { mode: 'pessimistic_write' },
+    });
+
+    if (!hold) {
+      return null;
+    }
+
+    hold.status = BookingHoldStatus.RELEASED;
+    hold.releasedAt = new Date();
+    hold.releaseReason = reason;
+    return await holdRepo.save(hold);
+  }
+
+  /**
+   * Thử re-acquire inventory trong tình huống Late IPN sau khi hold đã release
    * Tuyệt đối không overbook!
    */
   async reacquireInventory(
@@ -246,6 +387,7 @@ export class InventoryService {
     const holdRepo = manager.getRepository(BookingHold);
     const hold = await holdRepo.findOne({
       where: { bookingId },
+      lock: { mode: 'pessimistic_write' },
     });
 
     if (!hold) {

@@ -12,6 +12,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
+import { DataSource } from 'typeorm';
 import {
   REALTIME_EVENTS,
   BookingCreatedPayload,
@@ -38,6 +39,7 @@ export class RealtimeGateway
   constructor(
     @Optional() private readonly jwtService?: JwtService,
     @Optional() private readonly configService?: ConfigService,
+    @Optional() private readonly dataSource?: DataSource,
   ) {}
 
   afterInit(server: Server) {
@@ -99,18 +101,37 @@ export class RealtimeGateway
    * Channel format: hotel:<hotelId>
    */
   @SubscribeMessage('subscribe:hotel')
-  handleSubscribeHotel(
+  async handleSubscribeHotel(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { hotelId: number | string },
   ) {
     if (!data?.hotelId) return;
 
     const user = client.data?.user;
-    if (user && user.role !== 'ADMIN' && user.role !== 'EMPLOYEE') {
-      this.logger.warn(
-        `⛔ [Security] Unauthorized subscribe:hotel from socket ${client.id} (role: ${user.role})`,
-      );
+    if (!user) {
+      this.logger.warn(`⛔ [Security] Anonymous subscribe:hotel denied from socket ${client.id}`);
+      return { event: 'error', message: 'Unauthorized: Authentication required' };
+    }
+
+    if (user.role === 'CUSTOMER') {
+      this.logger.warn(`⛔ [Security] Customer ${user.sub || user.id} tried to subscribe to hotel:${data.hotelId}`);
       return { event: 'error', message: 'Forbidden: Staff access required' };
+    }
+
+    if (user.role === 'EMPLOYEE') {
+      // Section 20: Phải có hotel_staff ACTIVE đúng hotel
+      if (this.dataSource) {
+        const staff = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [data.hotelId, user.sub || user.id],
+        );
+        if (!staff || staff.length === 0) {
+          this.logger.warn(
+            `⛔ [Security] Employee ${user.sub || user.id} is not active staff at hotel ${data.hotelId}`,
+          );
+          return { event: 'error', message: 'Forbidden: You do not belong to this hotel' };
+        }
+      }
     }
 
     const room = `hotel:${data.hotelId}`;
@@ -143,11 +164,16 @@ export class RealtimeGateway
     if (!data?.userId) return;
 
     const user = client.data?.user;
+    if (!user) {
+      this.logger.warn(`⛔ [Security] Anonymous subscribe:user denied from socket ${client.id}`);
+      return { event: 'error', message: 'Unauthorized: Authentication required' };
+    }
+
     const targetUserId = String(data.userId);
     const authUserId = String(user?.sub || user?.id || '');
 
-    // Nếu đã đăng nhập và không phải ADMIN, không được phép nghe lén phòng của user khác
-    if (user && user.role !== 'ADMIN' && authUserId && targetUserId !== authUserId) {
+    // Nếu không phải ADMIN, không được phép nghe lén phòng của user khác
+    if (user.role !== 'ADMIN' && authUserId && targetUserId !== authUserId) {
       this.logger.warn(
         `⛔ [Security] User ${authUserId} attempted to spy on room of user ${targetUserId}`,
       );
@@ -179,7 +205,12 @@ export class RealtimeGateway
   @SubscribeMessage('subscribe:staff')
   handleSubscribeStaff(@ConnectedSocket() client: Socket) {
     const user = client.data?.user;
-    if (user && user.role !== 'ADMIN' && user.role !== 'EMPLOYEE') {
+    if (!user) {
+      this.logger.warn(`⛔ [Security] Anonymous subscribe:staff denied from socket ${client.id}`);
+      return { event: 'error', message: 'Unauthorized: Authentication required' };
+    }
+
+    if (user.role !== 'ADMIN' && user.role !== 'EMPLOYEE') {
       this.logger.warn(
         `⛔ [Security] Unauthorized subscribe:staff from socket ${client.id} (role: ${user.role})`,
       );

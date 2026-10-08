@@ -84,8 +84,9 @@ export class VnpayService {
     createDate?: Date;
   }): { paymentUrl: string; paymentCutoffAt: Date; createDate: Date } {
     const createDate = params.createDate || new Date();
-    // Section 27: Customer payment cutoff = 13 phút 55 giây (835 giây)
-    const cutoffSeconds = Math.floor((params.cutoffMinutes ?? 13.916) * 60);
+    // Section 13: Customer payment cutoff = 13 phút 55 giây (835 giây)
+    const PAYMENT_CUTOFF_SECONDS = 13 * 60 + 55; // 835
+    const cutoffSeconds = params.cutoffMinutes ? Math.floor(params.cutoffMinutes * 60) : PAYMENT_CUTOFF_SECONDS;
     const paymentCutoffAt = new Date(createDate.getTime() + cutoffSeconds * 1000);
 
     const vnpCreateDate = this.formatDateGmt7(createDate);

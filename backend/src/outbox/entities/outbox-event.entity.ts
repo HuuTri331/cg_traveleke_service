@@ -87,6 +87,21 @@ export class OutboxEvent {
   })
   processedAt!: Date | null;
 
+  @Column({
+    name: 'locked_at',
+    type: 'datetime',
+    nullable: true,
+  })
+  lockedAt!: Date | null;
+
+  @Column({
+    name: 'locked_by',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+  })
+  lockedBy!: string | null;
+
   @CreateDateColumn({
     name: 'created_at',
     type: 'datetime',

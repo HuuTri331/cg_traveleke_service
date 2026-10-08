@@ -25,6 +25,7 @@ export class BookingHold {
     name: 'booking_id',
     type: 'bigint',
     unsigned: true,
+    unique: true,
   })
   bookingId!: string;
 

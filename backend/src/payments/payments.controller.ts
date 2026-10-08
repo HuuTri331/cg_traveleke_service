@@ -70,8 +70,12 @@ export class PaymentsController {
    * GET /payments/status-by-ref/:txnRef
    */
   @Get('status-by-ref/:txnRef')
-  getPaymentStatusByTxnRef(@Param('txnRef') txnRef: string) {
-    return this.paymentsService.getPaymentStatusByTxnRef(txnRef);
+  @UseGuards(JwtAuthGuard)
+  getPaymentStatusByTxnRef(
+    @Param('txnRef') txnRef: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.paymentsService.getPaymentStatusByTxnRef(txnRef, user);
   }
 
   /**

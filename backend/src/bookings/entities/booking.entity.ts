@@ -183,6 +183,23 @@ export class Booking {
   })
   cancelledAt!: Date | null;
 
+  @Column({
+    name: 'checkout_idempotency_key',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    unique: true,
+  })
+  checkoutIdempotencyKey!: string | null;
+
+  @Column({
+    name: 'checkout_request_hash',
+    type: 'char',
+    length: 64,
+    nullable: true,
+  })
+  checkoutRequestHash!: string | null;
+
   @CreateDateColumn({
     name: 'created_at',
     type: 'datetime',
