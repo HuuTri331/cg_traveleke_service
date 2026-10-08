@@ -1,19 +1,59 @@
 -- ====================================================================================================
 -- TRAVELEKE SYSTEM - TÀI LIỆU CƠ SỞ DỮ LIỆU CHUẨN HOÀN CHỈNH TOÀN DIỆN (CHUYÊN ĐỀ TỐT NGHIỆP)
 -- ====================================================================================================
--- TỆP SQL HỢP NHẤT TOÀN DIỆN VÀ DUY NHẤT CHO TOÀN BỘ HỆ THỐNG TRAVELEKE:
---   1. chuyendetotnghiep.sql (Cốt lõi Phase 1)
---   2. database/bootstrap/phase-2-unified-complete.sql (Phân quyền RBAC, Dịch vụ, Kỹ năng nhân viên)
---   3. database/migration_vnpay_inventory_outbox.sql (VNPAY, Giữ chỗ Booking Holds, Transactional Outbox)
---   4. database/migration_vnpay_inventory_cancellation_fix.sql (Idempotency, Outbox Lock, Yêu cầu hủy đơn)
---   5. Gợi ý cá nhân hóa AI (hotel_tracking_events) & Token Rotation an toàn (refresh_tokens)
+-- TỆP SQL HỢP NHẤT TOÀN DIỆN VÀ DUY NHẤT CHO TOÀN BỘ DỰ ÁN TRAVELEKE:
+--   - Cốt lõi bản cũ: chuyendetotnghiep.sql
+--   - Tính năng thanh toán & outbox: migration_vnpay_inventory_outbox.sql
+--   - Sửa lỗi giữ chỗ & hủy phòng: migration_vnpay_inventory_cancellation_fix.sql
+--   - Mở rộng phân quyền & quản lý: phase-2-unified-complete.sql
 --
--- TỔNG CỘNG: 34 BẢNG HOÀN CHỈNH 100% CÙNG BỘ DỮ LIỆU MẪU MẶC ĐỊNH (MASTER SEEDS DATA)
---
--- HƯỚNG DẪN SỬ DỤNG:
---   - Chạy mới tinh từ đầu (Clean Install): Mở file này trong MySQL Workbench / DBeaver / Navicat / CLI và thực thi toàn bộ.
---   - Nâng cấp database đang chạy: Toàn bộ cấu trúc dùng IF NOT EXISTS và cuối file có Procedure tự động
---     bổ sung các cột mới mà không làm mất hoặc gián đoạn dữ liệu hiện có.
+-- TỔNG CỘNG: 34 BẢNG DỮ LIỆU ĐẦY ĐỦ 100% + MASTER SEED DATA + TỰ ĐỘNG ĐỒNG BỘ CHO DATABASE CŨ
+-- ====================================================================================================
+-- MỤC LỤC DANH SÁCH 34 BẢNG ĐÃ ĐƯỢC HỢP NHẤT:
+--   PHẦN 1: HỆ THỐNG PHÂN QUYỀN (RBAC), TÀI KHOẢN & PHIÊN ĐĂNG NHẬP
+--      1. roles                        - Vai trò người dùng (ADMIN, EMPLOYEE, CUSTOMER)
+--      2. permissions                  - 24 quyền hạn chi tiết các chức năng
+--      3. role_permissions             - Bảng liên kết vai trò - quyền hạn
+--      4. users                        - Tài khoản khách hàng, nhân viên, quản trị viên
+--      5. users_roles                  - Bảng liên kết tài khoản - vai trò
+--      6. refresh_tokens               - Quản lý xoay vòng opaque refresh token, chống lộ phiên
+--   PHẦN 2: ĐỊA DANH, LOẠI HÌNH LƯU TRÚ & CƠ SỞ KHÁCH SẠN
+--      7. locations                    - Quốc gia, Tỉnh/Thành phố phân cấp cha - con
+--      8. hotel_types                  - Khách sạn, Resort, Villa, Homestay, Hostel
+--      9. hotels                       - Chi tiết cơ sở lưu trú, xếp hạng sao, tọa độ, giờ nhận/trả phòng
+--     10. hotel_images                 - Thư viện hình ảnh khách sạn (kèm cờ ảnh đại diện chính)
+--     11. hotel_staff                  - Phân công nhân sự phụ trách cơ sở khách sạn
+--   PHẦN 3: QUẢN LÝ PHÒNG NGHỈ & THƯ VIỆN HÌNH ẢNH PHÒNG
+--     12. rooms                        - Hạng phòng, giá theo đêm, số lượng thực tế & khả dụng
+--     13. room_images                  - Bộ sưu tập ảnh chi tiết cho từng loại phòng
+--   PHẦN 4: KẾ HOẠCH LỘ TRÌNH & ĐƠN ĐẶT PHÒNG (BOOKINGS)
+--     14. trip_plans                   - Kế hoạch du lịch cá nhân, điểm đi, điểm đến, ngân sách
+--     15. bookings                     - Đơn đặt phòng (kèm checkout_idempotency_key, hash, 9 trạng thái)
+--     16. booking_rooms                - Chi tiết các hạng phòng và đơn giá trong đơn đặt
+--     17. booking_status_logs          - Lịch sử biến động trạng thái đơn đặt phòng
+--   PHẦN 5: GIỮ CHỖ TẠM THỜI, THANH TOÁN VNPAY, OUTBOX EVENTS & HỦY PHÒNG
+--     18. booking_holds                - Giữ chỗ tạm thời theo khoảng [check_in_at, check_out_at) (Unique hold)
+--     19. payment_transactions         - Lịch sử giao dịch thanh toán VNPAY (txn_ref, attempt_no, IPN, refund)
+--     20. outbox_events                - Transactional Outbox gửi email/socket bất đồng bộ (locked_at, locked_by)
+--     21. booking_cancellation_requests - Đơn yêu cầu hủy phòng & quy trình duyệt hoàn tiền
+--   PHẦN 6: DỊCH VỤ PHÒNG, GỌI DỊCH VỤ & NHẬT KÝ ĐỀN BÙ SỰ CỐ
+--     22. service_categories           - 9 danh mục phân loại dịch vụ phòng
+--     23. room_services                - Bảng giá dịch vụ phòng (Miễn phí & Add-on có phí)
+--     24. room_service_assignments     - Gán dịch vụ phòng đi kèm theo loại phòng
+--     25. service_requests             - Yêu cầu gọi dịch vụ phát sinh kèm SLA cam kết
+--     26. booking_service_snapshots    - Bản lưu chụp trạng thái dịch vụ tại thời điểm chốt đơn
+--     27. service_recovery_log         - Nhật ký đền bù và xử lý khiếu nại dịch vụ
+--   PHẦN 7: MA TRẬN NĂNG LỰC, KỸ NĂNG NHÂN VIÊN & ĐIỀU PHỐI NHIỆM VỤ
+--     28. skill_categories             - Tiêu chuẩn kỹ năng nghiệp vụ khách sạn
+--     29. staff_skills                 - Hồ sơ năng lực chuyên môn, chứng chỉ và thâm niên
+--     30. staff_language_skills        - Năng lực ngoại ngữ và chứng chỉ quốc tế
+--     31. staff_assignments            - Lịch sử phân công giao việc theo yêu cầu dịch vụ
+--     32. staff_eligibility_rules      - Bộ quy tắc tự động phân công nhân sự thông minh
+--   PHẦN 8: NHẬT KÝ HỆ THỐNG & THEO DÕI HÀNH VI CHO AI
+--     33. audit_logs                   - Nhật ký kiểm toán thao tác hệ thống
+--     34. hotel_tracking_events        - Theo dõi sự kiện xem chi tiết/tìm kiếm để gợi ý AI
+--   PHẦN 9: BỘ DỮ LIỆU MẪU MẶC ĐỊNH CHUẨN (MASTER SEEDS DATA - NẠP SẴN CHẠY NGAY)
+--   PHẦN 10: TỰ ĐỘNG ĐỒNG BỘ CỘT CHO DATABASE CŨ (MIGRATION COMPATIBILITY CHECK)
 -- ====================================================================================================
 
 -- Tùy chọn xóa và khởi tạo lại database sạch sẽ nếu người dùng có quyền DROP DATABASE:
@@ -40,114 +80,114 @@ SET FOREIGN_KEY_CHECKS = 0;
 -- Bảng: ROLES - Danh mục vai trò người dùng (ADMIN, EMPLOYEE, CUSTOMER)
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `roles` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `name` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `display_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `is_system` tinyint(1) NOT NULL DEFAULT '0',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_roles_name` (`name`)
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `name` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `display_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+    `description` text COLLATE utf8mb4_unicode_ci,
+    `is_system` tinyint(1) NOT NULL DEFAULT '0',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_roles_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: PERMISSIONS - Danh mục quyền hạn chi tiết theo module chức năng
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `permissions` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `module` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `action` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_permissions_name` (`name`),
-  KEY `idx_permissions_module` (`module`)
-) ENGINE=InnoDB AUTO_INCREMENT=165 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `module` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `action` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `description` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_permissions_name` (`name`),
+    KEY `idx_permissions_module` (`module`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: ROLE_PERMISSIONS - Bảng liên kết vai trò và quyền hạn được cấp
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `role_permissions` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `role_id` bigint unsigned NOT NULL,
-  `permission_id` bigint unsigned NOT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_role_permissions` (`role_id`,`permission_id`),
-  KEY `fk_rp_permission` (`permission_id`),
-  CONSTRAINT `fk_rp_permission` FOREIGN KEY (`permission_id`) REFERENCES `permissions` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_rp_role` FOREIGN KEY (`role_id`) REFERENCES `roles` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=86 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `role_id` bigint unsigned NOT NULL,
+    `permission_id` bigint unsigned NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_role_permissions` (`role_id`,`permission_id`),
+    KEY `fk_rp_permission` (`permission_id`),
+    CONSTRAINT `fk_rp_permission` FOREIGN KEY (`permission_id`) REFERENCES `permissions` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_rp_role` FOREIGN KEY (`role_id`) REFERENCES `roles` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: USERS - Tài khoản khách hàng, nhân viên và quản trị viên
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `users` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `full_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `phone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `address` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `password` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `avatar_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `date_of_birth` date DEFAULT NULL,
-  `gender` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `role` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CUSTOMER',
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `email_verified_at` datetime DEFAULT NULL,
-  `last_login_at` datetime DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `deleted_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_users_email` (`email`),
-  UNIQUE KEY `uq_users_phone` (`phone`),
-  KEY `idx_users_status` (`status`),
-  CONSTRAINT `chk_users_gender` CHECK (((`gender` is null) or (`gender` in (_utf8mb4'MALE',_utf8mb4'FEMALE',_utf8mb4'OTHER')))),
-  CONSTRAINT `chk_users_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'BLOCKED',_utf8mb4'INACTIVE')))
-) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `full_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `phone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `address` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `password` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `avatar_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `date_of_birth` date DEFAULT NULL,
+    `gender` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `role` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CUSTOMER',
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `email_verified_at` datetime DEFAULT NULL,
+    `last_login_at` datetime DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at` datetime DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_users_email` (`email`),
+    UNIQUE KEY `uq_users_phone` (`phone`),
+    KEY `idx_users_status` (`status`),
+    CONSTRAINT `chk_users_gender` CHECK (((`gender` is null) or (`gender` in (_utf8mb4'MALE',_utf8mb4'FEMALE',_utf8mb4'OTHER')))),
+    CONSTRAINT `chk_users_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'BLOCKED',_utf8mb4'INACTIVE')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: USERS_ROLES - Bảng liên kết tài khoản người dùng và vai trò
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `users_roles` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `user_id` bigint unsigned NOT NULL,
-  `role_id` bigint unsigned NOT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_users_roles` (`user_id`,`role_id`),
-  KEY `idx_users_roles_user_id` (`user_id`),
-  KEY `idx_users_roles_role_id` (`role_id`),
-  CONSTRAINT `fk_users_roles_role` FOREIGN KEY (`role_id`) REFERENCES `roles` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_users_roles_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=13 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `user_id` bigint unsigned NOT NULL,
+    `role_id` bigint unsigned NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_users_roles` (`user_id`,`role_id`),
+    KEY `idx_users_roles_user_id` (`user_id`),
+    KEY `idx_users_roles_role_id` (`role_id`),
+    CONSTRAINT `fk_users_roles_role` FOREIGN KEY (`role_id`) REFERENCES `roles` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_users_roles_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: REFRESH_TOKENS - Quản lý opaque refresh tokens, cơ chế token rotation và phát hiện xâm nhập
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `refresh_tokens` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `user_id` bigint unsigned NOT NULL,
-  `session_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `family_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `token_hash` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `parent_token_id` bigint unsigned DEFAULT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `expires_at` datetime NOT NULL,
-  `used_at` datetime DEFAULT NULL,
-  `revoked_at` datetime DEFAULT NULL,
-  `absolute_expires_at` datetime NOT NULL,
-  `ip_address` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `user_agent` text COLLATE utf8mb4_unicode_ci,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_rf_user_id` (`user_id`),
-  KEY `idx_rf_session_id` (`session_id`),
-  KEY `idx_rf_family_id` (`family_id`),
-  KEY `idx_rf_token_hash` (`token_hash`),
-  CONSTRAINT `fk_refresh_tokens_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `chk_refresh_tokens_status` CHECK ((`status` in (_latin1'ACTIVE',_latin1'USED',_latin1'REVOKED',_latin1'EXPIRED')))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `user_id` bigint unsigned NOT NULL,
+    `session_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `family_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `token_hash` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `parent_token_id` bigint unsigned DEFAULT NULL,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `expires_at` datetime NOT NULL,
+    `used_at` datetime DEFAULT NULL,
+    `revoked_at` datetime DEFAULT NULL,
+    `absolute_expires_at` datetime NOT NULL,
+    `ip_address` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `user_agent` text COLLATE utf8mb4_unicode_ci,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_rf_user_id` (`user_id`),
+    KEY `idx_rf_session_id` (`session_id`),
+    KEY `idx_rf_family_id` (`family_id`),
+    KEY `idx_rf_token_hash` (`token_hash`),
+    CONSTRAINT `fk_refresh_tokens_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `chk_refresh_tokens_status` CHECK ((`status` in (_latin1'ACTIVE',_latin1'USED',_latin1'REVOKED',_latin1'EXPIRED')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================================================
@@ -159,116 +199,116 @@ CREATE TABLE IF NOT EXISTS `refresh_tokens` (
 -- Bảng: LOCATIONS - Danh mục quốc gia, tỉnh/thành phố phân cấp cha - con
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `locations` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `parent_id` bigint unsigned DEFAULT NULL,
-  `code` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `latitude` decimal(10,7) DEFAULT NULL,
-  `longitude` decimal(10,7) DEFAULT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_locations_code` (`code`),
-  KEY `idx_locations_parent_id` (`parent_id`),
-  KEY `idx_locations_name` (`name`),
-  KEY `idx_locations_type` (`type`),
-  CONSTRAINT `fk_locations_parent` FOREIGN KEY (`parent_id`) REFERENCES `locations` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `chk_locations_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'INACTIVE'))),
-  CONSTRAINT `chk_locations_type` CHECK ((`type` in (_utf8mb4'COUNTRY',_utf8mb4'PROVINCE',_utf8mb4'CITY',_utf8mb4'DISTRICT',_utf8mb4'WARD',_utf8mb4'AREA')))
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `parent_id` bigint unsigned DEFAULT NULL,
+    `code` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `latitude` decimal(10,7) DEFAULT NULL,
+    `longitude` decimal(10,7) DEFAULT NULL,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_locations_code` (`code`),
+    KEY `idx_locations_parent_id` (`parent_id`),
+    KEY `idx_locations_name` (`name`),
+    KEY `idx_locations_type` (`type`),
+    CONSTRAINT `fk_locations_parent` FOREIGN KEY (`parent_id`) REFERENCES `locations` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `chk_locations_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'INACTIVE'))),
+    CONSTRAINT `chk_locations_type` CHECK ((`type` in (_utf8mb4'COUNTRY',_utf8mb4'PROVINCE',_utf8mb4'CITY',_utf8mb4'DISTRICT',_utf8mb4'WARD',_utf8mb4'AREA')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: HOTEL_TYPES - Phân loại khách sạn, resort, homestay, villa, hostel
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `hotel_types` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `code` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_hotel_types_code` (`code`),
-  CONSTRAINT `chk_hotel_types_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'INACTIVE')))
-) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `code` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `description` text COLLATE utf8mb4_unicode_ci,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_hotel_types_code` (`code`),
+    CONSTRAINT `chk_hotel_types_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'INACTIVE')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: HOTELS - Thông tin chi tiết cơ sở lưu trú, xếp hạng sao, tọa độ, chính sách nhận/trả phòng
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `hotels` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `hotel_type_id` bigint unsigned NOT NULL,
-  `location_id` bigint unsigned NOT NULL,
-  `created_by` bigint unsigned DEFAULT NULL,
-  `name` varchar(200) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `slug` varchar(220) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` longtext COLLATE utf8mb4_unicode_ci,
-  `star_rating` tinyint unsigned DEFAULT NULL,
-  `address` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `latitude` decimal(10,7) DEFAULT NULL,
-  `longitude` decimal(10,7) DEFAULT NULL,
-  `phone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `email` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `check_in_time` time NOT NULL DEFAULT '14:00:00',
-  `check_out_time` time NOT NULL DEFAULT '12:00:00',
-  `cover_image_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'DRAFT',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `deleted_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_hotels_slug` (`slug`),
-  KEY `idx_hotels_hotel_type_id` (`hotel_type_id`),
-  KEY `idx_hotels_location_id` (`location_id`),
-  KEY `idx_hotels_created_by` (`created_by`),
-  KEY `idx_hotels_status` (`status`),
-  CONSTRAINT `fk_hotels_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_hotels_hotel_type` FOREIGN KEY (`hotel_type_id`) REFERENCES `hotel_types` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `fk_hotels_location` FOREIGN KEY (`location_id`) REFERENCES `locations` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `chk_hotels_star_rating` CHECK (((`star_rating` is null) or (`star_rating` between 1 and 5))),
-  CONSTRAINT `chk_hotels_status` CHECK ((`status` in (_utf8mb4'DRAFT',_utf8mb4'ACTIVE',_utf8mb4'INACTIVE')))
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `hotel_type_id` bigint unsigned NOT NULL,
+    `location_id` bigint unsigned NOT NULL,
+    `created_by` bigint unsigned DEFAULT NULL,
+    `name` varchar(200) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `slug` varchar(220) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `description` longtext COLLATE utf8mb4_unicode_ci,
+    `star_rating` tinyint unsigned DEFAULT NULL,
+    `address` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `latitude` decimal(10,7) DEFAULT NULL,
+    `longitude` decimal(10,7) DEFAULT NULL,
+    `phone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `email` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `check_in_time` time NOT NULL DEFAULT '14:00:00',
+    `check_out_time` time NOT NULL DEFAULT '12:00:00',
+    `cover_image_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'DRAFT',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at` datetime DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_hotels_slug` (`slug`),
+    KEY `idx_hotels_hotel_type_id` (`hotel_type_id`),
+    KEY `idx_hotels_location_id` (`location_id`),
+    KEY `idx_hotels_created_by` (`created_by`),
+    KEY `idx_hotels_status` (`status`),
+    CONSTRAINT `fk_hotels_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `fk_hotels_hotel_type` FOREIGN KEY (`hotel_type_id`) REFERENCES `hotel_types` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_hotels_location` FOREIGN KEY (`location_id`) REFERENCES `locations` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `chk_hotels_star_rating` CHECK (((`star_rating` is null) or (`star_rating` between 1 and 5))),
+    CONSTRAINT `chk_hotels_status` CHECK ((`status` in (_utf8mb4'DRAFT',_utf8mb4'ACTIVE',_utf8mb4'INACTIVE')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: HOTEL_IMAGES - Thư viện hình ảnh cơ sở khách sạn, hỗ trợ gắn cờ ảnh đại diện chính
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `hotel_images` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `hotel_id` bigint unsigned NOT NULL,
-  `image_url` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `caption` varchar(200) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `sort_order` smallint unsigned NOT NULL DEFAULT '0',
-  `is_primary` tinyint(1) NOT NULL DEFAULT '0',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_hotel_images_hotel_id` (`hotel_id`),
-  KEY `idx_hotel_images_sort` (`hotel_id`,`sort_order`),
-  CONSTRAINT `fk_hotel_images_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=21 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `hotel_id` bigint unsigned NOT NULL,
+    `image_url` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `caption` varchar(200) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `sort_order` smallint unsigned NOT NULL DEFAULT '0',
+    `is_primary` tinyint(1) NOT NULL DEFAULT '0',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_hotel_images_hotel_id` (`hotel_id`),
+    KEY `idx_hotel_images_sort` (`hotel_id`,`sort_order`),
+    CONSTRAINT `fk_hotel_images_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: HOTEL_STAFF - Phân công quản lý và nhân sự vận hành theo từng cơ sở khách sạn
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `hotel_staff` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `hotel_id` bigint unsigned NOT NULL,
-  `staff_user_id` bigint unsigned NOT NULL,
-  `staff_role` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'EMPLOYEE',
-  `assigned_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_hotel_staff_assignment` (`hotel_id`,`staff_user_id`),
-  KEY `idx_hotel_staff_hotel_id` (`hotel_id`),
-  KEY `idx_hotel_staff_user_id` (`staff_user_id`),
-  CONSTRAINT `fk_hotel_staff_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_hotel_staff_user` FOREIGN KEY (`staff_user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `chk_hotel_staff_role` CHECK ((`staff_role` in (_utf8mb4'MANAGER',_utf8mb4'EMPLOYEE'))),
-  CONSTRAINT `chk_hotel_staff_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'INACTIVE')))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `hotel_id` bigint unsigned NOT NULL,
+    `staff_user_id` bigint unsigned NOT NULL,
+    `staff_role` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'EMPLOYEE',
+    `assigned_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_hotel_staff_assignment` (`hotel_id`,`staff_user_id`),
+    KEY `idx_hotel_staff_hotel_id` (`hotel_id`),
+    KEY `idx_hotel_staff_user_id` (`staff_user_id`),
+    CONSTRAINT `fk_hotel_staff_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_hotel_staff_user` FOREIGN KEY (`staff_user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `chk_hotel_staff_role` CHECK ((`staff_role` in (_utf8mb4'MANAGER',_utf8mb4'EMPLOYEE'))),
+    CONSTRAINT `chk_hotel_staff_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'INACTIVE')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================================================
@@ -280,57 +320,57 @@ CREATE TABLE IF NOT EXISTS `hotel_staff` (
 -- Bảng: ROOMS - Thông tin loại phòng nghỉ, giá niêm yết, số lượng phòng thực tế và kiểm kê khả dụng
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `rooms` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `hotel_id` bigint unsigned NOT NULL,
-  `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `slug` varchar(180) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `price_per_night` decimal(15,2) NOT NULL DEFAULT '0.00',
-  `check_in_time` time NOT NULL DEFAULT '14:00:00',
-  `check_out_time` time NOT NULL DEFAULT '12:00:00',
-  `max_adults` tinyint unsigned NOT NULL DEFAULT '2',
-  `max_children` tinyint unsigned NOT NULL DEFAULT '0',
-  `total_rooms` smallint unsigned NOT NULL DEFAULT '1',
-  `available_rooms` smallint unsigned NOT NULL DEFAULT '1',
-  `bed_count` tinyint unsigned NOT NULL DEFAULT '1',
-  `bed_type` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'Giường Đôi',
-  `room_size` smallint unsigned DEFAULT NULL,
-  `rating` decimal(3,2) NOT NULL DEFAULT '5.00',
-  `review_count` int unsigned NOT NULL DEFAULT '0',
-  `cover_image_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'AVAILABLE',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `deleted_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_rooms_hotel_slug` (`hotel_id`,`slug`),
-  KEY `idx_rooms_hotel_id` (`hotel_id`),
-  KEY `idx_rooms_status` (`status`),
-  KEY `idx_rooms_price` (`price_per_night`),
-  CONSTRAINT `fk_rooms_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `chk_rooms_adults` CHECK ((`max_adults` >= 1)),
-  CONSTRAINT `chk_rooms_bed_count` CHECK ((`bed_count` between 1 and 2)),
-  CONSTRAINT `chk_rooms_price` CHECK ((`price_per_night` >= 0)),
-  CONSTRAINT `chk_rooms_status` CHECK ((`status` in (_utf8mb4'AVAILABLE',_utf8mb4'UNAVAILABLE',_utf8mb4'MAINTENANCE'))),
-  CONSTRAINT `chk_rooms_total_rooms` CHECK ((`total_rooms` >= 1))
-) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `hotel_id` bigint unsigned NOT NULL,
+    `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `slug` varchar(180) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `description` text COLLATE utf8mb4_unicode_ci,
+    `price_per_night` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `check_in_time` time NOT NULL DEFAULT '14:00:00',
+    `check_out_time` time NOT NULL DEFAULT '12:00:00',
+    `max_adults` tinyint unsigned NOT NULL DEFAULT '2',
+    `max_children` tinyint unsigned NOT NULL DEFAULT '0',
+    `total_rooms` smallint unsigned NOT NULL DEFAULT '1',
+    `available_rooms` smallint unsigned NOT NULL DEFAULT '1',
+    `bed_count` tinyint unsigned NOT NULL DEFAULT '1',
+    `bed_type` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'Giường Đôi',
+    `room_size` smallint unsigned DEFAULT NULL,
+    `rating` decimal(3,2) NOT NULL DEFAULT '5.00',
+    `review_count` int unsigned NOT NULL DEFAULT '0',
+    `cover_image_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'AVAILABLE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at` datetime DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_rooms_hotel_slug` (`hotel_id`,`slug`),
+    KEY `idx_rooms_hotel_id` (`hotel_id`),
+    KEY `idx_rooms_status` (`status`),
+    KEY `idx_rooms_price` (`price_per_night`),
+    CONSTRAINT `fk_rooms_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `chk_rooms_adults` CHECK ((`max_adults` >= 1)),
+    CONSTRAINT `chk_rooms_bed_count` CHECK ((`bed_count` between 1 and 2)),
+    CONSTRAINT `chk_rooms_price` CHECK ((`price_per_night` >= 0)),
+    CONSTRAINT `chk_rooms_status` CHECK ((`status` in (_utf8mb4'AVAILABLE',_utf8mb4'UNAVAILABLE',_utf8mb4'MAINTENANCE'))),
+    CONSTRAINT `chk_rooms_total_rooms` CHECK ((`total_rooms` >= 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: ROOM_IMAGES - Bộ sưu tập ảnh chi tiết cho từng loại phòng nghỉ
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `room_images` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `room_id` bigint unsigned NOT NULL,
-  `image_url` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `caption` varchar(200) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `sort_order` smallint unsigned NOT NULL DEFAULT '0',
-  `is_primary` tinyint(1) NOT NULL DEFAULT '0',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_room_images_room_id` (`room_id`),
-  KEY `idx_room_images_sort` (`room_id`,`sort_order`),
-  CONSTRAINT `fk_room_images_room` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=25 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `room_id` bigint unsigned NOT NULL,
+    `image_url` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `caption` varchar(200) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `sort_order` smallint unsigned NOT NULL DEFAULT '0',
+    `is_primary` tinyint(1) NOT NULL DEFAULT '0',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_room_images_room_id` (`room_id`),
+    KEY `idx_room_images_sort` (`room_id`,`sort_order`),
+    CONSTRAINT `fk_room_images_room` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================================================
 -- PHẦN 4: KẾ HOẠCH LỘ TRÌNH CHUYẾN ĐI & ĐƠN ĐẶT PHÒNG (BOOKINGS)
@@ -341,128 +381,128 @@ CREATE TABLE IF NOT EXISTS `room_images` (
 -- Bảng: TRIP_PLANS - Kế hoạch hành trình cá nhân, điểm xuất phát, điểm đến và ngân sách dự kiến
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `trip_plans` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `user_id` bigint unsigned NOT NULL,
-  `origin_location_id` bigint unsigned NOT NULL,
-  `destination_location_id` bigint unsigned NOT NULL,
-  `departure_at` datetime NOT NULL,
-  `arrival_at` datetime DEFAULT NULL,
-  `traveler_count` smallint unsigned NOT NULL DEFAULT '1',
-  `budget` decimal(15,2) DEFAULT NULL,
-  `note` text COLLATE utf8mb4_unicode_ci,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'DRAFT',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_trip_plans_user_id` (`user_id`),
-  KEY `idx_trip_plans_origin_id` (`origin_location_id`),
-  KEY `idx_trip_plans_destination_id` (`destination_location_id`),
-  KEY `idx_trip_plans_departure_at` (`departure_at`),
-  KEY `idx_trip_plans_status` (`status`),
-  CONSTRAINT `fk_trip_plans_destination` FOREIGN KEY (`destination_location_id`) REFERENCES `locations` (`id`),
-  CONSTRAINT `fk_trip_plans_origin` FOREIGN KEY (`origin_location_id`) REFERENCES `locations` (`id`),
-  CONSTRAINT `fk_trip_plans_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `chk_trip_plans_budget` CHECK (((`budget` is null) or (`budget` >= 0))),
-  CONSTRAINT `chk_trip_plans_locations` CHECK ((`origin_location_id` <> `destination_location_id`)),
-  CONSTRAINT `chk_trip_plans_status` CHECK ((`status` in (_utf8mb4'DRAFT',_utf8mb4'PLANNED',_utf8mb4'COMPLETED',_utf8mb4'CANCELLED'))),
-  CONSTRAINT `chk_trip_plans_times` CHECK (((`arrival_at` is null) or (`arrival_at` > `departure_at`))),
-  CONSTRAINT `chk_trip_plans_travelers` CHECK ((`traveler_count` >= 1))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `user_id` bigint unsigned NOT NULL,
+    `origin_location_id` bigint unsigned NOT NULL,
+    `destination_location_id` bigint unsigned NOT NULL,
+    `departure_at` datetime NOT NULL,
+    `arrival_at` datetime DEFAULT NULL,
+    `traveler_count` smallint unsigned NOT NULL DEFAULT '1',
+    `budget` decimal(15,2) DEFAULT NULL,
+    `note` text COLLATE utf8mb4_unicode_ci,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'DRAFT',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_trip_plans_user_id` (`user_id`),
+    KEY `idx_trip_plans_origin_id` (`origin_location_id`),
+    KEY `idx_trip_plans_destination_id` (`destination_location_id`),
+    KEY `idx_trip_plans_departure_at` (`departure_at`),
+    KEY `idx_trip_plans_status` (`status`),
+    CONSTRAINT `fk_trip_plans_destination` FOREIGN KEY (`destination_location_id`) REFERENCES `locations` (`id`),
+    CONSTRAINT `fk_trip_plans_origin` FOREIGN KEY (`origin_location_id`) REFERENCES `locations` (`id`),
+    CONSTRAINT `fk_trip_plans_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `chk_trip_plans_budget` CHECK (((`budget` is null) or (`budget` >= 0))),
+    CONSTRAINT `chk_trip_plans_locations` CHECK ((`origin_location_id` <> `destination_location_id`)),
+    CONSTRAINT `chk_trip_plans_status` CHECK ((`status` in (_utf8mb4'DRAFT',_utf8mb4'PLANNED',_utf8mb4'COMPLETED',_utf8mb4'CANCELLED'))),
+    CONSTRAINT `chk_trip_plans_times` CHECK (((`arrival_at` is null) or (`arrival_at` > `departure_at`))),
+    CONSTRAINT `chk_trip_plans_travelers` CHECK ((`traveler_count` >= 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: BOOKINGS - Đơn đặt phòng chính, mã booking, idempotency key chống trùng lặp, thông tin liên hệ và trạng thái thanh toán
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `bookings` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `booking_code` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `user_id` bigint unsigned NOT NULL,
-  `hotel_id` bigint unsigned NOT NULL,
-  `trip_plan_id` bigint unsigned DEFAULT NULL,
-  `handled_by` bigint unsigned DEFAULT NULL,
-  `assignment_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'AUTO',
-  `assignment_note` text COLLATE utf8mb4_unicode_ci,
-  `reassigned_at` datetime DEFAULT NULL,
-  `reassigned_by` bigint unsigned DEFAULT NULL,
-  `contact_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `contact_email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `contact_phone` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `check_in_at` datetime NOT NULL,
-  `check_out_at` datetime NOT NULL,
-  `total_guests` smallint unsigned NOT NULL DEFAULT '1',
-  `requested_room_count` smallint unsigned NOT NULL DEFAULT '1',
-  `estimated_total` decimal(15,2) NOT NULL DEFAULT '0.00',
-  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING',
-  `special_request` text COLLATE utf8mb4_unicode_ci,
-  `confirmed_at` datetime DEFAULT NULL,
-  `rejected_at` datetime DEFAULT NULL,
-  `cancelled_at` datetime DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `checkout_idempotency_key` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `checkout_request_hash` char(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_bookings_code` (`booking_code`),
-  UNIQUE KEY `uq_checkout_idempotency` (`checkout_idempotency_key`),
-  KEY `idx_bookings_user_id` (`user_id`),
-  KEY `idx_bookings_hotel_id` (`hotel_id`),
-  KEY `idx_bookings_trip_plan_id` (`trip_plan_id`),
-  KEY `idx_bookings_handled_by` (`handled_by`),
-  KEY `idx_bookings_dates` (`check_in_at`,`check_out_at`),
-  KEY `idx_bookings_status` (`status`),
-  CONSTRAINT `fk_bookings_customer` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `fk_bookings_handled_by` FOREIGN KEY (`handled_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_bookings_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `fk_bookings_trip_plan` FOREIGN KEY (`trip_plan_id`) REFERENCES `trip_plans` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `chk_bookings_dates` CHECK ((`check_out_at` > `check_in_at`)),
-  CONSTRAINT `chk_bookings_estimated_total` CHECK ((`estimated_total` >= 0)),
-  CONSTRAINT `chk_bookings_guests` CHECK ((`total_guests` >= 1)),
-  CONSTRAINT `chk_bookings_room_count` CHECK ((`requested_room_count` >= 1)),
-  CONSTRAINT `chk_bookings_status` CHECK ((`status` in (_utf8mb4'PAYMENT_PENDING',_utf8mb4'PENDING',_utf8mb4'CONFIRMED',_utf8mb4'REJECTED',_utf8mb4'CHECKED_IN',_utf8mb4'COMPLETED',_utf8mb4'CANCELLED',_utf8mb4'PAYMENT_EXPIRED',_utf8mb4'PAYMENT_REVIEW')))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `booking_code` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `user_id` bigint unsigned NOT NULL,
+    `hotel_id` bigint unsigned NOT NULL,
+    `trip_plan_id` bigint unsigned DEFAULT NULL,
+    `handled_by` bigint unsigned DEFAULT NULL,
+    `assignment_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'AUTO',
+    `assignment_note` text COLLATE utf8mb4_unicode_ci,
+    `reassigned_at` datetime DEFAULT NULL,
+    `reassigned_by` bigint unsigned DEFAULT NULL,
+    `contact_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `contact_email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `contact_phone` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `check_in_at` datetime NOT NULL,
+    `check_out_at` datetime NOT NULL,
+    `total_guests` smallint unsigned NOT NULL DEFAULT '1',
+    `requested_room_count` smallint unsigned NOT NULL DEFAULT '1',
+    `estimated_total` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING',
+    `special_request` text COLLATE utf8mb4_unicode_ci,
+    `confirmed_at` datetime DEFAULT NULL,
+    `rejected_at` datetime DEFAULT NULL,
+    `cancelled_at` datetime DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `checkout_idempotency_key` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `checkout_request_hash` char(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_bookings_code` (`booking_code`),
+    UNIQUE KEY `uq_checkout_idempotency` (`checkout_idempotency_key`),
+    KEY `idx_bookings_user_id` (`user_id`),
+    KEY `idx_bookings_hotel_id` (`hotel_id`),
+    KEY `idx_bookings_trip_plan_id` (`trip_plan_id`),
+    KEY `idx_bookings_handled_by` (`handled_by`),
+    KEY `idx_bookings_dates` (`check_in_at`,`check_out_at`),
+    KEY `idx_bookings_status` (`status`),
+    CONSTRAINT `fk_bookings_customer` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_bookings_handled_by` FOREIGN KEY (`handled_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `fk_bookings_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_bookings_trip_plan` FOREIGN KEY (`trip_plan_id`) REFERENCES `trip_plans` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `chk_bookings_dates` CHECK ((`check_out_at` > `check_in_at`)),
+    CONSTRAINT `chk_bookings_estimated_total` CHECK ((`estimated_total` >= 0)),
+    CONSTRAINT `chk_bookings_guests` CHECK ((`total_guests` >= 1)),
+    CONSTRAINT `chk_bookings_room_count` CHECK ((`requested_room_count` >= 1)),
+    CONSTRAINT `chk_bookings_status` CHECK ((`status` in (_utf8mb4'PAYMENT_PENDING',_utf8mb4'PENDING',_utf8mb4'CONFIRMED',_utf8mb4'REJECTED',_utf8mb4'CHECKED_IN',_utf8mb4'COMPLETED',_utf8mb4'CANCELLED',_utf8mb4'PAYMENT_EXPIRED',_utf8mb4'PAYMENT_REVIEW')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: BOOKING_ROOMS - Chi tiết các hạng phòng, số lượng và thành tiền trong đơn đặt phòng
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `booking_rooms` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `booking_id` bigint unsigned NOT NULL,
-  `room_id` bigint unsigned NOT NULL,
-  `quantity` smallint unsigned NOT NULL DEFAULT '1',
-  `price_per_night` decimal(15,2) NOT NULL DEFAULT '0.00',
-  `nights` smallint unsigned NOT NULL DEFAULT '1',
-  `subtotal` decimal(15,2) NOT NULL DEFAULT '0.00',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_booking_rooms_booking_id` (`booking_id`),
-  KEY `idx_booking_rooms_room_id` (`room_id`),
-  CONSTRAINT `fk_booking_rooms_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_booking_rooms_room` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `chk_booking_rooms_nights` CHECK ((`nights` >= 1)),
-  CONSTRAINT `chk_booking_rooms_price` CHECK ((`price_per_night` >= 0)),
-  CONSTRAINT `chk_booking_rooms_quantity` CHECK ((`quantity` >= 1)),
-  CONSTRAINT `chk_booking_rooms_subtotal` CHECK ((`subtotal` >= 0))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `booking_id` bigint unsigned NOT NULL,
+    `room_id` bigint unsigned NOT NULL,
+    `quantity` smallint unsigned NOT NULL DEFAULT '1',
+    `price_per_night` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `nights` smallint unsigned NOT NULL DEFAULT '1',
+    `subtotal` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_booking_rooms_booking_id` (`booking_id`),
+    KEY `idx_booking_rooms_room_id` (`room_id`),
+    CONSTRAINT `fk_booking_rooms_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_booking_rooms_room` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `chk_booking_rooms_nights` CHECK ((`nights` >= 1)),
+    CONSTRAINT `chk_booking_rooms_price` CHECK ((`price_per_night` >= 0)),
+    CONSTRAINT `chk_booking_rooms_quantity` CHECK ((`quantity` >= 1)),
+    CONSTRAINT `chk_booking_rooms_subtotal` CHECK ((`subtotal` >= 0))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: BOOKING_STATUS_LOGS - Lịch sử biến động trạng thái đơn đặt phòng và người thực hiện thay đổi
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `booking_status_logs` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `booking_id` bigint unsigned NOT NULL,
-  `changed_by` bigint unsigned NOT NULL,
-  `old_status` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `new_status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `note` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `changed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_booking_status_logs_booking_id` (`booking_id`),
-  KEY `idx_booking_status_logs_changed_by` (`changed_by`),
-  KEY `idx_booking_status_logs_changed_at` (`changed_at`),
-  CONSTRAINT `fk_booking_status_logs_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_booking_status_logs_user` FOREIGN KEY (`changed_by`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `chk_booking_status_logs_new_status` CHECK ((`new_status` in (_utf8mb4'PAYMENT_PENDING',_utf8mb4'PENDING',_utf8mb4'CONFIRMED',_utf8mb4'REJECTED',_utf8mb4'CHECKED_IN',_utf8mb4'COMPLETED',_utf8mb4'CANCELLED',_utf8mb4'PAYMENT_EXPIRED',_utf8mb4'PAYMENT_REVIEW'))),
-  CONSTRAINT `chk_booking_status_logs_old_status` CHECK (((`old_status` is null) or (`old_status` in (_latin1'PAYMENT_PENDING',_latin1'PENDING',_latin1'CONFIRMED',_latin1'REJECTED',_latin1'CHECKED_IN',_latin1'COMPLETED',_latin1'CANCELLED',_latin1'PAYMENT_EXPIRED',_latin1'PAYMENT_REVIEW'))))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `booking_id` bigint unsigned NOT NULL,
+    `changed_by` bigint unsigned NOT NULL,
+    `old_status` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `new_status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `note` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `changed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_booking_status_logs_booking_id` (`booking_id`),
+    KEY `idx_booking_status_logs_changed_by` (`changed_by`),
+    KEY `idx_booking_status_logs_changed_at` (`changed_at`),
+    CONSTRAINT `fk_booking_status_logs_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_booking_status_logs_user` FOREIGN KEY (`changed_by`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `chk_booking_status_logs_new_status` CHECK ((`new_status` in (_utf8mb4'PAYMENT_PENDING',_utf8mb4'PENDING',_utf8mb4'CONFIRMED',_utf8mb4'REJECTED',_utf8mb4'CHECKED_IN',_utf8mb4'COMPLETED',_utf8mb4'CANCELLED',_utf8mb4'PAYMENT_EXPIRED',_utf8mb4'PAYMENT_REVIEW'))),
+    CONSTRAINT `chk_booking_status_logs_old_status` CHECK (((`old_status` is null) or (`old_status` in (_latin1'PAYMENT_PENDING',_latin1'PENDING',_latin1'CONFIRMED',_latin1'REJECTED',_latin1'CHECKED_IN',_latin1'COMPLETED',_latin1'CANCELLED',_latin1'PAYMENT_EXPIRED',_latin1'PAYMENT_REVIEW'))))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================================================
@@ -474,116 +514,116 @@ CREATE TABLE IF NOT EXISTS `booking_status_logs` (
 -- Bảng: BOOKING_HOLDS - Giữ chỗ phòng tạm thời theo khoảng thời gian lưu trú [check_in_at, check_out_at), đảm bảo 1 booking có 1 logical hold
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `booking_holds` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `booking_id` bigint unsigned NOT NULL,
-  `room_id` bigint unsigned NOT NULL,
-  `quantity` smallint unsigned NOT NULL DEFAULT '1',
-  `check_in_at` datetime NOT NULL,
-  `check_out_at` datetime NOT NULL,
-  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'HELD' COMMENT 'HELD, COMMITTED, RELEASED, EXPIRED',
-  `hold_expires_at` datetime NOT NULL,
-  `released_at` datetime DEFAULT NULL,
-  `committed_at` datetime DEFAULT NULL,
-  `release_reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_booking_holds_booking` (`booking_id`),
-  KEY `idx_booking_holds_overlap` (`room_id`,`status`,`check_in_at`,`check_out_at`),
-  KEY `idx_booking_holds_booking_id` (`booking_id`),
-  KEY `idx_booking_holds_expiry` (`status`,`hold_expires_at`),
-  CONSTRAINT `fk_booking_holds_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_booking_holds_room` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `chk_booking_holds_dates` CHECK ((`check_out_at` > `check_in_at`)),
-  CONSTRAINT `chk_booking_holds_quantity` CHECK ((`quantity` >= 1)),
-  CONSTRAINT `chk_booking_holds_status` CHECK ((`status` in (_utf8mb4'HELD',_utf8mb4'COMMITTED',_utf8mb4'RELEASED',_utf8mb4'EXPIRED')))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `booking_id` bigint unsigned NOT NULL,
+    `room_id` bigint unsigned NOT NULL,
+    `quantity` smallint unsigned NOT NULL DEFAULT '1',
+    `check_in_at` datetime NOT NULL,
+    `check_out_at` datetime NOT NULL,
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'HELD' COMMENT 'HELD, COMMITTED, RELEASED, EXPIRED',
+    `hold_expires_at` datetime NOT NULL,
+    `released_at` datetime DEFAULT NULL,
+    `committed_at` datetime DEFAULT NULL,
+    `release_reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_booking_holds_booking` (`booking_id`),
+    KEY `idx_booking_holds_overlap` (`room_id`,`status`,`check_in_at`,`check_out_at`),
+    KEY `idx_booking_holds_booking_id` (`booking_id`),
+    KEY `idx_booking_holds_expiry` (`status`,`hold_expires_at`),
+    CONSTRAINT `fk_booking_holds_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_booking_holds_room` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `chk_booking_holds_dates` CHECK ((`check_out_at` > `check_in_at`)),
+    CONSTRAINT `chk_booking_holds_quantity` CHECK ((`quantity` >= 1)),
+    CONSTRAINT `chk_booking_holds_status` CHECK ((`status` in (_utf8mb4'HELD',_utf8mb4'COMMITTED',_utf8mb4'RELEASED',_utf8mb4'EXPIRED')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: PAYMENT_TRANSACTIONS - Lịch sử các lượt thanh toán VNPAY, theo dõi txn_ref, checksum, mã phản hồi IPN và hoàn tiền
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `payment_transactions` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `booking_id` bigint unsigned NOT NULL,
-  `provider` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'VNPAY',
-  `attempt_no` int unsigned NOT NULL DEFAULT '1',
-  `txn_ref` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `amount` decimal(15,2) NOT NULL DEFAULT '0.00',
-  `currency` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'VND',
-  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CREATED' COMMENT 'CREATED, PENDING, PAID, FAILED, EXPIRED, PAID_REQUIRES_REVIEW, REFUND_PENDING, REFUNDED',
-  `response_code` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `transaction_status` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `vnp_transaction_no` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `bank_code` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `card_type` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `pay_date` datetime DEFAULT NULL,
-  `gateway_expire_at` datetime DEFAULT NULL,
-  `paid_at` datetime DEFAULT NULL,
-  `failed_at` datetime DEFAULT NULL,
-  `expired_at` datetime DEFAULT NULL,
-  `refund_amount` decimal(15,2) NOT NULL DEFAULT '0.00',
-  `refunded_at` datetime DEFAULT NULL,
-  `refund_note` text COLLATE utf8mb4_unicode_ci,
-  `raw_ipn_response` json DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_payment_transactions_txn_ref` (`txn_ref`),
-  UNIQUE KEY `uq_payment_transactions_attempt` (`booking_id`,`attempt_no`),
-  KEY `idx_payment_transactions_booking_id` (`booking_id`),
-  KEY `idx_payment_transactions_status` (`status`),
-  KEY `idx_payment_transactions_created_at` (`created_at`),
-  CONSTRAINT `fk_payment_transactions_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `chk_payment_transactions_amount` CHECK ((`amount` >= 0)),
-  CONSTRAINT `chk_payment_transactions_status` CHECK ((`status` in (_latin1'CREATED',_latin1'PENDING',_latin1'PAID',_latin1'FAILED',_latin1'EXPIRED',_latin1'PAID_REQUIRES_REVIEW',_latin1'REFUND_PENDING',_latin1'REFUNDED')))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `booking_id` bigint unsigned NOT NULL,
+    `provider` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'VNPAY',
+    `attempt_no` int unsigned NOT NULL DEFAULT '1',
+    `txn_ref` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `amount` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `currency` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'VND',
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CREATED' COMMENT 'CREATED, PENDING, PAID, FAILED, EXPIRED, PAID_REQUIRES_REVIEW, REFUND_PENDING, REFUNDED',
+    `response_code` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `transaction_status` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `vnp_transaction_no` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `bank_code` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `card_type` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `pay_date` datetime DEFAULT NULL,
+    `gateway_expire_at` datetime DEFAULT NULL,
+    `paid_at` datetime DEFAULT NULL,
+    `failed_at` datetime DEFAULT NULL,
+    `expired_at` datetime DEFAULT NULL,
+    `refund_amount` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `refunded_at` datetime DEFAULT NULL,
+    `refund_note` text COLLATE utf8mb4_unicode_ci,
+    `raw_ipn_response` json DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_payment_transactions_txn_ref` (`txn_ref`),
+    UNIQUE KEY `uq_payment_transactions_attempt` (`booking_id`,`attempt_no`),
+    KEY `idx_payment_transactions_booking_id` (`booking_id`),
+    KEY `idx_payment_transactions_status` (`status`),
+    KEY `idx_payment_transactions_created_at` (`created_at`),
+    CONSTRAINT `fk_payment_transactions_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `chk_payment_transactions_amount` CHECK ((`amount` >= 0)),
+    CONSTRAINT `chk_payment_transactions_status` CHECK ((`status` in (_latin1'CREATED',_latin1'PENDING',_latin1'PAID',_latin1'FAILED',_latin1'EXPIRED',_latin1'PAID_REQUIRES_REVIEW',_latin1'REFUND_PENDING',_latin1'REFUNDED')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: OUTBOX_EVENTS - Transactional Outbox Pattern - gửi Email, Socket và xử lý nền sau khi commit DB an toàn tuyệt đối
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `outbox_events` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `event_type` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `aggregate_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `aggregate_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `payload` json NOT NULL,
-  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, PROCESSING, COMPLETED, FAILED',
-  `retry_count` int unsigned NOT NULL DEFAULT '0',
-  `max_retries` int unsigned NOT NULL DEFAULT '5',
-  `error_message` text COLLATE utf8mb4_unicode_ci,
-  `available_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `processed_at` datetime DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `locked_at` datetime DEFAULT NULL,
-  `locked_by` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_outbox_events_poll` (`status`,`available_at`),
-  KEY `idx_outbox_events_aggregate` (`aggregate_type`,`aggregate_id`),
-  KEY `idx_outbox_claim` (`status`,`available_at`,`locked_at`),
-  CONSTRAINT `chk_outbox_events_status` CHECK ((`status` in (_utf8mb4'PENDING',_utf8mb4'PROCESSING',_utf8mb4'COMPLETED',_utf8mb4'FAILED')))
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `event_type` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `aggregate_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `aggregate_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `payload` json NOT NULL,
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, PROCESSING, COMPLETED, FAILED',
+    `retry_count` int unsigned NOT NULL DEFAULT '0',
+    `max_retries` int unsigned NOT NULL DEFAULT '5',
+    `error_message` text COLLATE utf8mb4_unicode_ci,
+    `available_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `processed_at` datetime DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `locked_at` datetime DEFAULT NULL,
+    `locked_by` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    KEY `idx_outbox_events_poll` (`status`,`available_at`),
+    KEY `idx_outbox_events_aggregate` (`aggregate_type`,`aggregate_id`),
+    KEY `idx_outbox_claim` (`status`,`available_at`,`locked_at`),
+    CONSTRAINT `chk_outbox_events_status` CHECK ((`status` in (_utf8mb4'PENDING',_utf8mb4'PROCESSING',_utf8mb4'COMPLETED',_utf8mb4'FAILED')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: BOOKING_CANCELLATION_REQUESTS - Yêu cầu hủy phòng từ khách hàng/nhân viên, quy trình thẩm định duyệt hoàn tiền
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `booking_cancellation_requests` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `booking_id` bigint unsigned NOT NULL,
-  `requested_by` bigint unsigned NOT NULL,
-  `requester_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CUSTOMER',
-  `reason` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING',
-  `reviewed_by` bigint unsigned DEFAULT NULL,
-  `reviewed_at` datetime DEFAULT NULL,
-  `review_note` text COLLATE utf8mb4_unicode_ci,
-  `refund_amount` decimal(15,2) NOT NULL DEFAULT '0.00',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_bcr_booking_id` (`booking_id`),
-  KEY `idx_bcr_status` (`status`),
-  KEY `idx_bcr_requested_by` (`requested_by`)
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `booking_id` bigint unsigned NOT NULL,
+    `requested_by` bigint unsigned NOT NULL,
+    `requester_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CUSTOMER',
+    `reason` text COLLATE utf8mb4_unicode_ci NOT NULL,
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING',
+    `reviewed_by` bigint unsigned DEFAULT NULL,
+    `reviewed_at` datetime DEFAULT NULL,
+    `review_note` text COLLATE utf8mb4_unicode_ci,
+    `refund_amount` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_bcr_booking_id` (`booking_id`),
+    KEY `idx_bcr_status` (`status`),
+    KEY `idx_bcr_requested_by` (`requested_by`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================================================
@@ -595,182 +635,182 @@ CREATE TABLE IF NOT EXISTS `booking_cancellation_requests` (
 -- Bảng: SERVICE_CATEGORIES - Danh mục phân loại dịch vụ khách sạn (Ẩm thực, Buồng phòng, Spa, Di chuyển...)
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `service_categories` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `code` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `icon` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Tên icon Lucide hoặc emoji',
-  `sort_order` smallint unsigned NOT NULL DEFAULT '0',
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_service_categories_code` (`code`),
-  KEY `idx_service_categories_status` (`status`),
-  KEY `idx_service_categories_sort` (`sort_order`)
-) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `code` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `description` text COLLATE utf8mb4_unicode_ci,
+    `icon` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Tên icon Lucide hoặc emoji',
+    `sort_order` smallint unsigned NOT NULL DEFAULT '0',
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_service_categories_code` (`code`),
+    KEY `idx_service_categories_status` (`status`),
+    KEY `idx_service_categories_sort` (`sort_order`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: ROOM_SERVICES - Bảng giá và thông tin chi tiết dịch vụ phòng (Miễn phí đi kèm & Add-on trả phí)
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `room_services` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `category_id` bigint unsigned NOT NULL,
-  `hotel_id` bigint unsigned DEFAULT NULL COMMENT 'NULL = Dịch vụ chung toàn hệ thống, có ID = Dịch vụ riêng của khách sạn',
-  `room_type_id` bigint unsigned DEFAULT NULL,
-  `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `unit` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'lần' COMMENT 'lần, giờ, ngày, món, bộ, suất, người, phòng',
-  `base_price` decimal(12,2) NOT NULL DEFAULT '0.00',
-  `is_complimentary` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Miễn phí đi kèm phòng, 0 = Có thu phí',
-  `service_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ADD_ON' COMMENT 'INCLUDED, ADD_ON, UPGRADE, HOURLY',
-  `quota_per_booking` smallint unsigned DEFAULT NULL COMMENT 'Số lượt miễn phí/giới hạn mỗi booking',
-  `quota_per_night` smallint unsigned DEFAULT NULL COMMENT 'Số lượt miễn phí mỗi đêm',
-  `max_quantity` smallint unsigned DEFAULT NULL,
-  `sla_minutes` smallint unsigned DEFAULT '30' COMMENT 'Cam kết thời gian phục vụ tính bằng phút',
-  `capacity_per_hour` smallint unsigned DEFAULT NULL COMMENT 'Công suất phục vụ tối đa trong 1 giờ',
-  `lead_time_hours` tinyint unsigned DEFAULT '0' COMMENT 'Cần đặt trước bao nhiêu giờ',
-  `requires_approval` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Cần Quản lý duyệt trước khi thực hiện',
-  `department_owner` varchar(60) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Phòng ban chịu trách nhiệm (F&B, HOUSEKEEPING, FRONT_DESK, SPA...)',
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `fk_room_services_category` (`category_id`),
-  KEY `idx_room_services_hotel` (`hotel_id`),
-  KEY `idx_room_services_type` (`service_type`),
-  KEY `idx_room_services_status` (`status`),
-  KEY `idx_room_services_complimentary` (`is_complimentary`),
-  CONSTRAINT `fk_room_services_category` FOREIGN KEY (`category_id`) REFERENCES `service_categories` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `fk_room_services_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `category_id` bigint unsigned NOT NULL,
+    `hotel_id` bigint unsigned DEFAULT NULL COMMENT 'NULL = Dịch vụ chung toàn hệ thống, có ID = Dịch vụ riêng của khách sạn',
+    `room_type_id` bigint unsigned DEFAULT NULL,
+    `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `description` text COLLATE utf8mb4_unicode_ci,
+    `unit` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'lần' COMMENT 'lần, giờ, ngày, món, bộ, suất, người, phòng',
+    `base_price` decimal(12,2) NOT NULL DEFAULT '0.00',
+    `is_complimentary` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Miễn phí đi kèm phòng, 0 = Có thu phí',
+    `service_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ADD_ON' COMMENT 'INCLUDED, ADD_ON, UPGRADE, HOURLY',
+    `quota_per_booking` smallint unsigned DEFAULT NULL COMMENT 'Số lượt miễn phí/giới hạn mỗi booking',
+    `quota_per_night` smallint unsigned DEFAULT NULL COMMENT 'Số lượt miễn phí mỗi đêm',
+    `max_quantity` smallint unsigned DEFAULT NULL,
+    `sla_minutes` smallint unsigned DEFAULT '30' COMMENT 'Cam kết thời gian phục vụ tính bằng phút',
+    `capacity_per_hour` smallint unsigned DEFAULT NULL COMMENT 'Công suất phục vụ tối đa trong 1 giờ',
+    `lead_time_hours` tinyint unsigned DEFAULT '0' COMMENT 'Cần đặt trước bao nhiêu giờ',
+    `requires_approval` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Cần Quản lý duyệt trước khi thực hiện',
+    `department_owner` varchar(60) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Phòng ban chịu trách nhiệm (F&B, HOUSEKEEPING, FRONT_DESK, SPA...)',
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `fk_room_services_category` (`category_id`),
+    KEY `idx_room_services_hotel` (`hotel_id`),
+    KEY `idx_room_services_type` (`service_type`),
+    KEY `idx_room_services_status` (`status`),
+    KEY `idx_room_services_complimentary` (`is_complimentary`),
+    CONSTRAINT `fk_room_services_category` FOREIGN KEY (`category_id`) REFERENCES `service_categories` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_room_services_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: ROOM_SERVICE_ASSIGNMENTS - Liên kết các dịch vụ phòng mặc định theo từng loại phòng nghỉ
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `room_service_assignments` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `room_id` bigint unsigned NOT NULL,
-  `service_id` bigint unsigned NOT NULL,
-  `is_complimentary` tinyint(1) NOT NULL DEFAULT '0',
-  `custom_price` decimal(12,2) DEFAULT NULL COMMENT 'Giá riêng cho phòng này nếu khác giá base_price',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_rsa_room_service` (`room_id`,`service_id`),
-  KEY `idx_rsa_room` (`room_id`),
-  KEY `idx_rsa_service` (`service_id`),
-  CONSTRAINT `fk_rsa_room` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_rsa_service` FOREIGN KEY (`service_id`) REFERENCES `room_services` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=35 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `room_id` bigint unsigned NOT NULL,
+    `service_id` bigint unsigned NOT NULL,
+    `is_complimentary` tinyint(1) NOT NULL DEFAULT '0',
+    `custom_price` decimal(12,2) DEFAULT NULL COMMENT 'Giá riêng cho phòng này nếu khác giá base_price',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_rsa_room_service` (`room_id`,`service_id`),
+    KEY `idx_rsa_room` (`room_id`),
+    KEY `idx_rsa_service` (`service_id`),
+    CONSTRAINT `fk_rsa_room` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_rsa_service` FOREIGN KEY (`service_id`) REFERENCES `room_services` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: SERVICE_REQUESTS - Yêu cầu gọi dịch vụ phát sinh của khách lưu trú kèm cam kết SLA
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `service_requests` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `booking_id` bigint unsigned NOT NULL,
-  `service_id` bigint unsigned NOT NULL,
-  `assigned_to` bigint unsigned DEFAULT NULL COMMENT 'Nhân viên trực tiếp thực hiện (users.id)',
-  `service_name` varchar(200) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `requested_quantity` smallint unsigned NOT NULL DEFAULT '1',
-  `unit_price` decimal(12,2) NOT NULL DEFAULT '0.00',
-  `quantity` smallint unsigned NOT NULL DEFAULT '1',
-  `total_price` decimal(12,2) NOT NULL DEFAULT '0.00',
-  `note` text COLLATE utf8mb4_unicode_ci,
-  `total_amount` decimal(12,2) NOT NULL DEFAULT '0.00',
-  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'REQUESTED' COMMENT 'REQUESTED, SCHEDULED, ACCEPTED, IN_PROGRESS, COMPLETED, CONFIRMED, REJECTED, CANCELLED',
-  `scheduled_at` datetime DEFAULT NULL COMMENT 'Thời gian hẹn phục vụ',
-  `accepted_at` datetime DEFAULT NULL COMMENT 'Thời điểm nhân viên nhận việc',
-  `started_at` datetime DEFAULT NULL COMMENT 'Thời điểm bắt đầu thực hiện',
-  `completed_at` datetime DEFAULT NULL COMMENT 'Thời điểm nhân viên báo xong',
-  `confirmed_at` datetime DEFAULT NULL COMMENT 'Thời điểm khách hoặc lễ tân xác nhận hoàn tất',
-  `sla_due_at` datetime DEFAULT NULL COMMENT 'Hạn chót SLA cam kết hoàn thành',
-  `is_sla_breached` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Bị trễ hạn SLA',
-  `failure_reason` text COLLATE utf8mb4_unicode_ci COMMENT 'Lý do dịch vụ bị trễ hoặc thất bại nếu có',
-  `recovery_action` varchar(200) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Biện pháp đền bù/khắc phục',
-  `recovery_approved_by` bigint unsigned DEFAULT NULL COMMENT 'Người phê duyệt đền bù',
-  `recovery_cost` decimal(12,2) DEFAULT NULL COMMENT 'Chi phí đền bù cho khách nếu có',
-  `special_instructions` text COLLATE utf8mb4_unicode_ci COMMENT 'Yêu cầu cụ thể từ khách',
-  `staff_notes` text COLLATE utf8mb4_unicode_ci COMMENT 'Ghi chú nội bộ của nhân viên',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `fk_service_requests_recovery_approver` (`recovery_approved_by`),
-  KEY `idx_sr_booking` (`booking_id`),
-  KEY `idx_sr_service` (`service_id`),
-  KEY `idx_sr_assigned` (`assigned_to`),
-  KEY `idx_sr_status` (`status`),
-  KEY `idx_sr_sla` (`sla_due_at`,`is_sla_breached`),
-  CONSTRAINT `fk_service_requests_assigned` FOREIGN KEY (`assigned_to`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_service_requests_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_service_requests_recovery_approver` FOREIGN KEY (`recovery_approved_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_service_requests_service` FOREIGN KEY (`service_id`) REFERENCES `room_services` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `booking_id` bigint unsigned NOT NULL,
+    `service_id` bigint unsigned NOT NULL,
+    `assigned_to` bigint unsigned DEFAULT NULL COMMENT 'Nhân viên trực tiếp thực hiện (users.id)',
+    `service_name` varchar(200) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+    `requested_quantity` smallint unsigned NOT NULL DEFAULT '1',
+    `unit_price` decimal(12,2) NOT NULL DEFAULT '0.00',
+    `quantity` smallint unsigned NOT NULL DEFAULT '1',
+    `total_price` decimal(12,2) NOT NULL DEFAULT '0.00',
+    `note` text COLLATE utf8mb4_unicode_ci,
+    `total_amount` decimal(12,2) NOT NULL DEFAULT '0.00',
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'REQUESTED' COMMENT 'REQUESTED, SCHEDULED, ACCEPTED, IN_PROGRESS, COMPLETED, CONFIRMED, REJECTED, CANCELLED',
+    `scheduled_at` datetime DEFAULT NULL COMMENT 'Thời gian hẹn phục vụ',
+    `accepted_at` datetime DEFAULT NULL COMMENT 'Thời điểm nhân viên nhận việc',
+    `started_at` datetime DEFAULT NULL COMMENT 'Thời điểm bắt đầu thực hiện',
+    `completed_at` datetime DEFAULT NULL COMMENT 'Thời điểm nhân viên báo xong',
+    `confirmed_at` datetime DEFAULT NULL COMMENT 'Thời điểm khách hoặc lễ tân xác nhận hoàn tất',
+    `sla_due_at` datetime DEFAULT NULL COMMENT 'Hạn chót SLA cam kết hoàn thành',
+    `is_sla_breached` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Bị trễ hạn SLA',
+    `failure_reason` text COLLATE utf8mb4_unicode_ci COMMENT 'Lý do dịch vụ bị trễ hoặc thất bại nếu có',
+    `recovery_action` varchar(200) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Biện pháp đền bù/khắc phục',
+    `recovery_approved_by` bigint unsigned DEFAULT NULL COMMENT 'Người phê duyệt đền bù',
+    `recovery_cost` decimal(12,2) DEFAULT NULL COMMENT 'Chi phí đền bù cho khách nếu có',
+    `special_instructions` text COLLATE utf8mb4_unicode_ci COMMENT 'Yêu cầu cụ thể từ khách',
+    `staff_notes` text COLLATE utf8mb4_unicode_ci COMMENT 'Ghi chú nội bộ của nhân viên',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `fk_service_requests_recovery_approver` (`recovery_approved_by`),
+    KEY `idx_sr_booking` (`booking_id`),
+    KEY `idx_sr_service` (`service_id`),
+    KEY `idx_sr_assigned` (`assigned_to`),
+    KEY `idx_sr_status` (`status`),
+    KEY `idx_sr_sla` (`sla_due_at`,`is_sla_breached`),
+    CONSTRAINT `fk_service_requests_assigned` FOREIGN KEY (`assigned_to`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `fk_service_requests_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_service_requests_recovery_approver` FOREIGN KEY (`recovery_approved_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `fk_service_requests_service` FOREIGN KEY (`service_id`) REFERENCES `room_services` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: BOOKING_SERVICE_SNAPSHOTS - Bản lưu chụp trạng thái dịch vụ tại thời điểm chốt đơn đặt phòng
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `booking_service_snapshots` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `booking_id` bigint unsigned NOT NULL,
-  `service_id` bigint unsigned NOT NULL,
-  `service_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `service_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'INCLUDED',
-  `category_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `unit` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `base_price` decimal(12,2) NOT NULL DEFAULT '0.00',
-  `unit_price` decimal(12,2) NOT NULL,
-  `quantity` smallint unsigned NOT NULL DEFAULT '1',
-  `total_amount` decimal(12,2) NOT NULL,
-  `is_complimentary` tinyint(1) NOT NULL DEFAULT '0',
-  `quota_included` smallint unsigned DEFAULT NULL,
-  `quota_used` smallint unsigned NOT NULL DEFAULT '0',
-  `quota_per_night` smallint unsigned DEFAULT NULL,
-  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `note` text COLLATE utf8mb4_unicode_ci,
-  `snapshotted_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `fk_bss_service` (`service_id`),
-  KEY `idx_bss_booking` (`booking_id`),
-  CONSTRAINT `fk_bss_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_bss_service` FOREIGN KEY (`service_id`) REFERENCES `room_services` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `booking_id` bigint unsigned NOT NULL,
+    `service_id` bigint unsigned NOT NULL,
+    `service_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `service_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'INCLUDED',
+    `category_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `unit` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `base_price` decimal(12,2) NOT NULL DEFAULT '0.00',
+    `unit_price` decimal(12,2) NOT NULL,
+    `quantity` smallint unsigned NOT NULL DEFAULT '1',
+    `total_amount` decimal(12,2) NOT NULL,
+    `is_complimentary` tinyint(1) NOT NULL DEFAULT '0',
+    `quota_included` smallint unsigned DEFAULT NULL,
+    `quota_used` smallint unsigned NOT NULL DEFAULT '0',
+    `quota_per_night` smallint unsigned DEFAULT NULL,
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `note` text COLLATE utf8mb4_unicode_ci,
+    `snapshotted_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `fk_bss_service` (`service_id`),
+    KEY `idx_bss_booking` (`booking_id`),
+    CONSTRAINT `fk_bss_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_bss_service` FOREIGN KEY (`service_id`) REFERENCES `room_services` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: SERVICE_RECOVERY_LOG - Nhật ký xử lý khiếu nại, đền bù dịch vụ và khắc phục sự cố trải nghiệm khách hàng
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `service_recovery_log` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `service_request_id` bigint unsigned DEFAULT NULL,
-  `booking_id` bigint unsigned NOT NULL,
-  `reported_by` bigint unsigned NOT NULL,
-  `approved_by` bigint unsigned DEFAULT NULL,
-  `recovery_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'COMPLIMENTARY',
-  `reason` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `issue_type` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'DELAY, QUALITY, WRONG_ITEM, STAFF_ATTITUDE, CANCELLATION',
-  `root_cause` text COLLATE utf8mb4_unicode_ci,
-  `action_taken` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `cost_incurred` decimal(12,2) NOT NULL DEFAULT '0.00',
-  `approved_at` datetime DEFAULT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING',
-  `compensation_type` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'NONE' COMMENT 'NONE, VOUCHER, DISCOUNT, FREE_SERVICE, REFUND',
-  `compensation_amount` decimal(12,2) NOT NULL DEFAULT '0.00',
-  `guest_satisfaction` tinyint unsigned DEFAULT NULL COMMENT 'Đánh giá hài lòng từ 1 đến 5 sao',
-  `resolved_at` datetime DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `fk_srl_request` (`service_request_id`),
-  KEY `fk_srl_reporter` (`reported_by`),
-  KEY `fk_srl_approver` (`approved_by`),
-  KEY `idx_srl_booking` (`booking_id`),
-  KEY `idx_srl_issue` (`issue_type`),
-  CONSTRAINT `fk_srl_approver` FOREIGN KEY (`approved_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_srl_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_srl_reporter` FOREIGN KEY (`reported_by`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `fk_srl_request` FOREIGN KEY (`service_request_id`) REFERENCES `service_requests` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `service_request_id` bigint unsigned DEFAULT NULL,
+    `booking_id` bigint unsigned NOT NULL,
+    `reported_by` bigint unsigned NOT NULL,
+    `approved_by` bigint unsigned DEFAULT NULL,
+    `recovery_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'COMPLIMENTARY',
+    `reason` text COLLATE utf8mb4_unicode_ci NOT NULL,
+    `issue_type` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'DELAY, QUALITY, WRONG_ITEM, STAFF_ATTITUDE, CANCELLATION',
+    `root_cause` text COLLATE utf8mb4_unicode_ci,
+    `action_taken` text COLLATE utf8mb4_unicode_ci NOT NULL,
+    `cost_incurred` decimal(12,2) NOT NULL DEFAULT '0.00',
+    `approved_at` datetime DEFAULT NULL,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING',
+    `compensation_type` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'NONE' COMMENT 'NONE, VOUCHER, DISCOUNT, FREE_SERVICE, REFUND',
+    `compensation_amount` decimal(12,2) NOT NULL DEFAULT '0.00',
+    `guest_satisfaction` tinyint unsigned DEFAULT NULL COMMENT 'Đánh giá hài lòng từ 1 đến 5 sao',
+    `resolved_at` datetime DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `fk_srl_request` (`service_request_id`),
+    KEY `fk_srl_reporter` (`reported_by`),
+    KEY `fk_srl_approver` (`approved_by`),
+    KEY `idx_srl_booking` (`booking_id`),
+    KEY `idx_srl_issue` (`issue_type`),
+    CONSTRAINT `fk_srl_approver` FOREIGN KEY (`approved_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `fk_srl_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_srl_reporter` FOREIGN KEY (`reported_by`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_srl_request` FOREIGN KEY (`service_request_id`) REFERENCES `service_requests` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================================================
@@ -782,140 +822,140 @@ CREATE TABLE IF NOT EXISTS `service_recovery_log` (
 -- Bảng: SKILL_CATEGORIES - Danh mục tiêu chuẩn kỹ năng nghiệp vụ khách sạn
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `skill_categories` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `code` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `department` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'HOUSEKEEPING, F&B, FRONT_DESK, CONCIERGE, SPA, MAINTENANCE',
-  `weight_multiplier` decimal(3,2) NOT NULL DEFAULT '1.00' COMMENT 'Hệ số độ khó kỹ năng',
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_skill_categories_code` (`code`),
-  KEY `idx_skill_dept` (`department`),
-  KEY `idx_skill_status` (`status`)
-) ENGINE=InnoDB AUTO_INCREMENT=41 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `code` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `description` text COLLATE utf8mb4_unicode_ci,
+    `department` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'HOUSEKEEPING, F&B, FRONT_DESK, CONCIERGE, SPA, MAINTENANCE',
+    `weight_multiplier` decimal(3,2) NOT NULL DEFAULT '1.00' COMMENT 'Hệ số độ khó kỹ năng',
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_skill_categories_code` (`code`),
+    KEY `idx_skill_dept` (`department`),
+    KEY `idx_skill_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: STAFF_SKILLS - Hồ sơ năng lực chuyên môn, năm kinh nghiệm và chứng chỉ nhân viên
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `staff_skills` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `user_id` bigint unsigned NOT NULL,
-  `skill_id` bigint unsigned NOT NULL,
-  `level` tinyint unsigned NOT NULL DEFAULT '1',
-  `years_exp` decimal(4,1) DEFAULT NULL,
-  `proficiency_level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'BASIC' COMMENT 'BASIC, INTERMEDIATE, ADVANCED, EXPERT',
-  `certificate` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Tên chứng chỉ nghiệp vụ',
-  `certificate_expiry` date DEFAULT NULL,
-  `note` text COLLATE utf8mb4_unicode_ci,
-  `verified_by` bigint unsigned DEFAULT NULL COMMENT 'Admin/Manager đã duyệt kỹ năng',
-  `verified_at` datetime DEFAULT NULL,
-  `is_shadow` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Đang thực tập kèm cặp',
-  `shadow_mentor_id` bigint unsigned DEFAULT NULL COMMENT 'Nhân viên kinh nghiệm hướng dẫn',
-  `eligibility_level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD, HIGH_COMPLEXITY, VIP_ONLY',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_staff_skill` (`user_id`,`skill_id`),
-  KEY `fk_staff_skills_mentor` (`shadow_mentor_id`),
-  KEY `fk_staff_skills_verifier` (`verified_by`),
-  KEY `idx_staff_skills_user` (`user_id`),
-  KEY `idx_staff_skills_skill` (`skill_id`),
-  KEY `idx_staff_skills_level` (`proficiency_level`),
-  CONSTRAINT `fk_staff_skills_mentor` FOREIGN KEY (`shadow_mentor_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_staff_skills_skill` FOREIGN KEY (`skill_id`) REFERENCES `skill_categories` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_staff_skills_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_staff_skills_verifier` FOREIGN KEY (`verified_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `user_id` bigint unsigned NOT NULL,
+    `skill_id` bigint unsigned NOT NULL,
+    `level` tinyint unsigned NOT NULL DEFAULT '1',
+    `years_exp` decimal(4,1) DEFAULT NULL,
+    `proficiency_level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'BASIC' COMMENT 'BASIC, INTERMEDIATE, ADVANCED, EXPERT',
+    `certificate` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Tên chứng chỉ nghiệp vụ',
+    `certificate_expiry` date DEFAULT NULL,
+    `note` text COLLATE utf8mb4_unicode_ci,
+    `verified_by` bigint unsigned DEFAULT NULL COMMENT 'Admin/Manager đã duyệt kỹ năng',
+    `verified_at` datetime DEFAULT NULL,
+    `is_shadow` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Đang thực tập kèm cặp',
+    `shadow_mentor_id` bigint unsigned DEFAULT NULL COMMENT 'Nhân viên kinh nghiệm hướng dẫn',
+    `eligibility_level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD, HIGH_COMPLEXITY, VIP_ONLY',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_staff_skill` (`user_id`,`skill_id`),
+    KEY `fk_staff_skills_mentor` (`shadow_mentor_id`),
+    KEY `fk_staff_skills_verifier` (`verified_by`),
+    KEY `idx_staff_skills_user` (`user_id`),
+    KEY `idx_staff_skills_skill` (`skill_id`),
+    KEY `idx_staff_skills_level` (`proficiency_level`),
+    CONSTRAINT `fk_staff_skills_mentor` FOREIGN KEY (`shadow_mentor_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `fk_staff_skills_skill` FOREIGN KEY (`skill_id`) REFERENCES `skill_categories` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_staff_skills_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_staff_skills_verifier` FOREIGN KEY (`verified_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: STAFF_LANGUAGE_SKILLS - Hồ sơ năng lực ngoại ngữ và chứng chỉ quốc tế của nhân viên
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `staff_language_skills` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `user_id` bigint unsigned NOT NULL,
-  `language_code` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'vi, en, zh, ja, ko, fr, de, ru',
-  `language_name` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-  `level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'BASIC',
-  `proficiency_level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'INTERMEDIATE' COMMENT 'BASIC, INTERMEDIATE, FLUENT, NATIVE',
-  `certificate` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'IELTS, TOEIC, HSK, JLPT...',
-  `certificate_expiry` date DEFAULT NULL,
-  `verified_by` bigint unsigned DEFAULT NULL,
-  `verified_at` datetime DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_staff_language` (`user_id`,`language_code`),
-  KEY `fk_sls_verifier` (`verified_by`),
-  KEY `idx_sls_user` (`user_id`),
-  KEY `idx_sls_lang` (`language_code`),
-  CONSTRAINT `fk_sls_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_sls_verifier` FOREIGN KEY (`verified_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `user_id` bigint unsigned NOT NULL,
+    `language_code` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'vi, en, zh, ja, ko, fr, de, ru',
+    `language_name` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+    `level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'BASIC',
+    `proficiency_level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'INTERMEDIATE' COMMENT 'BASIC, INTERMEDIATE, FLUENT, NATIVE',
+    `certificate` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'IELTS, TOEIC, HSK, JLPT...',
+    `certificate_expiry` date DEFAULT NULL,
+    `verified_by` bigint unsigned DEFAULT NULL,
+    `verified_at` datetime DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_staff_language` (`user_id`,`language_code`),
+    KEY `fk_sls_verifier` (`verified_by`),
+    KEY `idx_sls_user` (`user_id`),
+    KEY `idx_sls_lang` (`language_code`),
+    CONSTRAINT `fk_sls_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_sls_verifier` FOREIGN KEY (`verified_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: STAFF_ASSIGNMENTS - Lịch sử điều phối công việc cho nhân viên theo từng yêu cầu dịch vụ
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `staff_assignments` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `service_request_id` bigint unsigned NOT NULL,
-  `assigned_staff_id` bigint unsigned NOT NULL,
-  `assigned_by` bigint unsigned NOT NULL,
-  `assigned_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `difficulty_level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD, HIGH, CRITICAL, VIP',
-  `case_complexity` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD, HIGH, CRITICAL',
-  `required_language` varchar(10) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Ngoại ngữ yêu cầu cho ca phục vụ',
-  `is_shadow` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Nhân viên đi kèm học việc',
-  `shadow_supervisor_id` bigint unsigned DEFAULT NULL COMMENT 'Người giám sát trực tiếp',
-  `is_acting` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Làm nhiệm vụ kiêm nhiệm vượt cấp',
-  `escalated_to` bigint unsigned DEFAULT NULL COMMENT 'Chuyển giao cho người khác khi khẩn cấp',
-  `escalated_at` datetime DEFAULT NULL,
-  `escalation_reason` text COLLATE utf8mb4_unicode_ci,
-  `performance_score` tinyint unsigned DEFAULT NULL COMMENT 'Chấm điểm hiệu suất (1 - 100)',
-  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ASSIGNED' COMMENT 'ASSIGNED, IN_PROGRESS, COMPLETED, ESCALATED, REJECTED',
-  `notes` text COLLATE utf8mb4_unicode_ci,
-  `rating` decimal(2,1) DEFAULT NULL COMMENT 'Khách đánh giá (1.0 đến 5.0 sao)',
-  `quality_score` tinyint unsigned DEFAULT NULL COMMENT 'Đánh giá chất lượng từ quản lý',
-  `feedback` text COLLATE utf8mb4_unicode_ci,
-  `completed_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `fk_staff_assignments_assigner` (`assigned_by`),
-  KEY `fk_sa_shadow_supervisor` (`shadow_supervisor_id`),
-  KEY `fk_sa_escalated_to` (`escalated_to`),
-  KEY `idx_sa_request` (`service_request_id`),
-  KEY `idx_sa_staff` (`assigned_staff_id`),
-  KEY `idx_sa_status` (`status`),
-  CONSTRAINT `fk_sa_escalated_to` FOREIGN KEY (`escalated_to`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_sa_shadow_supervisor` FOREIGN KEY (`shadow_supervisor_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_staff_assignments_assigner` FOREIGN KEY (`assigned_by`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `fk_staff_assignments_request` FOREIGN KEY (`service_request_id`) REFERENCES `service_requests` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_staff_assignments_staff` FOREIGN KEY (`assigned_staff_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `service_request_id` bigint unsigned NOT NULL,
+    `assigned_staff_id` bigint unsigned NOT NULL,
+    `assigned_by` bigint unsigned NOT NULL,
+    `assigned_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `difficulty_level` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD, HIGH, CRITICAL, VIP',
+    `case_complexity` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STANDARD' COMMENT 'STANDARD, HIGH, CRITICAL',
+    `required_language` varchar(10) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Ngoại ngữ yêu cầu cho ca phục vụ',
+    `is_shadow` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Nhân viên đi kèm học việc',
+    `shadow_supervisor_id` bigint unsigned DEFAULT NULL COMMENT 'Người giám sát trực tiếp',
+    `is_acting` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = Làm nhiệm vụ kiêm nhiệm vượt cấp',
+    `escalated_to` bigint unsigned DEFAULT NULL COMMENT 'Chuyển giao cho người khác khi khẩn cấp',
+    `escalated_at` datetime DEFAULT NULL,
+    `escalation_reason` text COLLATE utf8mb4_unicode_ci,
+    `performance_score` tinyint unsigned DEFAULT NULL COMMENT 'Chấm điểm hiệu suất (1 - 100)',
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ASSIGNED' COMMENT 'ASSIGNED, IN_PROGRESS, COMPLETED, ESCALATED, REJECTED',
+    `notes` text COLLATE utf8mb4_unicode_ci,
+    `rating` decimal(2,1) DEFAULT NULL COMMENT 'Khách đánh giá (1.0 đến 5.0 sao)',
+    `quality_score` tinyint unsigned DEFAULT NULL COMMENT 'Đánh giá chất lượng từ quản lý',
+    `feedback` text COLLATE utf8mb4_unicode_ci,
+    `completed_at` datetime DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    KEY `fk_staff_assignments_assigner` (`assigned_by`),
+    KEY `fk_sa_shadow_supervisor` (`shadow_supervisor_id`),
+    KEY `fk_sa_escalated_to` (`escalated_to`),
+    KEY `idx_sa_request` (`service_request_id`),
+    KEY `idx_sa_staff` (`assigned_staff_id`),
+    KEY `idx_sa_status` (`status`),
+    CONSTRAINT `fk_sa_escalated_to` FOREIGN KEY (`escalated_to`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `fk_sa_shadow_supervisor` FOREIGN KEY (`shadow_supervisor_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT `fk_staff_assignments_assigner` FOREIGN KEY (`assigned_by`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_staff_assignments_request` FOREIGN KEY (`service_request_id`) REFERENCES `service_requests` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_staff_assignments_staff` FOREIGN KEY (`assigned_staff_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: STAFF_ELIGIBILITY_RULES - Bộ quy tắc điều phối nhân viên thông minh dựa trên độ phức tạp và cấp độ dịch vụ
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `staff_eligibility_rules` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `rule_code` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `case_complexity` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STANDARD',
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `min_skill_level` tinyint unsigned NOT NULL DEFAULT '1',
-  `required_skill_codes` json DEFAULT NULL,
-  `required_language_codes` json DEFAULT NULL,
-  `min_years_experience` decimal(4,1) NOT NULL DEFAULT '0.0',
-  `min_cases_completed` smallint unsigned NOT NULL DEFAULT '0',
-  `exclude_shadow_mode` tinyint(1) NOT NULL DEFAULT '1',
-  `require_verified_skills` tinyint(1) NOT NULL DEFAULT '0',
-  `escalation_role` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'MANAGER',
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_rule_code` (`rule_code`)
-) ENGINE=InnoDB AUTO_INCREMENT=17 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `rule_code` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `case_complexity` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STANDARD',
+    `description` text COLLATE utf8mb4_unicode_ci,
+    `min_skill_level` tinyint unsigned NOT NULL DEFAULT '1',
+    `required_skill_codes` json DEFAULT NULL,
+    `required_language_codes` json DEFAULT NULL,
+    `min_years_experience` decimal(4,1) NOT NULL DEFAULT '0.0',
+    `min_cases_completed` smallint unsigned NOT NULL DEFAULT '0',
+    `exclude_shadow_mode` tinyint(1) NOT NULL DEFAULT '1',
+    `require_verified_skills` tinyint(1) NOT NULL DEFAULT '0',
+    `escalation_role` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'MANAGER',
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_rule_code` (`rule_code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================================================
 -- PHẦN 8: NHẬT KÝ HỆ THỐNG (AUDIT LOGS) & THEO DÕI HÀNH VI CHO AI (TRACKING)
@@ -926,41 +966,41 @@ CREATE TABLE IF NOT EXISTS `staff_eligibility_rules` (
 -- Bảng: AUDIT_LOGS - Nhật ký kiểm toán hệ thống ghi lại mọi biến động dữ liệu quan trọng
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `audit_logs` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `entity_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `entity_id` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `action` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `old_values` json DEFAULT NULL,
-  `new_values` json DEFAULT NULL,
-  `performed_by` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT 'SYSTEM',
-  `ip_address` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `user_agent` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `request_id` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_audit_entity` (`entity_name`,`entity_id`),
-  KEY `idx_audit_action` (`action`),
-  KEY `idx_audit_performed_by` (`performed_by`),
-  KEY `idx_audit_created_at` (`created_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `entity_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `entity_id` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `action` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `old_values` json DEFAULT NULL,
+    `new_values` json DEFAULT NULL,
+    `performed_by` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT 'SYSTEM',
+    `ip_address` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `user_agent` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `request_id` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_audit_entity` (`entity_name`,`entity_id`),
+    KEY `idx_audit_action` (`action`),
+    KEY `idx_audit_performed_by` (`performed_by`),
+    KEY `idx_audit_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
 -- Bảng: HOTEL_TRACKING_EVENTS - Ghi nhận sự kiện xem chi tiết khách sạn, tìm kiếm khoảng giá để huấn luyện mô hình gợi ý AI
 -- ----------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `hotel_tracking_events` (
-`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `hotel_id` bigint unsigned NOT NULL,
-  `event_type` enum('VIEW_DETAIL','SEARCH') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'VIEW_DETAIL',
-  `user_id` bigint unsigned DEFAULT NULL,
-  `ip_address` varchar(45) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `price_min` decimal(15,2) DEFAULT NULL,
-  `price_max` decimal(15,2) DEFAULT NULL,
-  `viewed_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_tracking_ip_time` (`ip_address`,`viewed_at`),
-  KEY `idx_tracking_hotel_time` (`hotel_id`,`viewed_at`),
-  KEY `idx_tracking_time` (`viewed_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `hotel_id` bigint unsigned NOT NULL,
+    `event_type` enum('VIEW_DETAIL','SEARCH') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'VIEW_DETAIL',
+    `user_id` bigint unsigned DEFAULT NULL,
+    `ip_address` varchar(45) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `price_min` decimal(15,2) DEFAULT NULL,
+    `price_max` decimal(15,2) DEFAULT NULL,
+    `viewed_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_tracking_ip_time` (`ip_address`,`viewed_at`),
+    KEY `idx_tracking_hotel_time` (`hotel_id`,`viewed_at`),
+    KEY `idx_tracking_time` (`viewed_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================================================
 -- PHẦN 9: BỘ DỮ LIỆU MẪU MẶC ĐỊNH CHUẨN (MASTER SEEDS DATA - NẠP SẴN HOẠT ĐỘNG NGAY)
@@ -1286,6 +1326,4 @@ SET FOREIGN_KEY_CHECKS = 1;
 -- ====================================================================================================
 -- KIỂM TRA BÁO CÁO TỔNG QUAN TẤT CẢ CÁC BẢNG SAU KHI THỰC THI THÀNH CÔNG
 -- ====================================================================================================
-SELECT 'HOÀN TẤT 100%! TOÀN BỘ 34 BẢNG VÀ DỮ LIỆU CƠ SỞ DỮ LIỆU TRAVELEKE ĐÃ SẴN SÀNG HOẠT ĐỘNG KHÔNG LỖI' AS status;
-
 SHOW TABLES;
