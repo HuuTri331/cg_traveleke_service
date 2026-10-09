@@ -56,10 +56,10 @@
 --   PHẦN 10: TỰ ĐỘNG ĐỒNG BỘ CỘT CHO DATABASE CŨ (MIGRATION COMPATIBILITY CHECK)
 -- ====================================================================================================
 
--- Tùy chọn xóa và khởi tạo lại database sạch sẽ nếu người dùng có quyền DROP DATABASE:
--- DROP DATABASE IF EXISTS hotel_booking_db;
+-- Tự động tiêu hủy toàn bộ database cũ để đảm bảo không bị xung đột hoặc thiếu bảng/cột khi chạy lại:
+DROP DATABASE IF EXISTS hotel_booking_db;
 
-CREATE DATABASE IF NOT EXISTS hotel_booking_db
+CREATE DATABASE hotel_booking_db
     CHARACTER SET utf8mb4
     COLLATE utf8mb4_unicode_ci;
 
