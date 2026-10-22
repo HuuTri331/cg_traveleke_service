@@ -22,9 +22,11 @@ import {
   CheckEligibilityDto,
 } from './staff-skills.service';
 import { CaseComplexity } from './entities/staff-eligibility-rule.entity';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { User } from '../users/entities/user.entity';
 
 @Controller('staff-skills')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -70,28 +72,32 @@ export class StaffSkillsController {
 
   @Post('user/:userId')
   @HttpCode(HttpStatus.CREATED)
-  upsertSkill(
+  async upsertSkill(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: UpsertStaffSkillDto,
+    @CurrentUser() user: User,
   ) {
+    await this.staffSkillsService.assertCanModifySkills(user, userId);
     return this.staffSkillsService.upsertSkill(userId, dto);
   }
 
   @Delete('user/:userId/skill/:skillId')
-  removeSkill(
+  async removeSkill(
     @Param('userId', ParseIntPipe) userId: number,
     @Param('skillId', ParseIntPipe) skillId: number,
+    @CurrentUser() user: User,
   ) {
+    await this.staffSkillsService.assertCanModifySkills(user, userId);
     return this.staffSkillsService.removeSkill(userId, skillId);
   }
 
   @Post('verify/:entryId')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'EMPLOYEE')
   verifySkill(
     @Param('entryId', ParseIntPipe) entryId: number,
-    @Request() req: { user: { id: number } },
+    @CurrentUser() user: User,
   ) {
-    return this.staffSkillsService.verifySkill(entryId, req.user.id);
+    return this.staffSkillsService.verifySkill(entryId, Number(user.id), user);
   }
 
   // ============================================================
@@ -122,18 +128,22 @@ export class StaffSkillsController {
 
   @Post('user/:userId/languages')
   @HttpCode(HttpStatus.CREATED)
-  upsertLanguage(
+  async upsertLanguage(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: UpsertLanguageSkillDto,
+    @CurrentUser() user: User,
   ) {
+    await this.staffSkillsService.assertCanModifySkills(user, userId);
     return this.staffSkillsService.upsertLanguage(userId, dto);
   }
 
   @Delete('user/:userId/languages/:code')
-  removeLanguage(
+  async removeLanguage(
     @Param('userId', ParseIntPipe) userId: number,
     @Param('code') code: string,
+    @CurrentUser() user: User,
   ) {
+    await this.staffSkillsService.assertCanModifySkills(user, userId);
     return this.staffSkillsService.removeLanguage(userId, code);
   }
 

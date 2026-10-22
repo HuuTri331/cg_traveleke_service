@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { DataSource, QueryFailedError, Repository } from 'typeorm';
 
 import { SearchHotelDto } from './dto/search-hotel.dto';
 
@@ -27,6 +27,7 @@ export class HotelsService {
     private readonly hotelsRepository: Repository<Hotel>,
     @InjectRepository(HotelImage)
     private readonly hotelImagesRepository: Repository<HotelImage>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async create(dto: CreateHotelDto): Promise<Hotel> {
@@ -181,13 +182,47 @@ export class HotelsService {
 
     const [data, total] = await qb.getManyAndCount();
 
+    let enrichedData: (Hotel & { minPricePerNight?: number | null })[] = data;
+    if (data.length > 0 && this.hotelsRepository.manager) {
+      try {
+        const hotelIds = data.map((h) => h.id);
+        const minPrices: { hotelId: string; minPrice: string | number }[] =
+          await this.hotelsRepository.manager
+            .createQueryBuilder()
+            .select('r.hotel_id', 'hotelId')
+            .addSelect('MIN(r.price_per_night)', 'minPrice')
+            .from('rooms', 'r')
+            .where('r.hotel_id IN (:...hotelIds)', { hotelIds })
+            .andWhere('r.deleted_at IS NULL')
+            .andWhere("r.status = 'AVAILABLE'")
+            .groupBy('r.hotel_id')
+            .getRawMany();
+
+        const priceMap = new Map<string, number>();
+        for (const row of minPrices) {
+          if (row.minPrice != null) {
+            priceMap.set(String(row.hotelId), Number(row.minPrice));
+          }
+        }
+
+        enrichedData = data.map((hotel) => {
+          const minPrice = priceMap.get(String(hotel.id));
+          return Object.assign(hotel, {
+            minPricePerNight: minPrice !== undefined ? minPrice : null,
+          });
+        });
+      } catch (err) {
+        // Fallback: If rooms aggregate query encounters an error, retain base hotel data
+      }
+    }
+
     return {
-      data,
+      data: enrichedData,
       meta: buildPaginationMeta({
         page,
         limit,
         total,
-        dataLength: data.length,
+        dataLength: enrichedData.length,
       }),
     };
   }
@@ -501,6 +536,18 @@ export class HotelsService {
   async remove(id: string): Promise<void> {
     const hotel = await this.findOne(id);
     await this.hotelsRepository.softDelete(hotel.id);
+  }
+
+  /**
+   * Kiểm tra xem người dùng có phải Quản lý khách sạn (MANAGER) đang ACTIVE tại khách sạn này không
+   * (Section 04.4 - Bảo vệ phạm vi khách sạn)
+   */
+  async isHotelManager(userId: string | number, hotelId: string | number): Promise<boolean> {
+    const result = await this.dataSource.query(
+      `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND staff_role = 'MANAGER' AND status = 'ACTIVE' LIMIT 1`,
+      [hotelId, userId],
+    );
+    return Array.isArray(result) && result.length > 0;
   }
 
   private rethrowDatabaseError(error: unknown): never {

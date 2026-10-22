@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  ForbiddenException,
   Controller,
   Get,
   Post,
@@ -28,6 +30,8 @@ import { ServiceRequestStatus } from './entities/service-request.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../users/entities/user.entity';
 
 @Controller('services')
 export class ServicesController {
@@ -107,17 +111,43 @@ export class ServicesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   @HttpCode(HttpStatus.CREATED)
-  createRoomService(@Body() dto: CreateRoomServiceDto) {
+  async createRoomService(
+    @Body() dto: CreateRoomServiceDto,
+    @CurrentUser() user: User,
+  ) {
+    if (user.role === 'EMPLOYEE') {
+      if (!dto.hotelId) {
+        throw new BadRequestException('Vui lòng chỉ định khách sạn (hotelId) cho dịch vụ phòng.');
+      }
+      const isManager = await this.servicesService.isHotelManager(user.id, dto.hotelId);
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền tạo dịch vụ phòng cho khách sạn này.',
+        );
+      }
+    }
     return this.servicesService.createRoomService(dto);
   }
 
   @Put('room-services/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  updateRoomService(
+  async updateRoomService(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateRoomServiceDto,
+    @CurrentUser() user: User,
   ) {
+    if (user.role === 'EMPLOYEE') {
+      const svc = await this.servicesService.getRoomServiceById(id);
+      if (svc.hotelId) {
+        const isManager = await this.servicesService.isHotelManager(user.id, svc.hotelId);
+        if (!isManager) {
+          throw new ForbiddenException(
+            'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền cập nhật dịch vụ phòng của khách sạn này.',
+          );
+        }
+      }
+    }
     return this.servicesService.updateRoomService(id, dto);
   }
 
@@ -136,28 +166,38 @@ export class ServicesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   getAllRequests(
+    @CurrentUser() user: User,
     @Query('status') status?: string,
     @Query('assignedTo') assignedTo?: string,
     @Query('hotelId') hotelId?: string,
   ) {
-    return this.servicesService.getAllServiceRequests({
-      status,
-      assignedTo: assignedTo ? Number(assignedTo) : undefined,
-      hotelId: hotelId ? Number(hotelId) : undefined,
-    });
+    return this.servicesService.getAllServiceRequests(
+      {
+        status,
+        assignedTo: assignedTo ? Number(assignedTo) : undefined,
+        hotelId: hotelId ? Number(hotelId) : undefined,
+      },
+      user,
+    );
   }
 
   @Get('requests/booking/:bookingId')
   @UseGuards(JwtAuthGuard)
-  getRequestsByBooking(@Param('bookingId', ParseIntPipe) bookingId: number) {
-    return this.servicesService.getServiceRequestsByBooking(bookingId);
+  getRequestsByBooking(
+    @Param('bookingId', ParseIntPipe) bookingId: number,
+    @CurrentUser() user: User,
+  ) {
+    return this.servicesService.getServiceRequestsByBooking(bookingId, user);
   }
 
   @Post('requests')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
-  createServiceRequest(@Body() dto: CreateServiceRequestDto) {
-    return this.servicesService.createServiceRequest(dto);
+  createServiceRequest(
+    @Body() dto: CreateServiceRequestDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.servicesService.createServiceRequest(dto, user);
   }
 
   @Put('requests/:id')
@@ -200,18 +240,23 @@ export class ServicesController {
   @HttpCode(HttpStatus.CREATED)
   createBookingSnapshots(
     @Body() body: { bookingId: number; roomTypeId?: number; hotelId?: number },
+    @CurrentUser() user: User,
   ) {
     return this.servicesService.createBookingSnapshots(
       body.bookingId,
       body.roomTypeId,
       body.hotelId,
+      user,
     );
   }
 
   @Get('snapshots/booking/:bookingId')
   @UseGuards(JwtAuthGuard)
-  getBookingSnapshots(@Param('bookingId', ParseIntPipe) bookingId: number) {
-    return this.servicesService.getBookingSnapshots(bookingId);
+  getBookingSnapshots(
+    @Param('bookingId', ParseIntPipe) bookingId: number,
+    @CurrentUser() user: User,
+  ) {
+    return this.servicesService.getBookingSnapshots(bookingId, user);
   }
 
   // ============================================================
@@ -232,14 +277,14 @@ export class ServicesController {
 
   @Put('recovery/:id/approve')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'EMPLOYEE')
   approveRecovery(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ApproveRecoveryDto,
-    @Request() req: { user: { id: number } },
+    @CurrentUser() user: User,
   ) {
-    if (!dto.approvedBy) dto.approvedBy = req.user.id;
-    return this.servicesService.approveRecoveryLog(id, dto);
+    if (!dto.approvedBy) dto.approvedBy = Number(user.id);
+    return this.servicesService.approveRecoveryLog(id, dto, user);
   }
 
   @Get('recovery')

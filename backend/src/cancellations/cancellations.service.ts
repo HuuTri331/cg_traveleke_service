@@ -158,8 +158,8 @@ export class CancellationsService {
       throw new NotFoundException('Không tìm thấy đơn đặt phòng liên quan.');
     }
 
-    // Quản lý khách sạn hoặc Admin mới được duyệt
-    await this.bookingAccessService.assertCanManage(booking, user);
+    // Quản lý khách sạn (MANAGER) hoặc Admin mới được duyệt yêu cầu hủy/hoàn
+    await this.bookingAccessService.assertCanApproveCancellation(booking, user);
 
     if (dto.action === 'REJECT') {
       request.status = CancellationRequestStatus.REJECTED;

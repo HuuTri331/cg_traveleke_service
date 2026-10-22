@@ -6,6 +6,7 @@ import { MailService } from '../mail/mail.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { VnpayService } from '../payments/vnpay.service';
 import { PaymentsService } from '../payments/payments.service';
+import { RefundService } from '../payments/services/refund.service';
 import { InventoryService } from '../inventory/inventory.service';
 import {
   BookingHold,
@@ -31,6 +32,7 @@ export class WorkersService {
     private readonly realtimeGateway: RealtimeGateway,
     private readonly vnpayService: VnpayService,
     private readonly paymentsService: PaymentsService,
+    private readonly refundService: RefundService,
     private readonly inventoryService: InventoryService,
     private readonly dataSource: DataSource,
   ) {}
@@ -97,25 +99,28 @@ export class WorkersService {
               });
               break;
 
+            case 'booking.payment_expired':
+              this.realtimeGateway.emitBookingPaymentExpired({
+                bookingId: payload.bookingId,
+                bookingCode: payload.bookingCode,
+                userId: payload.userId,
+                hotelId: payload.hotelId,
+              });
+              break;
+
             case 'refund.requested':
             case 'refund.process':
-              const refundRes = await this.vnpayService.refund({
+              const refundRes = await this.refundService.processRefund({
+                paymentId: payload.paymentId,
                 txnRef: payload.txnRef,
                 amount: Number(payload.amount),
                 transactionNo: payload.transactionNo,
-                transactionDate: new Date(payload.transactionDate || Date.now()),
+                transactionDate: payload.transactionDate,
                 createBy: 'AutoRefundWorker',
+                reason: payload.reason,
               });
 
-              if (refundRes?.vnp_ResponseCode === '00') {
-                if (payload.paymentId) {
-                  await this.dataSource
-                    .getRepository(PaymentTransaction)
-                    .update(payload.paymentId, {
-                      status: PaymentTransactionStatus.REFUNDED,
-                      refundedAt: new Date(),
-                    });
-                }
+              if (refundRes.success) {
                 this.realtimeGateway.emitRefundStatusChanged({
                   paymentId: payload.paymentId,
                   status: 'REFUNDED',
@@ -123,7 +128,7 @@ export class WorkersService {
                 });
               } else {
                 throw new Error(
-                  `VNPay refund failed with response code: ${refundRes?.vnp_ResponseCode}`,
+                  `VNPay refund failed: ${refundRes.error || 'Unknown error'}`,
                 );
               }
               break;
@@ -197,38 +202,26 @@ export class WorkersService {
         order: { attemptNo: 'DESC' },
       });
 
-    // Nếu có payment PENDING: BẮT BUỘC QueryDr để kiểm tra trạng thái thật tại VNPay
+    // Nếu có payment PENDING: BẮT BUỘC đối soát qua PaymentReconciliationService trước khi release
     if (payment) {
       try {
-        const qdrResult = await this.vnpayService.queryDr({
-          txnRef: payment.txnRef,
-          transactionDate: payment.createdAt,
-        });
+        this.logger.log(
+          `[Expiry Sweeper] Hold hết hạn nhưng phát hiện payment PENDING ${payment.txnRef}. Gọi reconcilePayment để đối soát với VNPay...`,
+        );
+        const reconcileResult = await this.paymentsService.reconcilePayment(bookingId);
 
-        // Nếu VNPay xác nhận đã thanh toán thành công (00) -> Finalize payment ngay!
         if (
-          qdrResult?.vnp_ResponseCode === '00' &&
-          qdrResult?.vnp_TransactionStatus === '00'
+          reconcileResult?.status === PaymentTransactionStatus.PAID ||
+          reconcileResult?.status === PaymentTransactionStatus.PAID_REQUIRES_REVIEW
         ) {
           this.logger.log(
-            `[Expiry Sweeper] Khách hàng đã thanh toán thành công trước khi hết hạn cho ${payment.txnRef}. Tiến hành finalize!`,
+            `[Expiry Sweeper] Khách hàng đã thanh toán thành công cho ${payment.txnRef} (Status: ${reconcileResult.status}). Giữ booking, không release!`,
           );
-          await this.paymentsService.processVnpayIpn({
-            vnp_TxnRef: payment.txnRef,
-            vnp_Amount: Number(payment.amount) * 100,
-            vnp_ResponseCode: '00',
-            vnp_TransactionStatus: '00',
-            vnp_TransactionNo: qdrResult.vnp_TransactionNo || 'EXPIRY_RESOLVED',
-            vnp_PayDate: qdrResult.vnp_PayDate,
-            vnp_BankCode: qdrResult.vnp_BankCode,
-            vnp_CardType: qdrResult.vnp_CardType,
-            vnp_SecureHash: 'INTERNAL_QUERYDR_VALIDATED',
-          });
           return;
         }
       } catch (err: any) {
         this.logger.warn(
-          `[Expiry Sweeper] QueryDr thất bại cho ${payment.txnRef}: ${err.message}. Tạm dừng release để đối soát lại lần sau.`,
+          `[Expiry Sweeper] Đối soát thất bại cho ${payment.txnRef}: ${err.message}. Tạm dừng release để đối soát lại chu kỳ sau.`,
         );
         return;
       }
@@ -270,13 +263,19 @@ export class WorkersService {
           }),
         );
 
-        // Phát realtime event hết hạn
-        this.realtimeGateway.emitBookingPaymentExpired({
-          bookingId: booking.id,
-          bookingCode: booking.bookingCode,
-          userId: booking.userId,
-          hotelId: booking.hotelId,
-        });
+        // Đưa realtime event hết hạn vào outbox (được emit bởi outbox dispatcher sau khi commit)
+        await this.outboxService.addEvent(
+          manager,
+          'booking.payment_expired',
+          'Booking',
+          booking.id,
+          {
+            bookingId: booking.id,
+            bookingCode: booking.bookingCode,
+            userId: booking.userId,
+            hotelId: booking.hotelId,
+          },
+        );
 
         // Đưa email thông báo hết hạn vào outbox
         await this.outboxService.addEvent(

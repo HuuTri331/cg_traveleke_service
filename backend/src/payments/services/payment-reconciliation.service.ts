@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import {
@@ -8,7 +8,9 @@ import {
 import { Booking } from '../../bookings/entities/booking.entity';
 import { VnpayService } from '../vnpay.service';
 import { PaymentFinalizerService } from './payment-finalizer.service';
+import { BookingAccessService } from '../../bookings/services/booking-access.service';
 import { runWithDeadlockRetry } from '../../common/database/transaction-retry.helper';
+import { User } from '../../users/entities/user.entity';
 
 @Injectable()
 export class PaymentReconciliationService {
@@ -22,12 +24,27 @@ export class PaymentReconciliationService {
     private readonly dataSource: DataSource,
     private readonly vnpayService: VnpayService,
     private readonly paymentFinalizerService: PaymentFinalizerService,
+    @Optional()
+    private readonly bookingAccessService?: BookingAccessService,
   ) {}
 
   /**
    * Đối soát trạng thái thực tế của giao dịch với VNPay qua QueryDr
    */
-  async reconcilePayment(bookingId: string) {
+  async reconcilePayment(bookingId: string, user?: User) {
+    const booking = await this.bookingRepo.findOne({
+      where: { id: bookingId },
+    });
+
+    if (!booking) {
+      throw new NotFoundException('Không tìm thấy đơn đặt phòng.');
+    }
+
+    // Nếu người gọi là nhân viên/quản lý (user truyền từ Controller): kiểm tra quyền phụ trách hotel
+    if (user && this.bookingAccessService) {
+      await this.bookingAccessService.assertCanManage(booking, user);
+    }
+
     const payment = await this.paymentRepo.findOne({
       where: { bookingId },
       order: { attemptNo: 'DESC' },
@@ -35,14 +52,6 @@ export class PaymentReconciliationService {
 
     if (!payment) {
       throw new NotFoundException('Không tìm thấy giao dịch thanh toán.');
-    }
-
-    const booking = await this.bookingRepo.findOne({
-      where: { id: bookingId },
-    });
-
-    if (!booking) {
-      throw new NotFoundException('Không tìm thấy đơn đặt phòng.');
     }
 
     // Nếu đã PAID rồi thì trả về kết quả
@@ -90,11 +99,23 @@ export class PaymentReconciliationService {
         { contextName: 'PaymentReconciliation.finalizeSuccess' },
       );
 
+      const actualPaymentStatus =
+        finalResult?.paymentStatus ||
+        (finalResult?.success
+          ? PaymentTransactionStatus.PAID
+          : PaymentTransactionStatus.PAID_REQUIRES_REVIEW);
+
       return {
         bookingId,
         txnRef: payment.txnRef,
-        status: PaymentTransactionStatus.PAID,
-        message: 'Đối soát thành công: Giao dịch đã thanh toán.',
+        status: actualPaymentStatus,
+        bookingStatus: finalResult?.bookingStatus || booking.status,
+        outcome: finalResult?.outcome || 'RECONCILED',
+        message:
+          finalResult?.message ||
+          (finalResult?.success
+            ? 'Đối soát thành công: Giao dịch đã thanh toán.'
+            : 'Đối soát phát hiện trạng thái cần xem xét (Review/Refund).'),
         data: finalResult,
       };
     }

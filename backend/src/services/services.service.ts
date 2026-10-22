@@ -2,11 +2,13 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Optional,
 } from '@nestjs/common';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
+import { User } from '../users/entities/user.entity';
 import { ServiceCategory } from './entities/service-category.entity';
 import { RoomService, ServiceType } from './entities/room-service.entity';
 import {
@@ -48,6 +50,8 @@ export class ServicesService {
     @InjectRepository(ServiceRecoveryLog)
     private readonly recoveryLogRepo: Repository<ServiceRecoveryLog>,
 
+    private readonly dataSource: DataSource,
+
     @Optional()
     private readonly realtimeGateway?: RealtimeGateway,
   ) {}
@@ -73,6 +77,17 @@ export class ServicesService {
     if (!cat)
       throw new NotFoundException(`Danh mục dịch vụ #${id} không tồn tại`);
     return cat;
+  }
+
+  async isHotelManager(
+    userId: string | number,
+    hotelId: string | number,
+  ): Promise<boolean> {
+    const rows = await this.dataSource.query(
+      `SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND staff_role = 'MANAGER' AND status = 'ACTIVE' LIMIT 1`,
+      [userId, hotelId],
+    );
+    return Array.isArray(rows) && rows.length > 0;
   }
 
   async createCategory(
@@ -186,7 +201,34 @@ export class ServicesService {
 
   async getServiceRequestsByBooking(
     bookingId: number,
+    user?: User,
   ): Promise<ServiceRequest[]> {
+    if (user && user.role !== 'ADMIN') {
+      const [booking] = await this.dataSource.query(
+        'SELECT id, user_id AS userId, hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
+        [bookingId],
+      );
+      if (!booking) {
+        throw new NotFoundException(`Booking #${bookingId} không tồn tại`);
+      }
+      if (user.role === 'CUSTOMER' && String(booking.userId) !== String(user.id)) {
+        throw new ForbiddenException(
+          'Bạn không có quyền truy cập yêu cầu dịch vụ của booking này.',
+        );
+      }
+      if (user.role === 'EMPLOYEE') {
+        const [staff] = await this.dataSource.query(
+          'SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = "ACTIVE" LIMIT 1',
+          [user.id, booking.hotelId],
+        );
+        if (!staff) {
+          throw new ForbiddenException(
+            'Bạn không có quyền quản lý dịch vụ tại khách sạn của booking này.',
+          );
+        }
+      }
+    }
+
     return this.serviceRequestRepo.find({
       where: { bookingId },
       relations: ['service', 'service.category'],
@@ -194,15 +236,19 @@ export class ServicesService {
     });
   }
 
-  async getAllServiceRequests(filters?: {
-    status?: string;
-    assignedTo?: number;
-    hotelId?: number;
-  }): Promise<ServiceRequest[]> {
+  async getAllServiceRequests(
+    filters?: {
+      status?: string;
+      assignedTo?: number;
+      hotelId?: number;
+    },
+    actor?: User,
+  ): Promise<ServiceRequest[]> {
     const qb = this.serviceRequestRepo
       .createQueryBuilder('sr')
       .leftJoinAndSelect('sr.service', 'svc')
-      .leftJoinAndSelect('svc.category', 'cat');
+      .leftJoinAndSelect('svc.category', 'cat')
+      .leftJoin('bookings', 'b', 'b.id = sr.booking_id');
 
     if (filters?.status) {
       qb.andWhere('sr.status = :status', { status: filters.status });
@@ -212,14 +258,61 @@ export class ServicesService {
         assignedTo: filters.assignedTo,
       });
     }
+    if (filters?.hotelId) {
+      qb.andWhere('(svc.hotelId = :hotelId OR b.hotel_id = :hotelId)', {
+        hotelId: filters.hotelId,
+      });
+    }
+
+    if (actor && actor.role === 'EMPLOYEE') {
+      qb.andWhere(
+        '(svc.hotelId IN (SELECT hotel_id FROM hotel_staff WHERE staff_user_id = :staffUserId AND status = "ACTIVE") OR b.hotel_id IN (SELECT hotel_id FROM hotel_staff WHERE staff_user_id = :staffUserId AND status = "ACTIVE"))',
+        { staffUserId: actor.id },
+      );
+    }
 
     return qb.orderBy('sr.createdAt', 'DESC').getMany();
   }
 
   async createServiceRequest(
     dto: CreateServiceRequestDto,
+    user?: User,
   ): Promise<ServiceRequest> {
     const service = await this.getRoomServiceById(dto.serviceId);
+
+    // Verify booking exists and authorization
+    const [booking] = await this.dataSource.query(
+      'SELECT id, user_id AS userId, hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
+      [dto.bookingId],
+    );
+    if (!booking) {
+      throw new NotFoundException(`Booking #${dto.bookingId} không tồn tại`);
+    }
+
+    if (user && user.role !== 'ADMIN') {
+      if (user.role === 'CUSTOMER' && String(booking.userId) !== String(user.id)) {
+        throw new ForbiddenException(
+          'Bạn không thể tạo yêu cầu dịch vụ cho đơn đặt phòng của khách khác.',
+        );
+      }
+      if (user.role === 'EMPLOYEE') {
+        const [staff] = await this.dataSource.query(
+          'SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = "ACTIVE" LIMIT 1',
+          [user.id, booking.hotelId],
+        );
+        if (!staff) {
+          throw new ForbiddenException(
+            'Nhân viên không thuộc khách sạn của booking này.',
+          );
+        }
+      }
+    }
+
+    // Verify service belongs to this hotel (or is a general hotel service)
+    if (service.hotelId && String(service.hotelId) !== String(booking.hotelId)) {
+      throw new BadRequestException('Dịch vụ này không thuộc khách sạn của booking.');
+    }
+
     const quantity = dto.quantity ?? 1;
     const totalPrice = service.isComplimentary
       ? 0
@@ -356,7 +449,30 @@ export class ServicesService {
     bookingId: number,
     roomTypeId?: number,
     hotelId?: number,
+    user?: User,
   ): Promise<BookingServiceSnapshot[]> {
+    const [booking] = await this.dataSource.query(
+      'SELECT id, hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
+      [bookingId],
+    );
+    if (!booking) {
+      throw new NotFoundException(`Booking #${bookingId} không tồn tại`);
+    }
+
+    const targetHotelId = hotelId ?? booking.hotelId;
+
+    if (user && user.role !== 'ADMIN') {
+      const [staff] = await this.dataSource.query(
+        'SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = "ACTIVE" LIMIT 1',
+        [user.id, targetHotelId],
+      );
+      if (!staff) {
+        throw new ForbiddenException(
+          'Nhân viên không có quyền tạo snapshot quyền lợi cho khách sạn này.',
+        );
+      }
+    }
+
     const qb = this.roomServiceRepo
       .createQueryBuilder('rs')
       .leftJoinAndSelect('rs.category', 'cat')
@@ -370,8 +486,8 @@ export class ServicesService {
         roomTypeId,
       });
     }
-    if (hotelId) {
-      qb.andWhere('(rs.hotelId = :hotelId OR rs.hotelId IS NULL)', { hotelId });
+    if (targetHotelId) {
+      qb.andWhere('(rs.hotelId = :hotelId OR rs.hotelId IS NULL)', { hotelId: targetHotelId });
     }
 
     const services = await qb.getMany();
@@ -403,7 +519,34 @@ export class ServicesService {
 
   async getBookingSnapshots(
     bookingId: number,
+    user?: User,
   ): Promise<BookingServiceSnapshot[]> {
+    if (user && user.role !== 'ADMIN') {
+      const [booking] = await this.dataSource.query(
+        'SELECT id, user_id AS userId, hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
+        [bookingId],
+      );
+      if (!booking) {
+        throw new NotFoundException(`Booking #${bookingId} không tồn tại`);
+      }
+      if (user.role === 'CUSTOMER' && String(booking.userId) !== String(user.id)) {
+        throw new ForbiddenException(
+          'Bạn không có quyền xem quyền lợi dịch vụ của booking này.',
+        );
+      }
+      if (user.role === 'EMPLOYEE') {
+        const [staff] = await this.dataSource.query(
+          'SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = "ACTIVE" LIMIT 1',
+          [user.id, booking.hotelId],
+        );
+        if (!staff) {
+          throw new ForbiddenException(
+            'Bạn không thuộc khách sạn của booking này.',
+          );
+        }
+      }
+    }
+
     return this.snapshotRepo.find({
       where: { bookingId },
       order: { createdAt: 'ASC' },
@@ -447,12 +590,38 @@ export class ServicesService {
   async approveRecoveryLog(
     id: number,
     dto: ApproveRecoveryDto,
+    actor?: User,
   ): Promise<ServiceRecoveryLog> {
     const log = await this.recoveryLogRepo.findOne({ where: { id } });
     if (!log)
       throw new NotFoundException(`Biên bản recovery #${id} không tồn tại`);
 
-    log.approvedBy = dto.approvedBy;
+    if (actor) {
+      // Maker-Checker (Section 02.5 & 20.3): Không tự duyệt biên bản đền bù do chính mình lập
+      if (log.reportedBy && Number(log.reportedBy) === Number(actor.id)) {
+        throw new ForbiddenException(
+          'Không thể tự phê duyệt biên bản đền bù do chính mình lập (Nguyên tắc Maker-Checker).',
+        );
+      }
+
+      if (actor.role === 'EMPLOYEE') {
+        const [booking] = await this.dataSource.query(
+          'SELECT hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
+          [log.bookingId],
+        );
+        if (!booking) {
+          throw new NotFoundException('Không tìm thấy booking tương ứng với biên bản đền bù.');
+        }
+        const isManager = await this.isHotelManager(actor.id, booking.hotelId);
+        if (!isManager) {
+          throw new ForbiddenException(
+            'Chỉ Quản lý khách sạn (MANAGER) của cơ sở này hoặc Quản trị viên mới có quyền phê duyệt biên bản đền bù.',
+          );
+        }
+      }
+    }
+
+    log.approvedBy = dto.approvedBy ?? (actor ? Number(actor.id) : undefined);
     log.status = dto.decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
     return this.recoveryLogRepo.save(log);
   }

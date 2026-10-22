@@ -39,6 +39,32 @@ export class PaymentFinalizerService {
     autoAssignFn?: (bookingId: string, manager: EntityManager) => Promise<void>,
   ) {
     const paymentRepo = manager.getRepository(PaymentTransaction);
+    const bookingRepo = manager.getRepository(Booking);
+
+    // Khóa pessimistic_write cả PaymentTransaction và Booking để Finalizer là canonical locking authority duy nhất
+    const lockedPayment = await paymentRepo.findOne({
+      where: { id: payment.id },
+      lock: { mode: 'pessimistic_write' },
+    });
+    const lockedBooking = await bookingRepo.findOne({
+      where: { id: booking.id },
+      lock: { mode: 'pessimistic_write' },
+    });
+
+    const targetPayment = lockedPayment || payment;
+    const targetBooking = lockedBooking || booking;
+
+    // Idempotent: Nếu transaction này đã là PAID thì trả về luôn không xử lý lại
+    if (targetPayment.status === PaymentTransactionStatus.PAID) {
+      return {
+        success: true,
+        paymentStatus: PaymentTransactionStatus.PAID,
+        bookingStatus: targetBooking.status,
+        outcome: 'ALREADY_PAID',
+        payment: targetPayment,
+        booking: targetBooking,
+      };
+    }
 
     // ========================================================
     // DEFENSE 2: Double Payment Defense
@@ -46,38 +72,38 @@ export class PaymentFinalizerService {
     // ========================================================
     const existingPaid = await paymentRepo.findOne({
       where: {
-        bookingId: booking.id,
+        bookingId: targetBooking.id,
         status: PaymentTransactionStatus.PAID,
       },
     });
 
-    if (existingPaid && existingPaid.id !== payment.id) {
+    if (existingPaid && existingPaid.id !== targetPayment.id) {
       this.logger.warn(
-        `[PaymentFinalizer] Booking ${booking.id} đã có attempt ${existingPaid.txnRef} được thanh toán PAID trước đó. Attempt ${payment.txnRef} là thanh toán trùng thừa (Duplicate Payment). Đánh dấu PAID_REQUIRES_REVIEW và enqueue refund.process.`,
+        `[PaymentFinalizer] Booking ${targetBooking.id} đã có attempt ${existingPaid.txnRef} được thanh toán PAID trước đó. Attempt ${targetPayment.txnRef} là thanh toán trùng thừa (Duplicate Payment). Đánh dấu PAID_REQUIRES_REVIEW và enqueue refund.process.`,
       );
 
-      payment.status = PaymentTransactionStatus.PAID_REQUIRES_REVIEW;
-      payment.responseCode = details.responseCode;
-      payment.transactionStatus = details.transactionStatus;
-      payment.vnpTransactionNo = details.vnpTransactionNo || null;
-      payment.bankCode = details.bankCode || null;
-      payment.cardType = details.cardType || null;
-      payment.payDate = details.payDate || new Date();
-      payment.paidAt = new Date();
-      payment.rawIpnResponse = details.rawResponse || null;
-      await paymentRepo.save(payment);
+      targetPayment.status = PaymentTransactionStatus.PAID_REQUIRES_REVIEW;
+      targetPayment.responseCode = details.responseCode;
+      targetPayment.transactionStatus = details.transactionStatus;
+      targetPayment.vnpTransactionNo = details.vnpTransactionNo || null;
+      targetPayment.bankCode = details.bankCode || null;
+      targetPayment.cardType = details.cardType || null;
+      targetPayment.payDate = details.payDate || new Date();
+      targetPayment.paidAt = new Date();
+      targetPayment.rawIpnResponse = details.rawResponse || null;
+      await paymentRepo.save(targetPayment);
 
       // KHÔNG commit inventory lần 2! Enqueue hoàn tiền giao dịch thừa
       await this.outboxService.addEvent(
         manager,
         'refund.process',
         'PaymentTransaction',
-        payment.id,
+        targetPayment.id,
         {
-          bookingId: booking.id,
-          paymentId: payment.id,
-          txnRef: payment.txnRef,
-          amount: payment.amount,
+          bookingId: targetBooking.id,
+          paymentId: targetPayment.id,
+          txnRef: targetPayment.txnRef,
+          amount: targetPayment.amount,
           transactionNo: details.vnpTransactionNo,
           transactionDate: details.payDate || new Date(),
           reason: `Duplicate payment charge: already paid via ${existingPaid.txnRef}`,
@@ -86,6 +112,9 @@ export class PaymentFinalizerService {
 
       return {
         success: false,
+        paymentStatus: PaymentTransactionStatus.PAID_REQUIRES_REVIEW,
+        bookingStatus: targetBooking.status,
+        outcome: 'DUPLICATE_CHARGE',
         duplicateCharge: true,
         message: 'Duplicate payment detected. Marked for refund.',
       };
@@ -95,17 +124,17 @@ export class PaymentFinalizerService {
     // TỒN KHO: Commit hold hoặc Reacquire (nếu Late IPN)
     // ========================================================
     let holdCommitted = await this.inventoryService.commitHold(
-      booking.id,
+      targetBooking.id,
       manager,
     );
 
     // Nếu hold đã release (Late IPN case)
     if (!holdCommitted) {
       this.logger.warn(
-        `[PaymentFinalizer] Hold của booking ${booking.id} không còn ở trạng thái HELD. Thử reacquire...`,
+        `[PaymentFinalizer] Hold của booking ${targetBooking.id} không còn ở trạng thái HELD. Thử reacquire...`,
       );
       const reacquireResult = await this.inventoryService.reacquireInventory(
-        booking.id,
+        targetBooking.id,
         manager,
       );
 
@@ -114,29 +143,30 @@ export class PaymentFinalizerService {
       } else {
         // Hết phòng: Tuyệt đối không overbook! Đánh dấu PAID_REQUIRES_REVIEW và enqueue hoàn tiền
         this.logger.error(
-          `[PaymentFinalizer] Overbooking prevented! Late payment booking ${booking.id} nhưng phòng đã hết. Đánh dấu PAID_REQUIRES_REVIEW & hoàn tiền bồi hoàn.`,
+          `[PaymentFinalizer] Overbooking prevented! Late payment booking ${targetBooking.id} nhưng phòng đã hết. Đánh dấu PAID_REQUIRES_REVIEW & hoàn tiền bồi hoàn.`,
         );
 
-        payment.status = PaymentTransactionStatus.PAID_REQUIRES_REVIEW;
-        payment.responseCode = details.responseCode;
-        payment.transactionStatus = details.transactionStatus;
-        payment.vnpTransactionNo = details.vnpTransactionNo || null;
-        payment.bankCode = details.bankCode || null;
-        payment.cardType = details.cardType || null;
-        payment.payDate = details.payDate || new Date();
-        payment.paidAt = new Date();
-        payment.rawIpnResponse = details.rawResponse || null;
-        await paymentRepo.save(payment);
+        targetPayment.status = PaymentTransactionStatus.PAID_REQUIRES_REVIEW;
+        targetPayment.responseCode = details.responseCode;
+        targetPayment.transactionStatus = details.transactionStatus;
+        targetPayment.vnpTransactionNo = details.vnpTransactionNo || null;
+        targetPayment.bankCode = details.bankCode || null;
+        targetPayment.cardType = details.cardType || null;
+        targetPayment.payDate = details.payDate || new Date();
+        targetPayment.paidAt = new Date();
+        targetPayment.rawIpnResponse = details.rawResponse || null;
+        await paymentRepo.save(targetPayment);
 
-        booking.status = BookingStatus.PAYMENT_REVIEW;
-        await manager.getRepository(Booking).save(booking);
+        const oldStatus = targetBooking.status;
+        targetBooking.status = BookingStatus.PAYMENT_REVIEW;
+        await bookingRepo.save(targetBooking);
 
         await manager.getRepository(BookingStatusLog).save(
           manager.getRepository(BookingStatusLog).create({
-            bookingId: booking.id,
-            oldStatus: booking.status,
+            bookingId: targetBooking.id,
+            oldStatus,
             newStatus: BookingStatus.PAYMENT_REVIEW,
-            changedBy: booking.userId,
+            changedBy: targetBooking.userId,
             note: 'Thanh toán thành công nhưng hết phòng (Late IPN) - Tự động bồi hoàn hoàn tiền',
           }),
         );
@@ -146,12 +176,12 @@ export class PaymentFinalizerService {
           manager,
           'refund.process',
           'PaymentTransaction',
-          payment.id,
+          targetPayment.id,
           {
-            bookingId: booking.id,
-            paymentId: payment.id,
-            txnRef: payment.txnRef,
-            amount: payment.amount,
+            bookingId: targetBooking.id,
+            paymentId: targetPayment.id,
+            txnRef: targetPayment.txnRef,
+            amount: targetPayment.amount,
             transactionNo: details.vnpTransactionNo,
             transactionDate: details.payDate || new Date(),
             reason: 'Overbooking prevented on late IPN',
@@ -160,6 +190,9 @@ export class PaymentFinalizerService {
 
         return {
           success: false,
+          paymentStatus: PaymentTransactionStatus.PAID_REQUIRES_REVIEW,
+          bookingStatus: BookingStatus.PAYMENT_REVIEW,
+          outcome: 'OVERBOOKING_PREVENTED',
           overbookingPrevented: true,
           message: 'Overbooking prevented. Compensation refund queued.',
         };
@@ -169,36 +202,36 @@ export class PaymentFinalizerService {
     // ========================================================
     // Cập nhật Payment -> PAID
     // ========================================================
-    payment.status = PaymentTransactionStatus.PAID;
-    payment.responseCode = details.responseCode;
-    payment.transactionStatus = details.transactionStatus;
-    payment.vnpTransactionNo = details.vnpTransactionNo || null;
-    payment.bankCode = details.bankCode || null;
-    payment.cardType = details.cardType || null;
-    payment.payDate = details.payDate || new Date();
-    payment.paidAt = new Date();
-    payment.rawIpnResponse = details.rawResponse || null;
-    await paymentRepo.save(payment);
+    targetPayment.status = PaymentTransactionStatus.PAID;
+    targetPayment.responseCode = details.responseCode;
+    targetPayment.transactionStatus = details.transactionStatus;
+    targetPayment.vnpTransactionNo = details.vnpTransactionNo || null;
+    targetPayment.bankCode = details.bankCode || null;
+    targetPayment.cardType = details.cardType || null;
+    targetPayment.payDate = details.payDate || new Date();
+    targetPayment.paidAt = new Date();
+    targetPayment.rawIpnResponse = details.rawResponse || null;
+    await paymentRepo.save(targetPayment);
 
     // Cập nhật Booking -> PENDING (Đã thanh toán, chờ khách sạn check-in / confirm)
-    const oldStatus = booking.status;
-    booking.status = BookingStatus.PENDING;
-    await manager.getRepository(Booking).save(booking);
+    const oldStatus = targetBooking.status;
+    targetBooking.status = BookingStatus.PENDING;
+    await bookingRepo.save(targetBooking);
 
     // Ghi nhật ký trạng thái
     await manager.getRepository(BookingStatusLog).save(
       manager.getRepository(BookingStatusLog).create({
-        bookingId: booking.id,
+        bookingId: targetBooking.id,
         oldStatus,
         newStatus: BookingStatus.PENDING,
-        changedBy: booking.userId,
-        note: `Thanh toán VNPay thành công (Mã GD: ${details.vnpTransactionNo || payment.txnRef})`,
+        changedBy: targetBooking.userId,
+        note: `Thanh toán VNPay thành công (Mã GD: ${details.vnpTransactionNo || targetPayment.txnRef})`,
       }),
     );
 
     // Phân công nhân viên ngầm sau khi đã PAID
     if (autoAssignFn) {
-      await autoAssignFn(booking.id, manager);
+      await autoAssignFn(targetBooking.id, manager);
     }
 
     // Ghi Outbox Events
@@ -206,15 +239,15 @@ export class PaymentFinalizerService {
       manager,
       'payment.paid',
       'Booking',
-      booking.id,
+      targetBooking.id,
       {
-        bookingId: booking.id,
-        bookingCode: booking.bookingCode,
-        paymentId: payment.id,
+        bookingId: targetBooking.id,
+        bookingCode: targetBooking.bookingCode,
+        paymentId: targetPayment.id,
         vnpTransactionNo: details.vnpTransactionNo,
-        amount: payment.amount,
-        hotelId: booking.hotelId,
-        userId: booking.userId,
+        amount: targetPayment.amount,
+        hotelId: targetBooking.hotelId,
+        userId: targetBooking.userId,
       },
     );
 
@@ -222,24 +255,27 @@ export class PaymentFinalizerService {
       manager,
       'mail.payment_success',
       'Booking',
-      booking.id,
+      targetBooking.id,
       {
-        bookingId: booking.id,
-        bookingCode: booking.bookingCode,
-        contactEmail: booking.contactEmail,
-        contactName: booking.contactName,
-        amount: payment.amount,
+        bookingId: targetBooking.id,
+        bookingCode: targetBooking.bookingCode,
+        contactEmail: targetBooking.contactEmail,
+        contactName: targetBooking.contactName,
+        amount: targetPayment.amount,
         vnpTransactionNo: details.vnpTransactionNo,
-        paidAt: payment.paidAt,
-        checkInAt: booking.checkInAt,
-        checkOutAt: booking.checkOutAt,
+        paidAt: targetPayment.paidAt,
+        checkInAt: targetBooking.checkInAt,
+        checkOutAt: targetBooking.checkOutAt,
       },
     );
 
     return {
       success: true,
-      payment,
-      booking,
+      paymentStatus: PaymentTransactionStatus.PAID,
+      bookingStatus: BookingStatus.PENDING,
+      outcome: 'PAID_COMMITTED',
+      payment: targetPayment,
+      booking: targetBooking,
     };
   }
 }

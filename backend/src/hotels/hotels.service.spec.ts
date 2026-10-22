@@ -4,10 +4,13 @@ import { HotelsService } from './hotels.service';
 import { Hotel } from './entities/hotel.entity';
 import { HotelImage } from './entities/hotel-image.entity';
 
+import { DataSource } from 'typeorm';
+
 describe('HotelsService', () => {
   let service: HotelsService;
   let mockHotelRepo: any;
   let mockImageRepo: any;
+  let mockDataSource: any;
 
   beforeEach(async () => {
     mockHotelRepo = {
@@ -28,6 +31,10 @@ describe('HotelsService', () => {
       find: jest.fn().mockResolvedValue([]),
     };
 
+    mockDataSource = {
+      query: jest.fn().mockResolvedValue([]),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         HotelsService,
@@ -38,6 +45,10 @@ describe('HotelsService', () => {
         {
           provide: getRepositoryToken(HotelImage),
           useValue: mockImageRepo,
+        },
+        {
+          provide: DataSource,
+          useValue: mockDataSource,
         },
       ],
     }).compile();

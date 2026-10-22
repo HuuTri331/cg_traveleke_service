@@ -24,7 +24,26 @@ import {
 @Injectable()
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: (
+      origin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const allowedOrigins = [
+        frontendUrl,
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+      ];
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        process.env.NODE_ENV !== 'production'
+      ) {
+        callback(null, true);
+      } else {
+        callback(new Error('Origin not allowed by WebSocket CORS'));
+      }
+    },
     credentials: true,
   },
 })

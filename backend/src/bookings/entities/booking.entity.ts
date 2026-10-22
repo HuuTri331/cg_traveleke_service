@@ -28,6 +28,7 @@ export class Booking {
 
   @Column({
     name: 'booking_code',
+    type: 'varchar',
     length: 30,
     unique: true,
   })
@@ -79,6 +80,22 @@ export class Booking {
   assignmentNote!: string | null;
 
   @Column({
+    name: 'booking_source',
+    type: 'varchar',
+    length: 30,
+    default: 'WEBSITE',
+  })
+  bookingSource!: string;
+
+  @Column({
+    name: 'created_by_staff_id',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
+  createdByStaffId!: string | null;
+
+  @Column({
     name: 'reassigned_at',
     type: 'datetime',
     nullable: true,
@@ -95,18 +112,21 @@ export class Booking {
 
   @Column({
     name: 'contact_name',
+    type: 'varchar',
     length: 150,
   })
   contactName!: string;
 
   @Column({
     name: 'contact_email',
+    type: 'varchar',
     length: 255,
   })
   contactEmail!: string;
 
   @Column({
     name: 'contact_phone',
+    type: 'varchar',
     length: 20,
   })
   contactPhone!: string;

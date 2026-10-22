@@ -1,6 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { User } from '../users/entities/user.entity';
 import { SkillCategory } from './entities/skill-category.entity';
 import { StaffSkill } from './entities/staff-skill.entity';
 import {
@@ -149,15 +154,69 @@ export class StaffSkillsService {
     return { message: 'Đã xoá kỹ năng khỏi hồ sơ nhân viên' };
   }
 
+  /**
+   * Kiểm tra xem managerUserId có phải là Quản lý (MANAGER) tại khách sạn mà targetUserId đang công tác
+   * (Section 02.3 & 04.6)
+   */
+  async isManagerOfUser(managerUserId: number, targetUserId: number): Promise<boolean> {
+    const rows = await this.dataSource.query(
+      `SELECT m.id 
+       FROM hotel_staff m
+       INNER JOIN hotel_staff s ON s.hotel_id = m.hotel_id
+       WHERE m.staff_user_id = ? AND m.staff_role = 'MANAGER' AND m.status = 'ACTIVE'
+         AND s.staff_user_id = ? AND s.status = 'ACTIVE'
+       LIMIT 1`,
+      [managerUserId, targetUserId],
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  /**
+   * Phân quyền sửa hồ sơ năng lực:
+   * - Nhân viên tự sửa hồ sơ của CHÍNH MÌNH (self-declaration)
+   * - Quản lý trực tiếp (MANAGER) sửa hồ sơ người thuộc đội mình
+   * - Quản trị viên (ADMIN)
+   * - Nhân viên đồng cấp TUYỆT ĐỐI không sửa người khác (Section 02.3)
+   */
+  async assertCanModifySkills(actor: User, targetUserId: number): Promise<void> {
+    if (actor.role === 'ADMIN') return;
+    if (Number(actor.id) === Number(targetUserId)) return;
+
+    const isManager = await this.isManagerOfUser(Number(actor.id), targetUserId);
+    if (!isManager) {
+      throw new ForbiddenException(
+        'Bạn chỉ có quyền chỉnh sửa hồ sơ kỹ năng của chính mình, hoặc bạn phải là Quản lý trực tiếp (MANAGER) của nhân viên này.',
+      );
+    }
+  }
+
   async verifySkill(
     skillEntryId: number,
     verifiedBy: number,
+    actor?: User,
   ): Promise<StaffSkill> {
     const entry = await this.staffSkillRepo.findOne({
       where: { id: skillEntryId },
     });
     if (!entry)
       throw new NotFoundException(`Mục kỹ năng #${skillEntryId} không tồn tại`);
+
+    // Ngăn chặn tự xác minh kỹ năng của chính mình (Maker-Checker, Section 02.3 & 15.2)
+    if (Number(verifiedBy) === Number(entry.userId)) {
+      throw new ForbiddenException(
+        'Không thể tự xác minh kỹ năng của chính mình (Nguyên tắc Maker-Checker).',
+      );
+    }
+
+    if (actor && actor.role !== 'ADMIN') {
+      const isManager = await this.isManagerOfUser(Number(verifiedBy), Number(entry.userId));
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý trực tiếp (MANAGER) của khách sạn hoặc Quản trị viên mới có quyền xác minh kỹ năng này.',
+        );
+      }
+    }
+
     entry.verifiedBy = verifiedBy;
     entry.verifiedAt = new Date();
     return this.staffSkillRepo.save(entry);
@@ -297,7 +356,21 @@ export class StaffSkillsService {
     requiredLanguage?: string,
   ): Promise<{ eligible: boolean; reasons: string[] }> {
     const rule = await this.getRuleByComplexity(caseComplexity);
-    if (!rule) return { eligible: true, reasons: [] }; // Không có rule = không giới hạn
+    if (!rule) {
+      // Fail-safe theo Section 15.4: Nếu chưa cấu hình rule cho VIP hoặc COMPLEX thì không được tự ý cho eligible: true
+      if (
+        caseComplexity === CaseComplexity.VIP ||
+        caseComplexity === CaseComplexity.COMPLEX
+      ) {
+        return {
+          eligible: false,
+          reasons: [
+            `Chưa thiết lập quy tắc năng lực cho trường hợp độ phức tạp ${caseComplexity}. Cần quản lý đánh giá trực tiếp.`,
+          ],
+        };
+      }
+      return { eligible: true, reasons: [] };
+    }
 
     const reasons: string[] = [];
     const skills = await this.staffSkillRepo.find({
@@ -328,9 +401,11 @@ export class StaffSkillsService {
       }
     }
 
-    // 4. Kiểm tra ngôn ngữ
-    const langCodes = rule.requiredLanguageCodes ?? [];
-    if (requiredLanguage) langCodes.push(requiredLanguage);
+    // 4. Kiểm tra ngôn ngữ (Sao chép mảng mới để không làm thay đổi trực tiếp thuộc tính entity trong bộ nhớ)
+    const langCodes = [...(rule.requiredLanguageCodes ?? [])];
+    if (requiredLanguage && !langCodes.includes(requiredLanguage)) {
+      langCodes.push(requiredLanguage);
+    }
     for (const lang of langCodes) {
       const hasLang = languages.some((l) => l.languageCode === lang);
       if (!hasLang) reasons.push(`Thiếu ngoại ngữ bắt buộc: ${lang}`);
@@ -343,6 +418,41 @@ export class StaffSkillsService {
     );
     if (expiredCerts.length > 0 && rule.requireVerifiedSkills) {
       reasons.push(`${expiredCerts.length} chứng chỉ đã hết hạn`);
+    }
+
+    // 6. Kiểm tra số năm kinh nghiệm tối thiểu (Section 15.4)
+    if (rule.minYearsExperience && Number(rule.minYearsExperience) > 0) {
+      const maxYearsExp = skills.reduce(
+        (max, s) => Math.max(max, Number(s.yearsExp || 0)),
+        0,
+      );
+      if (maxYearsExp < Number(rule.minYearsExperience)) {
+        reasons.push(
+          `Kinh nghiệm (${maxYearsExp} năm) chưa đạt yêu cầu tối thiểu (${rule.minYearsExperience} năm)`,
+        );
+      }
+    }
+
+    // 7. Kiểm tra số case đã hoàn thành tối thiểu (Section 15.4)
+    if (rule.minCasesCompleted && Number(rule.minCasesCompleted) > 0) {
+      const [completedCountRow] = await this.dataSource.query(
+        `SELECT COUNT(*) AS total FROM bookings WHERE handled_by = ? AND status = 'COMPLETED'`,
+        [userId],
+      );
+      const completedCount = Number(completedCountRow?.total || 0);
+      if (completedCount < Number(rule.minCasesCompleted)) {
+        reasons.push(
+          `Số đơn hoàn thành (${completedCount}) chưa đạt yêu cầu tối thiểu (${rule.minCasesCompleted})`,
+        );
+      }
+    }
+
+    // 8. Kiểm tra kỹ năng đã được quản lý xác minh (Section 15.2 & 15.4)
+    if (rule.requireVerifiedSkills) {
+      const hasVerified = skills.some((s) => s.verifiedAt !== null);
+      if (!hasVerified && skills.length > 0) {
+        reasons.push('Nhân viên chưa có kỹ năng nào được quản lý xác minh chính thức');
+      }
     }
 
     return { eligible: reasons.length === 0, reasons };

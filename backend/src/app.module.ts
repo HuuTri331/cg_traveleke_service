@@ -85,6 +85,8 @@ import { OutboxModule } from './outbox/outbox.module';
 import { WorkersModule } from './workers/workers.module';
 import { CancellationsModule } from './cancellations/cancellations.module';
 import { ChatModule } from './chat/chat.module';
+import { ShiftsModule } from './shifts/shifts.module';
+import { ApprovalsModule } from './approvals/approvals.module';
 
 @Module({
   imports: [
@@ -147,6 +149,8 @@ import { ChatModule } from './chat/chat.module';
     WorkersModule,
     CancellationsModule,
     ChatModule,
+    ShiftsModule,
+    ApprovalsModule,
   ],
 
   controllers: [AppController],

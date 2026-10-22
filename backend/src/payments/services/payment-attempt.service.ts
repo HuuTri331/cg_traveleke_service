@@ -104,7 +104,8 @@ export class PaymentAttemptService {
       throw new BadRequestException('Đơn hàng đã bị hủy, không thể thanh toán lại.');
     }
 
-    return await runWithDeadlockRetry(
+    // PHASE A: Kiểm tra nhanh trong short DB transaction
+    const phaseAResult = await runWithDeadlockRetry(
       this.dataSource,
       async (manager: EntityManager) => {
         const paymentRepo = manager.getRepository(PaymentTransaction);
@@ -150,70 +151,127 @@ export class PaymentAttemptService {
           });
 
           return {
-            bookingId: booking.id,
-            bookingCode: booking.bookingCode,
-            attemptNo: latestAttempt.attemptNo,
-            txnRef: latestAttempt.txnRef,
-            paymentUrl: vnpayUrlData.paymentUrl,
-            paymentExpiresAt: latestAttempt.gatewayExpireAt.toISOString(),
-            holdExpiresAt: hold.holdExpiresAt.toISOString(),
-            reused: true,
+            type: 'ACTIVE_REUSED' as const,
+            data: {
+              bookingId: booking.id,
+              bookingCode: booking.bookingCode,
+              attemptNo: latestAttempt.attemptNo,
+              txnRef: latestAttempt.txnRef,
+              paymentUrl: vnpayUrlData.paymentUrl,
+              paymentExpiresAt: latestAttempt.gatewayExpireAt.toISOString(),
+              holdExpiresAt: hold.holdExpiresAt.toISOString(),
+              reused: true,
+            },
           };
         }
 
-        // 2. Nếu latest attempt đang PENDING nhưng đã quá hạn gateway: QueryDr trước!
+        // 2. Nếu latest attempt đang PENDING nhưng đã quá hạn gateway: Đánh dấu cần QueryDr
         if (
           latestAttempt &&
           latestAttempt.status === PaymentTransactionStatus.PENDING &&
           latestAttempt.gatewayExpireAt &&
           latestAttempt.gatewayExpireAt <= now
         ) {
-          this.logger.log(
-            `[PaymentAttempt] Latest attempt ${latestAttempt.txnRef} đã quá hạn gateway. Kiểm tra QueryDr trước khi cho phép retry...`,
-          );
+          return {
+            type: 'NEEDS_RECONCILIATION' as const,
+            txnRef: latestAttempt.txnRef,
+            createdAt: latestAttempt.createdAt,
+          };
+        }
 
-          try {
-            const queryDrResult = await this.vnpayService.queryDr({
-              txnRef: latestAttempt.txnRef,
-              transactionDate: latestAttempt.createdAt,
-              ipAddr: clientIp,
-            });
+        return { type: 'CAN_CREATE_NEW' as const };
+      },
+      { contextName: 'PaymentAttemptService.retryPayment.phaseA' },
+    );
 
-            if (
-              queryDrResult?.vnp_ResponseCode === '00' &&
-              queryDrResult?.vnp_TransactionStatus === '00'
-            ) {
-              if (finalizePaymentFn) {
-                await finalizePaymentFn(latestAttempt.txnRef, queryDrResult);
-              } else {
-                latestAttempt.status = PaymentTransactionStatus.PAID;
-                latestAttempt.paidAt = new Date();
-                await paymentRepo.save(latestAttempt);
-              }
-              throw new BadRequestException(
-                'Đơn hàng này vừa được xác nhận thanh toán thành công qua VNPay.',
-              );
-            }
-          } catch (err: any) {
-            if (err instanceof BadRequestException) throw err;
-            this.logger.warn(
-              `[PaymentAttempt] QueryDr kiểm tra thất bại: ${err.message}. Tiếp tục đánh dấu EXPIRED.`,
+    if (phaseAResult.type === 'ACTIVE_REUSED') {
+      return phaseAResult.data;
+    }
+
+    // PHASE B: Gọi VNPay QueryDr NGOÀI DB TRANSACTION (không giữ lock trong lúc chờ gateway HTTP I/O)
+    if (phaseAResult.type === 'NEEDS_RECONCILIATION') {
+      this.logger.log(
+        `[PaymentAttempt] Latest attempt ${phaseAResult.txnRef} đã quá hạn gateway. Kiểm tra QueryDr ngoài DB lock...`,
+      );
+
+      try {
+        const queryDrResult = await this.vnpayService.queryDr({
+          txnRef: phaseAResult.txnRef,
+          transactionDate: phaseAResult.createdAt,
+          ipAddr: clientIp,
+        });
+
+        if (
+          queryDrResult?.vnp_ResponseCode === '00' &&
+          queryDrResult?.vnp_TransactionStatus === '00'
+        ) {
+          if (finalizePaymentFn) {
+            await finalizePaymentFn(phaseAResult.txnRef, queryDrResult);
+          } else {
+            await this.paymentRepo.update(
+              { txnRef: phaseAResult.txnRef },
+              {
+                status: PaymentTransactionStatus.PAID,
+                paidAt: new Date(),
+              },
             );
           }
+          throw new BadRequestException(
+            'Đơn hàng này vừa được xác nhận thanh toán thành công qua VNPay.',
+          );
+        }
+      } catch (err: any) {
+        if (err instanceof BadRequestException) throw err;
+        this.logger.warn(
+          `[PaymentAttempt] QueryDr kiểm tra thất bại: ${err.message}. Tiếp tục đánh dấu EXPIRED và tạo attempt mới.`,
+        );
+      }
+    }
 
-          // VNPay chưa trả -> đánh dấu EXPIRED
+    // PHASE C: Short DB transaction - Đánh dấu EXPIRED, reacquire hold và tạo attempt mới
+    return await runWithDeadlockRetry(
+      this.dataSource,
+      async (manager: EntityManager) => {
+        const paymentRepo = manager.getRepository(PaymentTransaction);
+
+        // Khóa booking row
+        const currentBooking = await manager.getRepository(Booking).findOne({
+          where: { id: bookingId },
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        if (
+          currentBooking?.status === BookingStatus.CONFIRMED ||
+          currentBooking?.status === BookingStatus.PENDING
+        ) {
+          throw new BadRequestException(
+            'Đơn hàng này đã được thanh toán thành công.',
+          );
+        }
+
+        const latestAttempt = await paymentRepo.findOne({
+          where: { bookingId },
+          order: { attemptNo: 'DESC' },
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        // Nếu latest attempt vẫn PENDING -> Đánh dấu EXPIRED
+        if (
+          latestAttempt &&
+          latestAttempt.status === PaymentTransactionStatus.PENDING
+        ) {
           latestAttempt.status = PaymentTransactionStatus.EXPIRED;
           latestAttempt.expiredAt = new Date();
           await paymentRepo.save(latestAttempt);
         }
 
-        // 3. Tái sử dụng hoặc reacquire lại hold trên CÙNG 1 ROW (không insert duplicate hold)
+        // Tái sử dụng hoặc reacquire lại hold trên CÙNG 1 ROW (không insert duplicate hold)
         const hold = await this.inventoryService.reuseOrReacquireHold(
           booking.id,
           manager,
         );
 
-        // 4. Tạo attempt mới (chỉ khi latest attempt đã FAILED hoặc EXPIRED)
+        // Tạo attempt mới (chỉ khi latest attempt đã FAILED hoặc EXPIRED)
         const pastAttempts = await paymentRepo.count({
           where: { bookingId },
         });
@@ -250,7 +308,7 @@ export class PaymentAttemptService {
           reused: false,
         };
       },
-      { contextName: 'PaymentAttemptService.retryPayment' },
+      { contextName: 'PaymentAttemptService.retryPayment.phaseC' },
     );
   }
 }

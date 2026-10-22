@@ -49,6 +49,7 @@ export class PaymentTransaction {
 
   @Column({
     name: 'txn_ref',
+    type: 'varchar',
     length: 100,
     unique: true,
   })
@@ -78,6 +79,7 @@ export class PaymentTransaction {
 
   @Column({
     name: 'response_code',
+    type: 'varchar',
     length: 20,
     nullable: true,
   })
@@ -85,6 +87,7 @@ export class PaymentTransaction {
 
   @Column({
     name: 'transaction_status',
+    type: 'varchar',
     length: 20,
     nullable: true,
   })
@@ -92,6 +95,7 @@ export class PaymentTransaction {
 
   @Column({
     name: 'vnp_transaction_no',
+    type: 'varchar',
     length: 50,
     nullable: true,
   })
@@ -99,6 +103,7 @@ export class PaymentTransaction {
 
   @Column({
     name: 'bank_code',
+    type: 'varchar',
     length: 30,
     nullable: true,
   })
@@ -106,6 +111,7 @@ export class PaymentTransaction {
 
   @Column({
     name: 'card_type',
+    type: 'varchar',
     length: 30,
     nullable: true,
   })

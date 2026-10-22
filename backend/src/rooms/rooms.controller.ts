@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -14,9 +15,11 @@ import {
 } from '@nestjs/common';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { User } from '../users/entities/user.entity';
 import { createMulterOptions } from '../hotels/upload-image.config';
 
 import { AddRoomImageDto } from './dto/add-room-image.dto';
@@ -41,7 +44,15 @@ export class RoomsController {
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  create(@Body() dto: CreateRoomDto) {
+  async create(@Body() dto: CreateRoomDto, @CurrentUser() user: User) {
+    if (user.role === 'EMPLOYEE') {
+      const isManager = await this.roomsService.isHotelManager(user.id, dto.hotelId);
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền tạo phòng cho khách sạn này.',
+        );
+      }
+    }
     return this.roomsService.create(dto);
   }
 
@@ -74,7 +85,20 @@ export class RoomsController {
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  update(@Param('id') id: string, @Body() dto: UpdateRoomDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateRoomDto,
+    @CurrentUser() user: User,
+  ) {
+    if (user.role === 'EMPLOYEE') {
+      const room = await this.roomsService.findOne(id);
+      const isManager = await this.roomsService.isHotelManager(user.id, room.hotelId);
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền sửa thông tin/giá phòng của khách sạn này.',
+        );
+      }
+    }
     return this.roomsService.update(id, dto);
   }
 
@@ -100,11 +124,21 @@ export class RoomsController {
     },
   })
   @UseInterceptors(AnyFilesInterceptor(createMulterOptions('rooms')))
-  uploadImages(
+  async uploadImages(
     @Param('id') id: string,
+    @CurrentUser() user: User,
     @UploadedFiles() files?: Express.Multer.File[],
     @Body('caption') caption?: string,
   ) {
+    if (user.role === 'EMPLOYEE') {
+      const room = await this.roomsService.findOne(id);
+      const isManager = await this.roomsService.isHotelManager(user.id, room.hotelId);
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền cập nhật ảnh phòng của khách sạn này.',
+        );
+      }
+    }
     if (!files || files.length === 0) {
       throw new BadRequestException('Vui lòng đính kèm ít nhất 1 file ảnh.');
     }
@@ -121,7 +155,20 @@ export class RoomsController {
   @Post(':id/images')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  addImage(@Param('id') id: string, @Body() dto: AddRoomImageDto) {
+  async addImage(
+    @Param('id') id: string,
+    @Body() dto: AddRoomImageDto,
+    @CurrentUser() user: User,
+  ) {
+    if (user.role === 'EMPLOYEE') {
+      const room = await this.roomsService.findOne(id);
+      const isManager = await this.roomsService.isHotelManager(user.id, room.hotelId);
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền thêm ảnh phòng của khách sạn này.',
+        );
+      }
+    }
     return this.roomsService.addImage(id, dto);
   }
 
@@ -133,7 +180,20 @@ export class RoomsController {
   @Patch(':id/images/:imageId/primary')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  setPrimaryImage(@Param('id') id: string, @Param('imageId') imageId: string) {
+  async setPrimaryImage(
+    @Param('id') id: string,
+    @Param('imageId') imageId: string,
+    @CurrentUser() user: User,
+  ) {
+    if (user.role === 'EMPLOYEE') {
+      const room = await this.roomsService.findOne(id);
+      const isManager = await this.roomsService.isHotelManager(user.id, room.hotelId);
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền đổi ảnh đại diện phòng của khách sạn này.',
+        );
+      }
+    }
     return this.roomsService.setPrimaryImage(id, imageId);
   }
 

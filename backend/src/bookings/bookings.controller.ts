@@ -19,6 +19,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { User } from '../users/entities/user.entity';
 
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { CreateFrontDeskBookingDto } from './dto/create-front-desk-booking.dto';
 import { QueryBookingDto } from './dto/query-booking.dto';
 import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
 import { ReassignStaffDto } from './dto/reassign-staff.dto';
@@ -109,6 +110,26 @@ export class BookingsController {
   }
 
   // ================================
+  // HIỆU SUẤT & KPI LỄ TÂN (Sales Attribution / Operations)
+  // ================================
+  @Get('performance/me')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'EMPLOYEE')
+  getMyPerformance(@CurrentUser() user: User) {
+    return this.bookingsService.getStaffPerformance(user.id, user);
+  }
+
+  @Get('performance/staff/:staffId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'EMPLOYEE')
+  getStaffPerformance(
+    @Param('staffId') staffId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.bookingsService.getStaffPerformance(staffId, user);
+  }
+
+  // ================================
   // LỊCH SỬ BOOKING CỦA USER HIỆN TẠI (Customer JWT)
   // ================================
   @Get('me')
@@ -123,8 +144,8 @@ export class BookingsController {
   @Get('user/:userId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  findByUser(@Param('userId') userId: string) {
-    return this.bookingsService.findByUser(userId);
+  findByUser(@Param('userId') userId: string, @CurrentUser() user: User) {
+    return this.bookingsService.findByUser(userId, user);
   }
 
   // ================================
@@ -182,10 +203,34 @@ export class BookingsController {
       dto.staffUserId,
       user.id,
       dto.note,
+      user,
     );
     return {
       success: true,
       ...result,
     };
+  }
+
+  // ================================
+  // TẠO BOOKING TẠI QUẦY / QUA ĐIỆN THOẠI (Lễ tân / Front Desk)
+  // Section 02.14, 16.1, 17.2, 17.3, 30.3
+  // ================================
+  @Post('front-desk')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'EMPLOYEE')
+  async createFrontDeskBooking(
+    @Body() dto: CreateFrontDeskBookingDto,
+    @CurrentUser() staffUser: User,
+    @Req() req: any,
+  ) {
+    const ip =
+      (req.headers?.['x-forwarded-for'] as string) ||
+      req.socket?.remoteAddress ||
+      '127.0.0.1';
+    return this.bookingsService.createFrontDeskBooking(
+      dto,
+      staffUser,
+      ip.split(',')[0].trim(),
+    );
   }
 }

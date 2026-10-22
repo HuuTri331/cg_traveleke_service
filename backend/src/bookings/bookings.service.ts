@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -16,6 +17,7 @@ import Redis from 'ioredis';
 import { Room } from '../rooms/entities/room.entity';
 
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { CreateFrontDeskBookingDto } from './dto/create-front-desk-booking.dto';
 import { QueryBookingDto } from './dto/query-booking.dto';
 import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
 import { Booking, BookingStatus } from './entities/booking.entity';
@@ -40,11 +42,14 @@ import { User } from '../users/entities/user.entity';
  * Key = trạng thái hiện tại, Value = danh sách trạng thái có thể chuyển sang.
  */
 const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
-  PAYMENT_PENDING: ['PENDING', 'PAYMENT_EXPIRED', 'CANCELLED', 'PAYMENT_REVIEW'],
-  PENDING: ['CONFIRMED', 'CANCELLED'],
-  CONFIRMED: ['CHECKED_IN', 'CANCELLED'],
+  // Đơn chưa thanh toán có thể chuyển sang PENDING (khi IPN), hết hạn, xem xét hoặc hủy đơn chưa trả tiền
+  PAYMENT_PENDING: ['PENDING', 'PAYMENT_EXPIRED', 'PAYMENT_REVIEW', 'CANCELLED'],
+  // Đơn đã thanh toán (PENDING, CONFIRMED): KHÔNG được hủy trực tiếp bằng updateStatus()
+  // Việc hủy và hoàn tiền BẮT BUỘC phải qua quy trình CancellationsService.reviewRequest(APPROVE)
+  PENDING: ['CONFIRMED'],
+  CONFIRMED: ['CHECKED_IN'],
   CHECKED_IN: ['COMPLETED'],
-  PAYMENT_REVIEW: ['PENDING', 'CANCELLED'],
+  PAYMENT_REVIEW: [],
   // Các trạng thái cuối: REJECTED, COMPLETED, CANCELLED, PAYMENT_EXPIRED → không chuyển tiếp được
   PAYMENT_EXPIRED: [],
   REJECTED: [],
@@ -426,44 +431,38 @@ export class BookingsService {
         [booking.hotelId],
       );
 
-      let candidates = staffList;
-      if (!candidates || candidates.length === 0) {
-        // Fallback: Nếu khách sạn chưa gán nhân sự, tìm nhân sự khả dụng trong hệ thống
-        candidates = await manager.query(
-          `SELECT u.id AS staffUserId, u.full_name AS staffName, u.email AS staffEmail,
-                  'EMPLOYEE' AS staffRole, 2 AS maxSkillLevel, 1 AS maxYearsExp, 0 AS completedCount, 0 AS activeLoad
-           FROM users u
-           WHERE u.role IN ('EMPLOYEE', 'ADMIN') AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
-           LIMIT 5`,
-        );
-      }
+      // 1. Phân loại Lễ tân và Quản lý thuộc đúng khách sạn này (Mục 11 & 12)
+      const receptionists = (staffList || []).filter(
+        (s: any) => s.staffRole !== 'MANAGER',
+      );
+      const hotelManagers = (staffList || []).filter(
+        (s: any) => s.staffRole === 'MANAGER',
+      );
 
-      if (candidates && candidates.length > 0) {
-        let bestCandidate: any = null;
-        let reason = '';
+      let bestCandidate: any = null;
+      let reason = '';
+      let assignmentType = 'AUTO';
 
+      if (receptionists.length > 0) {
+        // Có lễ tân tại khách sạn: Chấm điểm chọn lễ tân phù hợp nhất
         if (isVipRoom) {
-          // Phòng VIP/Suite: Ưu tiên nhân sự có skill level cao, nhiều năm kinh nghiệm, thành tích tốt
-          candidates.sort((a: any, b: any) => {
+          receptionists.sort((a: any, b: any) => {
             const scoreA =
               Number(a.maxSkillLevel) * 20 +
               Number(a.maxYearsExp) * 10 +
               Number(a.completedCount) * 5 -
-              Number(a.activeLoad) * 15 +
-              (a.staffRole === 'MANAGER' ? 30 : 0);
+              Number(a.activeLoad) * 15;
             const scoreB =
               Number(b.maxSkillLevel) * 20 +
               Number(b.maxYearsExp) * 10 +
               Number(b.completedCount) * 5 -
-              Number(b.activeLoad) * 15 +
-              (b.staffRole === 'MANAGER' ? 30 : 0);
+              Number(b.activeLoad) * 15;
             return scoreB - scoreA;
           });
-          bestCandidate = candidates[0];
-          reason = `Hệ thống tự động phân công: Phòng cao cấp/VIP (${room.name}) được phân công nhân sự giàu kinh nghiệm (${bestCandidate.staffName} - Level ${bestCandidate.maxSkillLevel}, ${bestCandidate.maxYearsExp} năm KN, ${bestCandidate.completedCount} đơn hoàn thành).`;
+          bestCandidate = receptionists[0];
+          reason = `Hệ thống tự động phân công: Phòng cao cấp/VIP (${room.name}) được phân công lễ tân có chuyên môn cao (${bestCandidate.staffName} - Level ${bestCandidate.maxSkillLevel}, ${bestCandidate.maxYearsExp} năm KN, ${bestCandidate.completedCount} đơn hoàn thành).`;
         } else {
-          // Phòng Standard/Economy: Ghép nối nhân sự tiêu chuẩn/junior để cọ xát và cân bằng tải
-          candidates.sort((a: any, b: any) => {
+          receptionists.sort((a: any, b: any) => {
             const scoreA =
               (5 - Number(a.maxSkillLevel)) * 20 +
               (Number(a.maxYearsExp) <= 2 ? 30 : 0) -
@@ -474,27 +473,50 @@ export class BookingsService {
               Number(b.activeLoad) * 25;
             return scoreB - scoreA;
           });
-          bestCandidate = candidates[0];
-          reason = `Hệ thống tự động phân công: Phòng tiêu chuẩn/cơ bản (${room.name}) ghép nối nhân sự tiêu chuẩn (${bestCandidate.staffName} - Level ${bestCandidate.maxSkillLevel}) tối ưu phân bổ tải.`;
+          bestCandidate = receptionists[0];
+          reason = `Hệ thống tự động phân công: Phòng tiêu chuẩn/cơ bản (${room.name}) phân bổ cho lễ tân (${bestCandidate.staffName} - Level ${bestCandidate.maxSkillLevel}) cân bằng tải.`;
         }
+      } else if (hotelManagers.length > 0) {
+        // [QUY TẮC BẮT BUỘC MỤC 12]: Không có lễ tân tại khách sạn -> Quản lý của khách sạn đó trực tiếp tiếp nhận
+        hotelManagers.sort((a: any, b: any) => Number(a.activeLoad) - Number(b.activeLoad));
+        bestCandidate = hotelManagers[0];
+        assignmentType = 'MANAGER_FALLBACK';
+        reason = `[FALLBACK TIẾP NHẬN] Khách sạn không có nhân sự lễ tân khả dụng trong ca trực. Đơn đặt phòng được bàn giao trực tiếp cho Quản lý khách sạn (${bestCandidate.staffName}) tiếp nhận xử lý.`;
+      } else {
+        // [QUY TẮC BẮT BUỘC MỤC 12]: Khách sạn không có cả lễ tân lẫn quản lý active -> Đánh dấu UNASSIGNED_CRITICAL, tuyệt đối không gán bừa nhân viên toàn hệ thống!
+        booking.handledBy = null;
+        booking.assignmentType = 'UNASSIGNED_CRITICAL';
+        booking.assignmentNote = 'CẢNH BÁO: Khách sạn không có nhân sự lễ tân hoặc quản lý khả dụng tại cơ sở để tiếp nhận. Cần Quản trị viên/Ban điều hành xử lý khẩn cấp.';
+        await manager.getRepository(Booking).save(booking);
 
-        if (bestCandidate) {
-          booking.handledBy = String(bestCandidate.staffUserId);
-          booking.assignmentType = 'AUTO';
-          booking.assignmentNote = reason;
-          await manager.getRepository(Booking).save(booking);
+        await manager.getRepository(BookingStatusLog).save(
+          manager.getRepository(BookingStatusLog).create({
+            bookingId: booking.id,
+            oldStatus: null,
+            newStatus: BookingStatus.PENDING,
+            note: booking.assignmentNote,
+            changedBy: null, // Hệ thống tự động
+          }),
+        );
+        return;
+      }
 
-          // Ghi nhận log
-          await manager.getRepository(BookingStatusLog).save(
-            manager.getRepository(BookingStatusLog).create({
-              bookingId: booking.id,
-              oldStatus: null,
-              newStatus: BookingStatus.PENDING,
-              note: reason,
-              changedBy: String(bestCandidate.staffUserId),
-            }),
-          );
-        }
+      if (bestCandidate) {
+        booking.handledBy = String(bestCandidate.staffUserId);
+        booking.assignmentType = assignmentType;
+        booking.assignmentNote = reason;
+        await manager.getRepository(Booking).save(booking);
+
+        // Ghi nhận log với changedBy: null (Actor: SYSTEM)
+        await manager.getRepository(BookingStatusLog).save(
+          manager.getRepository(BookingStatusLog).create({
+            bookingId: booking.id,
+            oldStatus: null,
+            newStatus: BookingStatus.PENDING,
+            note: reason,
+            changedBy: null, // Hệ thống tự động phân công theo Section 4.12
+          }),
+        );
       }
     } catch (err: any) {
       logWithTrace(
@@ -774,11 +796,17 @@ export class BookingsService {
         // Không dùng rooms.available_rooms global
         // ==========================================
         if (newStatus === 'CANCELLED') {
-          if (this.inventoryService) {
-            await this.inventoryService.releaseCommittedHold(
-              booking.id,
-              dto.note || 'CANCELLED',
-              manager,
+          if (currentStatus === 'PAYMENT_PENDING') {
+            if (this.inventoryService) {
+              await this.inventoryService.releaseHold(
+                booking.id,
+                dto.note || 'Khách hủy đơn chưa thanh toán',
+                manager,
+              );
+            }
+          } else {
+            throw new BadRequestException(
+              `Đơn đặt phòng ở trạng thái "${currentStatus}" không thể hủy trực tiếp qua cập nhật trạng thái. Vui lòng sử dụng quy trình yêu cầu hủy đơn (Cancellation Workflow) để xét duyệt và hoàn tiền.`,
             );
           }
         }
@@ -860,6 +888,7 @@ export class BookingsService {
     targetStaffUserId: string,
     changedByUserId: string,
     note?: string,
+    actor?: User,
   ) {
     const booking = await this.bookingRepository.findOne({
       where: { id: bookingId },
@@ -867,6 +896,19 @@ export class BookingsService {
 
     if (!booking) {
       throw new NotFoundException('Không tìm thấy đơn đặt phòng.');
+    }
+
+    // 0. KIỂM TRA QUYỀN PHÂN CÔNG (Mục 04.8 & Mục 11.3): Phải là ADMIN hoặc MANAGER thuộc đúng khách sạn của booking
+    if (actor && actor.role !== 'ADMIN') {
+      const managerStaff = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND staff_role = 'MANAGER' AND status = 'ACTIVE' LIMIT 1`,
+        [booking.hotelId, changedByUserId],
+      );
+      if (!managerStaff || managerStaff.length === 0) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên (ADMIN) mới có quyền phân công lại nhân viên phụ trách cho đơn đặt phòng tại khách sạn này.',
+        );
+      }
     }
 
     // 1. KIỂM TRA ĐIỀU KIỆN TIÊN QUYẾT: CHỈ ĐỔI KHI KHÁCH CHƯA TỚI NHẬN PHÒNG
@@ -886,14 +928,19 @@ export class BookingsService {
       );
     }
 
-    // 2. KIỂM TRA NHÂN VIÊN ĐƯỢC CHỈ ĐỊNH
+    // 2. KIỂM TRA NHÂN VIÊN ĐƯỢC CHỈ ĐỊNH (Mục 04.8): Phải ACTIVE và thuộc đúng khách sạn của booking
     const [targetStaff] = await this.dataSource.query(
-      'SELECT id, full_name, email, role FROM users WHERE id = ? AND deleted_at IS NULL AND status = "ACTIVE"',
-      [targetStaffUserId],
+      `SELECT u.id, u.full_name, u.email, u.role
+       FROM users u
+       INNER JOIN hotel_staff hs ON hs.staff_user_id = u.id AND hs.hotel_id = ? AND hs.status = 'ACTIVE'
+       WHERE u.id = ? AND u.deleted_at IS NULL AND u.status = 'ACTIVE'`,
+      [booking.hotelId, targetStaffUserId],
     );
 
     if (!targetStaff) {
-      throw new NotFoundException('Không tìm thấy nhân viên được chỉ định.');
+      throw new BadRequestException(
+        'Nhân viên được chỉ định không thuộc danh sách nhân sự đang công tác (ACTIVE) tại khách sạn của đơn đặt phòng này.',
+      );
     }
 
     if (targetStaff.role === 'CUSTOMER') {
@@ -1012,18 +1059,8 @@ export class BookingsService {
       [booking.hotelId],
     );
 
-    let candidates = staffList;
-    if (!candidates || candidates.length === 0) {
-      // Fallback nếu chưa có nhân viên được gán vào hotel_staff
-      candidates = await this.dataSource.query(
-        `SELECT u.id AS staffUserId, u.full_name AS staffName, u.email AS staffEmail,
-                'EMPLOYEE' AS staffRole, 2 AS maxSkillLevel, 1 AS maxYearsExp, 'STANDARD' AS eligibilityLevel,
-                0 AS completedCount, 0 AS activeLoad
-         FROM users u
-         WHERE u.role IN ('EMPLOYEE', 'ADMIN') AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
-         LIMIT 10`,
-      );
-    }
+    // Section 11.3: Danh sách ứng viên CHỈ lấy từ nhân sự thuộc đúng khách sạn này. Tuyệt đối không query toàn hệ thống!
+    const candidates = staffList || [];
 
     return {
       bookingId,
@@ -1062,7 +1099,16 @@ export class BookingsService {
   // LỊCH SỬ BOOKING CỦA USER (Customer)
   // ============================================================
 
-  async findByUser(userId: string) {
+  async findByUser(userId: string, actor?: User) {
+    let sqlCondition = 'WHERE b.user_id = ?';
+    const params: any[] = [userId];
+
+    if (actor && actor.role === 'EMPLOYEE') {
+      sqlCondition +=
+        ' AND b.hotel_id IN (SELECT hotel_id FROM hotel_staff WHERE staff_user_id = ? AND status = "ACTIVE")';
+      params.push(actor.id);
+    }
+
     const bookings = await this.dataSource.query(
       `
       SELECT
@@ -1115,11 +1161,11 @@ export class BookingsService {
       LEFT JOIN hotels h
         ON h.id = b.hotel_id
 
-      WHERE b.user_id = ?
+      ${sqlCondition}
 
       ORDER BY b.created_at DESC
       `,
-      [userId],
+      params,
     );
 
     return {
@@ -1147,7 +1193,18 @@ export class BookingsService {
       FROM bookings
     `);
 
-    // Section 55: Doanh thu thực tế chỉ tính từ các giao dịch thanh toán thành công (PAID) trừ tiền hoàn (refund)
+    // Section 18: Phân định rõ ràng các chỉ số tài chính và doanh số
+    const [salesAttribution] = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(estimated_total), 0) AS estimatedGrossBookingValue,
+        COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS bookedSales,
+        COALESCE(SUM(CASE WHEN status IN ('CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS realizedRevenue,
+        COALESCE(SUM(CASE WHEN booking_source IN ('WALK_IN', 'PHONE') AND status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS directFrontDeskSales,
+        COALESCE(SUM(CASE WHEN (booking_source IS NULL OR booking_source = 'WEBSITE') AND status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS websiteSales
+      FROM bookings
+    `);
+
+    // Doanh thu thực tế chỉ tính từ các giao dịch thanh toán thành công (PAID) trừ tiền hoàn (refund)
     const [revenueStats] = await this.dataSource.query(`
       SELECT
         COALESCE(SUM(CASE WHEN status = 'PAID' THEN amount ELSE 0 END) - SUM(refund_amount), 0) AS totalRevenue
@@ -1197,8 +1254,143 @@ export class BookingsService {
         cancelledBookings: Number(bookingStats?.cancelledBookings || 0),
         paymentExpiredBookings: Number(bookingStats?.paymentExpiredBookings || 0),
         totalRevenue: Number(revenueStats?.totalRevenue || 0),
+        cashCollected: Number(revenueStats?.totalRevenue || 0),
+        estimatedGrossBookingValue: Number(salesAttribution?.estimatedGrossBookingValue || 0),
+        bookedSales: Number(salesAttribution?.bookedSales || 0),
+        realizedRevenue: Number(salesAttribution?.realizedRevenue || 0),
+        directFrontDeskSales: Number(salesAttribution?.directFrontDeskSales || 0),
+        websiteSales: Number(salesAttribution?.websiteSales || 0),
         monthlyBookings: Number(monthlyStats?.monthlyBookings || 0),
         monthlyRevenue: Number(monthlyRevenueStats?.monthlyRevenue || 0),
+      },
+    };
+  }
+
+  /**
+   * Kiểm tra quan hệ quản lý trực tiếp giữa Manager và Staff trong cùng khách sạn
+   */
+  async isManagerOfUser(managerUserId: string | number, targetUserId: string | number): Promise<boolean> {
+    const rows = await this.dataSource.query(
+      `SELECT m.id 
+       FROM hotel_staff m
+       INNER JOIN hotel_staff s ON s.hotel_id = m.hotel_id
+       WHERE m.staff_user_id = ? AND m.staff_role = 'MANAGER' AND m.status = 'ACTIVE'
+         AND s.staff_user_id = ? AND s.status = 'ACTIVE'
+       LIMIT 1`,
+      [managerUserId, targetUserId],
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  /**
+   * Section 18 & 21: Báo cáo hiệu suất & KPI Lễ tân
+   * Tách rõ: Doanh số trực tiếp (Walk-in/Phone) vs Booking phục vụ (Web/OTA) vs Dịch vụ bán thêm (Upsell)
+   */
+  async getStaffPerformance(staffUserId: string, actorUser?: User) {
+    if (actorUser && actorUser.role !== 'ADMIN') {
+      if (String(actorUser.id) !== String(staffUserId)) {
+        const isMgr = await this.isManagerOfUser(actorUser.id, staffUserId);
+        if (!isMgr) {
+          throw new ForbiddenException(
+            'Bạn chỉ có thể xem báo cáo hiệu suất của chính mình hoặc của nhân viên dưới quyền.',
+          );
+        }
+      }
+    }
+
+    // 1. Direct Sales (Walk-in / Phone tạo bởi lễ tân này)
+    const [directSales] = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(*) AS directBookingsCount,
+        COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS directSalesNet,
+        COALESCE(SUM(CASE WHEN status = 'CANCELLED' THEN estimated_total ELSE 0 END), 0) AS directCancelledAmount
+      FROM bookings
+      WHERE created_by_staff_id = ?
+      `,
+      [staffUserId],
+    );
+
+    // 2. Operational Volume (Số lượng booking lễ tân tiếp nhận & phục vụ check-in/out)
+    const [operationalVolume] = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(*) AS totalHandledBookings,
+        COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS handledVolumeAmount,
+        SUM(CASE WHEN status = 'CHECKED_IN' THEN 1 ELSE 0 END) AS checkedInCount,
+        SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completedCount
+      FROM bookings
+      WHERE handled_by = ?
+      `,
+      [staffUserId],
+    );
+
+    // 3. Service Upsells (Yêu cầu dịch vụ giao cho lễ tân xử lý / bán thêm)
+    const [serviceUpsell] = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(*) AS totalServiceRequests,
+        SUM(CASE WHEN status IN ('COMPLETED', 'CONFIRMED') THEN 1 ELSE 0 END) AS completedServicesCount,
+        COALESCE(SUM(CASE WHEN status IN ('COMPLETED', 'CONFIRMED') THEN total_price ELSE 0 END), 0) AS completedServiceAmount,
+        SUM(CASE WHEN is_sla_breached = 1 THEN 1 ELSE 0 END) AS slaBreachedCount
+      FROM service_requests
+      WHERE assigned_to = ?
+      `,
+      [staffUserId],
+    );
+
+    // 4. Shift & Attendance (Ca trực và chênh lệch tiền mặt)
+    const [shiftStats] = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(*) AS totalShifts,
+        SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) AS closedShifts,
+        SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END) AS openShifts,
+        COALESCE(SUM(cash_variance), 0) AS totalCashVariance
+      FROM staff_shifts
+      WHERE staff_user_id = ?
+      `,
+      [staffUserId],
+    );
+
+    // 5. Thông tin nhân viên
+    const [staffInfo] = await this.dataSource.query(
+      `SELECT id, full_name AS fullName, email, role, phone FROM users WHERE id = ? LIMIT 1`,
+      [staffUserId],
+    );
+
+    const totalRequests = Number(serviceUpsell?.totalServiceRequests || 0);
+    const completedServices = Number(serviceUpsell?.completedServicesCount || 0);
+    const slaBreached = Number(serviceUpsell?.slaBreachedCount || 0);
+
+    return {
+      staff: staffInfo ?? { id: staffUserId },
+      directSales: {
+        bookingsCount: Number(directSales?.directBookingsCount || 0),
+        netAmount: Number(directSales?.directSalesNet || 0),
+        cancelledAmount: Number(directSales?.directCancelledAmount || 0),
+      },
+      operations: {
+        totalHandledBookings: Number(operationalVolume?.totalHandledBookings || 0),
+        handledVolumeAmount: Number(operationalVolume?.handledVolumeAmount || 0),
+        checkedInCount: Number(operationalVolume?.checkedInCount || 0),
+        completedCount: Number(operationalVolume?.completedCount || 0),
+      },
+      services: {
+        totalRequests,
+        completedCount: completedServices,
+        totalUpsellAmount: Number(serviceUpsell?.completedServiceAmount || 0),
+        slaBreachedCount: slaBreached,
+        onTimeRate:
+          totalRequests > 0
+            ? Math.max(0, Math.round(((completedServices - slaBreached) / totalRequests) * 100))
+            : 100,
+      },
+      shifts: {
+        totalShifts: Number(shiftStats?.totalShifts || 0),
+        closedShifts: Number(shiftStats?.closedShifts || 0),
+        openShifts: Number(shiftStats?.openShifts || 0),
+        totalCashVariance: Number(shiftStats?.totalCashVariance || 0),
       },
     };
   }
@@ -1240,6 +1432,214 @@ export class BookingsService {
     return {
       message: 'Lấy nhật ký vận hành thành công.',
       data: logs,
+    };
+  }
+
+  // ============================================================
+  // TẠO BOOKING TẠI QUẦY / QUA ĐIỆN THOẠI (Lễ tân / Front Desk)
+  // Section 02.14, 16.1, 17.2, 17.3, 30.3
+  // ============================================================
+  async createFrontDeskBooking(
+    dto: CreateFrontDeskBookingDto,
+    staffUser: User,
+    ip: string,
+  ) {
+    // 1. Kiểm tra phòng tồn tại
+    const room = await this.roomRepository.findOne({
+      where: { id: dto.roomId },
+    });
+
+    if (!room) {
+      throw new NotFoundException('Không tìm thấy phòng đã chọn.');
+    }
+
+    let hotelName = 'Khách sạn';
+    if (room.hotelId) {
+      const [h] = await this.dataSource.query(
+        `SELECT name FROM hotels WHERE id = ? LIMIT 1`,
+        [room.hotelId],
+      );
+      if (h?.name) hotelName = h.name;
+    }
+
+    // 2. Kiểm tra quyền nhân viên: Phải là ADMIN hoặc nhân sự ACTIVE tại khách sạn của phòng này
+    if (staffUser.role !== 'ADMIN') {
+      const isStaffAtHotel = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+        [room.hotelId, staffUser.id],
+      );
+      if (!isStaffAtHotel || isStaffAtHotel.length === 0) {
+        throw new ForbiddenException(
+          'Bạn không có quyền tạo đơn đặt phòng tại khách sạn này. Yêu cầu thuộc biên chế khách sạn.',
+        );
+      }
+    }
+
+    // 3. Kiểm tra ngày nhận & trả phòng
+    const checkIn = new Date(dto.checkInAt);
+    const checkOut = new Date(dto.checkOutAt);
+    if (isNaN(checkIn.getTime()) || isNaN(checkOut.getTime())) {
+      throw new BadRequestException('Định dạng ngày nhận/trả phòng không hợp lệ.');
+    }
+    if (checkOut <= checkIn) {
+      throw new BadRequestException('Ngày trả phòng phải sau ngày nhận phòng.');
+    }
+
+    const diffMs = checkOut.getTime() - checkIn.getTime();
+    const nights = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+
+    // 4. Kiểm tra tồn phòng
+    if (
+      room.availableRooms !== undefined &&
+      room.availableRooms !== null &&
+      dto.roomCount > room.availableRooms
+    ) {
+      throw new BadRequestException(
+        `Phòng hiện chỉ còn ${room.availableRooms} phòng khả dụng. Không đủ đáp ứng yêu cầu ${dto.roomCount} phòng.`,
+      );
+    }
+
+    // 5. Tính giá
+    const pricePerNight = Number(room.pricePerNight);
+    const subtotal = pricePerNight * nights * dto.roomCount;
+
+    // 6. Tìm hoặc tạo khách hàng theo email
+    let customerUserId: string = staffUser.id;
+    const [existingCustomer] = await this.dataSource.query(
+      `SELECT id FROM users WHERE email = ? AND deleted_at IS NULL LIMIT 1`,
+      [dto.contactEmail.trim().toLowerCase()],
+    );
+
+    if (existingCustomer) {
+      customerUserId = String(existingCustomer.id);
+    } else {
+      // Tạo tài khoản khách hàng mới cho khách walk-in / điện thoại
+      const insertUser = await this.dataSource.query(
+        `INSERT INTO users (full_name, email, phone, role, status, created_at, updated_at)
+         VALUES (?, ?, ?, 'CUSTOMER', 'ACTIVE', NOW(), NOW())`,
+        [dto.contactName.trim(), dto.contactEmail.trim().toLowerCase(), dto.contactPhone.trim()],
+      );
+      customerUserId = String(insertUser.insertId);
+    }
+
+    // 7. Sinh booking code
+    const bookingCode = this.idGen.generateBookingCode();
+
+    // 8. Transaction lưu booking & decrement room
+    const result = await runWithDeadlockRetry(
+      this.dataSource,
+      async (manager) => {
+        // Atomic update decrement rooms
+        const reserveResult = await manager
+          .createQueryBuilder()
+          .update(Room)
+          .set({
+            availableRooms: () => 'available_rooms - :roomCount',
+          })
+          .where('id = :roomId AND available_rooms >= :roomCount', {
+            roomId: room.id,
+            roomCount: dto.roomCount,
+          })
+          .execute();
+
+        if (reserveResult.affected === 0) {
+          throw new ConflictException(
+            'Phòng vừa hết trong lúc thực hiện thao tác. Vui lòng chọn loại phòng khác.',
+          );
+        }
+
+        const noteText = dto.note
+          ? `Ghi chú: ${dto.note}`
+          : dto.callReference
+          ? `Mã cuộc gọi: ${dto.callReference}`
+          : '';
+
+        const booking = manager.getRepository(Booking).create({
+          bookingCode,
+          userId: customerUserId,
+          hotelId: room.hotelId,
+          handledBy: staffUser.id,
+          createdByStaffId: staffUser.id,
+          bookingSource: dto.bookingSource,
+          assignmentType: 'FRONT_DESK',
+          assignmentNote: `Đơn tạo trực tiếp tại khách sạn bởi Lễ tân ${staffUser.fullName} (Nguồn: ${dto.bookingSource}). ${noteText}`.trim(),
+          contactName: dto.contactName.trim(),
+          contactEmail: dto.contactEmail.trim(),
+          contactPhone: dto.contactPhone.trim(),
+          checkInAt: checkIn,
+          checkOutAt: checkOut,
+          totalGuests: dto.totalGuests,
+          requestedRoomCount: dto.roomCount,
+          estimatedTotal: String(subtotal),
+          status: BookingStatus.CONFIRMED,
+          specialRequest: dto.specialRequest,
+          confirmedAt: new Date(),
+        });
+
+        const savedBooking = await manager.getRepository(Booking).save(booking);
+
+        const bookingRoom = manager.getRepository(BookingRoom).create({
+          bookingId: savedBooking.id,
+          roomId: room.id,
+          quantity: dto.roomCount,
+          pricePerNight: pricePerNight.toFixed(2),
+          nights,
+          subtotal: subtotal.toFixed(2),
+        });
+        await manager.getRepository(BookingRoom).save(bookingRoom);
+
+        await manager.getRepository(BookingStatusLog).save(
+          manager.getRepository(BookingStatusLog).create({
+            bookingId: savedBooking.id,
+            oldStatus: null,
+            newStatus: BookingStatus.CONFIRMED,
+            note: `[LỄ TÂN GHI NHẬN] Đơn tạo thành công tại quầy / điện thoại (${dto.bookingSource}). Nhân viên chốt: ${staffUser.fullName} (#${staffUser.id}).`,
+            changedBy: staffUser.id,
+          }),
+        );
+
+        return savedBooking;
+      },
+    );
+
+    // Phát sự kiện realtime
+    if (this.realtimeGateway) {
+      this.realtimeGateway.emitBookingCreated({
+        id: result.id,
+        bookingCode: result.bookingCode,
+        hotelId: room.hotelId,
+        hotelName,
+        userId: customerUserId,
+        contactName: result.contactName,
+        contactPhone: result.contactPhone,
+        contactEmail: result.contactEmail,
+        checkInAt: result.checkInAt.toISOString(),
+        checkOutAt: result.checkOutAt.toISOString(),
+        roomName: room.name,
+        roomCount: result.requestedRoomCount,
+        estimatedTotal: String(result.estimatedTotal),
+        createdAt: result.createdAt.toISOString(),
+      });
+    }
+
+    return {
+      message: `Tạo đơn đặt phòng thành công qua kênh ${dto.bookingSource}.`,
+      data: {
+        bookingId: result.id,
+        bookingCode: result.bookingCode,
+        hotelId: result.hotelId,
+        hotelName,
+        roomName: room.name,
+        customerName: result.contactName,
+        checkInAt: result.checkInAt,
+        checkOutAt: result.checkOutAt,
+        totalGuests: result.totalGuests,
+        roomCount: result.requestedRoomCount,
+        estimatedTotal: result.estimatedTotal,
+        status: result.status,
+        bookingSource: result.bookingSource,
+        handledByName: staffUser.fullName,
+      },
     };
   }
 }

@@ -343,8 +343,8 @@ export class PaymentsService {
   /**
    * Đối soát trạng thái thanh toán thật với VNPay qua QueryDr
    */
-  async reconcilePayment(bookingId: string) {
-    return await this.reconciliationService.reconcilePayment(bookingId);
+  async reconcilePayment(bookingId: string, user?: User) {
+    return await this.reconciliationService.reconcilePayment(bookingId, user);
   }
 
   /**

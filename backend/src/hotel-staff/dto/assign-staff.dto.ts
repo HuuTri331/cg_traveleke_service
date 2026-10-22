@@ -15,8 +15,8 @@ export class AssignStaffDto {
   staffUserId!: string;
 
   @IsOptional()
-  @IsEnum(['MANAGER', 'EMPLOYEE'], {
-    message: 'Vai trò phải là MANAGER hoặc EMPLOYEE.',
+  @IsEnum(['MANAGER', 'EMPLOYEE', 'QUAN_LY', 'LE_TAN', 'BUONG_PHONG', 'KE_TOAN'], {
+    message: 'Vai trò phải là MANAGER hoặc EMPLOYEE (hoặc QUAN_LY, LE_TAN).',
   })
   staffRole?: string;
 }

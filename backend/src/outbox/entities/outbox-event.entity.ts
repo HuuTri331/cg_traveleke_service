@@ -23,18 +23,21 @@ export class OutboxEvent {
 
   @Column({
     name: 'event_type',
+    type: 'varchar',
     length: 100,
   })
   eventType!: string;
 
   @Column({
     name: 'aggregate_type',
+    type: 'varchar',
     length: 50,
   })
   aggregateType!: string;
 
   @Column({
     name: 'aggregate_id',
+    type: 'varchar',
     length: 50,
   })
   aggregateId!: string;

@@ -750,4 +750,9 @@ export class RoomsService {
 
     throw error;
   }
+
+  async isHotelManager(userId: string | number, hotelId: string | number): Promise<boolean> {
+    return this.hotelsService.isHotelManager(userId, hotelId);
+  }
 }
+

@@ -107,8 +107,11 @@ export class PaymentsController {
   @Post(':bookingId/reconcile')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  reconcilePayment(@Param('bookingId') bookingId: string) {
-    return this.paymentsService.reconcilePayment(bookingId);
+  reconcilePayment(
+    @Param('bookingId') bookingId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.paymentsService.reconcilePayment(bookingId, user);
   }
 
   /**

@@ -76,6 +76,44 @@ export class BookingAccessService {
   }
 
   /**
+   * Kiểm tra quyền phê duyệt yêu cầu hủy phòng & hoàn tiền:
+   * - ADMIN: toàn quyền
+   * - EMPLOYEE: bắt buộc phải có vai trò MANAGER và đang ACTIVE tại khách sạn của booking
+   */
+  async canApproveCancellation(
+    booking: { hotelId: string },
+    user: User,
+  ): Promise<boolean> {
+    if (!user) return false;
+    if (user.role === 'ADMIN') return true;
+
+    if (user.role === 'EMPLOYEE') {
+      const staff = await this.hotelStaffRepo.findOne({
+        where: {
+          staffUserId: String(user.id),
+          hotelId: String(booking.hotelId),
+          status: 'ACTIVE',
+        },
+      });
+      return !!staff && staff.staffRole === 'MANAGER';
+    }
+
+    return false;
+  }
+
+  async assertCanApproveCancellation(
+    booking: { hotelId: string },
+    user: User,
+  ): Promise<void> {
+    const allowed = await this.canApproveCancellation(booking, user);
+    if (!allowed) {
+      throw new ForbiddenException(
+        'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên (ADMIN) mới có quyền xét duyệt yêu cầu hủy phòng và hoàn tiền.',
+      );
+    }
+  }
+
+  /**
    * Kiểm tra nhân viên có đang công tác (ACTIVE) tại khách sạn cụ thể hay không
    */
   async isEmployeeAtHotel(staffUserId: string, hotelId: string): Promise<boolean> {
@@ -89,3 +127,4 @@ export class BookingAccessService {
     return !!staff;
   }
 }
+

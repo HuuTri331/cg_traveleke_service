@@ -59,10 +59,14 @@ export class HotelStaffService {
       );
     }
 
+    let normalizedRole = dto.staffRole ?? 'EMPLOYEE';
+    if (normalizedRole === 'QUAN_LY') normalizedRole = 'MANAGER';
+    if (['LE_TAN', 'BUONG_PHONG', 'KE_TOAN'].includes(normalizedRole)) normalizedRole = 'EMPLOYEE';
+
     const assignment = this.hotelStaffRepository.create({
       hotelId: dto.hotelId,
       staffUserId: dto.staffUserId,
-      staffRole: dto.staffRole ?? 'EMPLOYEE',
+      staffRole: normalizedRole,
       status: 'ACTIVE',
     });
 
