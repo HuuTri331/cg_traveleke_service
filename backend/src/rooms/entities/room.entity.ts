@@ -14,6 +14,12 @@ export enum RoomStatus {
   MAINTENANCE = 'MAINTENANCE',
 }
 
+export enum RoomServiceTier {
+  ECONOMY = 'ECONOMY',
+  STANDARD = 'STANDARD',
+  VIP = 'VIP',
+}
+
 @Entity({ name: 'rooms' })
 export class Room {
   @PrimaryGeneratedColumn({
@@ -46,6 +52,14 @@ export class Room {
     nullable: true,
   })
   description!: string | null;
+
+  @Column({
+    name: 'service_tier',
+    type: 'varchar',
+    length: 20,
+    default: RoomServiceTier.STANDARD,
+  })
+  serviceTier!: RoomServiceTier;
 
   @Column({
     name: 'price_per_night',

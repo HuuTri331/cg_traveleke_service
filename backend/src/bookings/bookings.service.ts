@@ -37,6 +37,12 @@ import { BookingAccessService } from './services/booking-access.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { User } from '../users/entities/user.entity';
 
+import {
+  BookingPresenceEvent,
+  PresenceEventType,
+  PresenceActorType,
+} from '../booking-presence/entities/booking-presence-event.entity';
+
 /**
  * State machine: Các chuyển trạng thái hợp lệ cho booking.
  * Key = trạng thái hiện tại, Value = danh sách trạng thái có thể chuyển sang.
@@ -46,9 +52,11 @@ const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
   PAYMENT_PENDING: ['PENDING', 'PAYMENT_EXPIRED', 'PAYMENT_REVIEW', 'CANCELLED'],
   // Đơn đã thanh toán (PENDING, CONFIRMED): KHÔNG được hủy trực tiếp bằng updateStatus()
   // Việc hủy và hoàn tiền BẮT BUỘC phải qua quy trình CancellationsService.reviewRequest(APPROVE)
-  PENDING: ['CONFIRMED'],
-  CONFIRMED: ['CHECKED_IN'],
+  PENDING: ['CONFIRMED', 'NO_SHOW'],
+  CONFIRMED: ['CHECKED_IN', 'NO_SHOW'],
+  NO_SHOW: ['CHECKED_IN', 'CLOSED_NO_SHOW'],
   CHECKED_IN: ['COMPLETED'],
+  CLOSED_NO_SHOW: [],
   PAYMENT_REVIEW: [],
   // Các trạng thái cuối: REJECTED, COMPLETED, CANCELLED, PAYMENT_EXPIRED → không chuyển tiếp được
   PAYMENT_EXPIRED: [],
@@ -818,6 +826,8 @@ export class BookingsService {
         }
 
         const now = new Date();
+        const presenceRepo = manager.getRepository(BookingPresenceEvent);
+
         switch (newStatus) {
           case 'CONFIRMED':
             booking.confirmedAt = now;
@@ -828,6 +838,97 @@ export class BookingsService {
           case 'CANCELLED':
             booking.cancelledAt = now;
             break;
+          case 'CHECKED_IN': {
+            if (now >= new Date(booking.checkOutAt)) {
+              throw new ConflictException(
+                `Kỳ lưu trú đã kết thúc vào lúc ${new Date(booking.checkOutAt).toLocaleString('vi-VN')}. Không thể nhận phòng sau giờ trả phòng.`,
+              );
+            }
+            booking.actualCheckInAt = now;
+            booking.checkInConfirmedBy = changedByUserId;
+            booking.presenceVersion = (booking.presenceVersion || 1) + 1;
+            const isLateRecovery = currentStatus === 'NO_SHOW';
+            if (isLateRecovery) {
+              booking.lateCheckInRecoveredAt = now;
+            }
+            const checkInTime = new Date(booking.checkInAt).getTime();
+            const lateMinutes =
+              now.getTime() > checkInTime
+                ? Math.floor((now.getTime() - checkInTime) / 60000)
+                : 0;
+            const presenceEv = presenceRepo.create({
+              bookingId: booking.id,
+              hotelId: booking.hotelId,
+              fromStatus: currentStatus,
+              toStatus: 'CHECKED_IN',
+              actorType: PresenceActorType.USER,
+              actorId: changedByUserId,
+              eventType: isLateRecovery
+                ? PresenceEventType.LATE_CHECK_IN_RECOVERED
+                : PresenceEventType.ARRIVAL_CONFIRMED,
+              lateMinutes,
+              reason:
+                dto.note ||
+                (isLateRecovery
+                  ? 'Khôi phục nhận phòng muộn sau No-show'
+                  : 'Khách nhận phòng tại quầy'),
+              occurredAt: now,
+            });
+            await presenceRepo.save(presenceEv);
+            break;
+          }
+          case 'COMPLETED': {
+            booking.actualCheckOutAt = now;
+            booking.checkOutConfirmedBy = changedByUserId;
+            booking.presenceVersion = (booking.presenceVersion || 1) + 1;
+            const presenceEv = presenceRepo.create({
+              bookingId: booking.id,
+              hotelId: booking.hotelId,
+              fromStatus: currentStatus,
+              toStatus: 'COMPLETED',
+              actorType: PresenceActorType.USER,
+              actorId: changedByUserId,
+              eventType: PresenceEventType.DEPARTURE_CONFIRMED,
+              reason: dto.note || 'Khách hoàn tất trả phòng',
+              occurredAt: now,
+            });
+            await presenceRepo.save(presenceEv);
+            break;
+          }
+          case 'NO_SHOW': {
+            booking.noShowAt = now;
+            booking.presenceVersion = (booking.presenceVersion || 1) + 1;
+            const presenceEv = presenceRepo.create({
+              bookingId: booking.id,
+              hotelId: booking.hotelId,
+              fromStatus: currentStatus,
+              toStatus: 'NO_SHOW',
+              actorType: PresenceActorType.USER,
+              actorId: changedByUserId,
+              eventType: PresenceEventType.NO_SHOW_MARKED,
+              reason: dto.note || 'Đánh dấu No-Show',
+              occurredAt: now,
+            });
+            await presenceRepo.save(presenceEv);
+            break;
+          }
+          case 'CLOSED_NO_SHOW': {
+            booking.noShowClosedAt = now;
+            booking.presenceVersion = (booking.presenceVersion || 1) + 1;
+            const presenceEv = presenceRepo.create({
+              bookingId: booking.id,
+              hotelId: booking.hotelId,
+              fromStatus: currentStatus,
+              toStatus: 'CLOSED_NO_SHOW',
+              actorType: PresenceActorType.USER,
+              actorId: changedByUserId,
+              eventType: PresenceEventType.NO_SHOW_CLOSED,
+              reason: dto.note || 'Đóng No-Show hết kỳ',
+              occurredAt: now,
+            });
+            await presenceRepo.save(presenceEv);
+            break;
+          }
         }
 
         const savedBooking = await bookingRepo.save(booking);
@@ -1189,7 +1290,9 @@ export class BookingsService {
         SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completedBookings,
         SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejectedBookings,
         SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelledBookings,
-        SUM(CASE WHEN status = 'PAYMENT_EXPIRED' THEN 1 ELSE 0 END) AS paymentExpiredBookings
+        SUM(CASE WHEN status = 'PAYMENT_EXPIRED' THEN 1 ELSE 0 END) AS paymentExpiredBookings,
+        SUM(CASE WHEN status = 'NO_SHOW' THEN 1 ELSE 0 END) AS noShowBookings,
+        SUM(CASE WHEN status = 'CLOSED_NO_SHOW' THEN 1 ELSE 0 END) AS closedNoShowBookings
       FROM bookings
     `);
 
@@ -1197,10 +1300,10 @@ export class BookingsService {
     const [salesAttribution] = await this.dataSource.query(`
       SELECT
         COALESCE(SUM(estimated_total), 0) AS estimatedGrossBookingValue,
-        COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS bookedSales,
+        COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED', 'NO_SHOW', 'CLOSED_NO_SHOW') THEN estimated_total ELSE 0 END), 0) AS bookedSales,
         COALESCE(SUM(CASE WHEN status IN ('CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS realizedRevenue,
-        COALESCE(SUM(CASE WHEN booking_source IN ('WALK_IN', 'PHONE') AND status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS directFrontDeskSales,
-        COALESCE(SUM(CASE WHEN (booking_source IS NULL OR booking_source = 'WEBSITE') AND status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS websiteSales
+        COALESCE(SUM(CASE WHEN booking_source IN ('WALK_IN', 'PHONE') AND status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED', 'NO_SHOW', 'CLOSED_NO_SHOW') THEN estimated_total ELSE 0 END), 0) AS directFrontDeskSales,
+        COALESCE(SUM(CASE WHEN (booking_source IS NULL OR booking_source = 'WEBSITE') AND status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED', 'NO_SHOW', 'CLOSED_NO_SHOW') THEN estimated_total ELSE 0 END), 0) AS websiteSales
       FROM bookings
     `);
 
@@ -1253,6 +1356,8 @@ export class BookingsService {
         rejectedBookings: Number(bookingStats?.rejectedBookings || 0),
         cancelledBookings: Number(bookingStats?.cancelledBookings || 0),
         paymentExpiredBookings: Number(bookingStats?.paymentExpiredBookings || 0),
+        noShowBookings: Number(bookingStats?.noShowBookings || 0),
+        closedNoShowBookings: Number(bookingStats?.closedNoShowBookings || 0),
         totalRevenue: Number(revenueStats?.totalRevenue || 0),
         cashCollected: Number(revenueStats?.totalRevenue || 0),
         estimatedGrossBookingValue: Number(salesAttribution?.estimatedGrossBookingValue || 0),

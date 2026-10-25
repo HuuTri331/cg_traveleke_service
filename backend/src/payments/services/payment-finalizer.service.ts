@@ -251,6 +251,20 @@ export class PaymentFinalizerService {
       },
     );
 
+    // Kích hoạt phân công lễ tân công bằng bất đồng bộ độc lập (Đợt 1)
+    await this.outboxService.addEvent(
+      manager,
+      'booking.assignment.requested',
+      'Booking',
+      targetBooking.id,
+      {
+        bookingId: targetBooking.id,
+        hotelId: targetBooking.hotelId,
+        causation: 'PAYMENT_PAID',
+        occurredAt: new Date(),
+      },
+    );
+
     await this.outboxService.addEvent(
       manager,
       'mail.payment_success',

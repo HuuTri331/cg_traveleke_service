@@ -18,6 +18,7 @@ import {
 } from '../payments/entities/payment-transaction.entity';
 import { Booking, BookingStatus } from '../bookings/entities/booking.entity';
 import { BookingStatusLog } from '../bookings/entities/booking-status-log.entity';
+import { BookingAssignmentService } from '../booking-assignment/booking-assignment.service';
 
 @Injectable()
 export class WorkersService {
@@ -35,6 +36,7 @@ export class WorkersService {
     private readonly refundService: RefundService,
     private readonly inventoryService: InventoryService,
     private readonly dataSource: DataSource,
+    private readonly bookingAssignmentService: BookingAssignmentService,
   ) {}
 
   /**
@@ -106,6 +108,13 @@ export class WorkersService {
                 userId: payload.userId,
                 hotelId: payload.hotelId,
               });
+              break;
+
+            case 'booking.assignment.requested':
+              await this.bookingAssignmentService.assignOnce(
+                payload.bookingId,
+                'PAYMENT_PAID',
+              );
               break;
 
             case 'refund.requested':
@@ -328,4 +337,17 @@ export class WorkersService {
       this.isProcessingReconciliation = false;
     }
   }
+
+  /**
+   * 4. ĐỊNH KỲ RÀ SOÁT VÀ PHÂN CÔNG BÙ CHO CÁC BOOKING PAID CHƯA ĐƯỢC GIAO (Mỗi 5 phút)
+   */
+  @Interval(300000)
+  async handlePeriodicAssignmentRepair() {
+    try {
+      await this.bookingAssignmentService.repairUnassignedPaidBookings();
+    } catch (err: any) {
+      this.logger.error(`[Worker] Lỗi rà soát phân công bù: ${err.message}`);
+    }
+  }
 }
+

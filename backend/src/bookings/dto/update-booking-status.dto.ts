@@ -12,13 +12,15 @@ export enum BookingStatusAction {
   CHECKED_IN = 'CHECKED_IN',
   COMPLETED = 'COMPLETED',
   CANCELLED = 'CANCELLED',
+  NO_SHOW = 'NO_SHOW',
+  CLOSED_NO_SHOW = 'CLOSED_NO_SHOW',
 }
 
 export class UpdateBookingStatusDto {
   @IsNotEmpty({ message: 'Trạng thái mới không được để trống.' })
   @IsEnum(BookingStatusAction, {
     message:
-      'Trạng thái không hợp lệ. Chấp nhận: CONFIRMED, REJECTED, CHECKED_IN, COMPLETED, CANCELLED.',
+      'Trạng thái không hợp lệ. Chấp nhận: CONFIRMED, REJECTED, CHECKED_IN, COMPLETED, CANCELLED, NO_SHOW, CLOSED_NO_SHOW.',
   })
   status!: BookingStatusAction;
 

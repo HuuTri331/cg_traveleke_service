@@ -16,6 +16,8 @@ export enum BookingStatus {
   CANCELLED = 'CANCELLED',
   PAYMENT_EXPIRED = 'PAYMENT_EXPIRED',
   PAYMENT_REVIEW = 'PAYMENT_REVIEW',
+  NO_SHOW = 'NO_SHOW',
+  CLOSED_NO_SHOW = 'CLOSED_NO_SHOW',
 }
 
 @Entity('bookings')
@@ -202,6 +204,87 @@ export class Booking {
     nullable: true,
   })
   cancelledAt!: Date | null;
+
+  @Column({
+    name: 'actual_check_in_at',
+    type: 'datetime',
+    nullable: true,
+  })
+  actualCheckInAt!: Date | null;
+
+  @Column({
+    name: 'actual_check_out_at',
+    type: 'datetime',
+    nullable: true,
+  })
+  actualCheckOutAt!: Date | null;
+
+  @Column({
+    name: 'no_show_at',
+    type: 'datetime',
+    nullable: true,
+  })
+  noShowAt!: Date | null;
+
+  @Column({
+    name: 'no_show_grace_minutes',
+    type: 'smallint',
+    unsigned: true,
+    default: 360,
+  })
+  noShowGraceMinutes!: number;
+
+  @Column({
+    name: 'no_show_closed_at',
+    type: 'datetime',
+    nullable: true,
+  })
+  noShowClosedAt!: Date | null;
+
+  @Column({
+    name: 'late_check_in_recovered_at',
+    type: 'datetime',
+    nullable: true,
+  })
+  lateCheckInRecoveredAt!: Date | null;
+
+  @Column({
+    name: 'check_in_confirmed_by',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
+  checkInConfirmedBy!: string | null;
+
+  @Column({
+    name: 'check_out_confirmed_by',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
+  checkOutConfirmedBy!: string | null;
+
+  @Column({
+    name: 'presence_version',
+    type: 'int',
+    unsigned: true,
+    default: 1,
+  })
+  presenceVersion!: number;
+
+  @Column({
+    name: 'late_arrival_expected_at',
+    type: 'datetime',
+    nullable: true,
+  })
+  lateArrivalExpectedAt!: Date | null;
+
+  @Column({
+    name: 'late_arrival_note',
+    type: 'text',
+    nullable: true,
+  })
+  lateArrivalNote!: string | null;
 
   @Column({
     name: 'checkout_idempotency_key',

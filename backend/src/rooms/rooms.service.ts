@@ -14,7 +14,7 @@ import { CreateRoomDto } from './dto/create-room.dto';
 import { QueryRoomDto } from './dto/query-room.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomImage } from './entities/room-image.entity';
-import { Room, RoomStatus } from './entities/room.entity';
+import { Room, RoomServiceTier, RoomStatus } from './entities/room.entity';
 import { SearchRoomDto } from './dto/search-room.dto';
 import { RoomServiceAssignment } from './entities/room-service-assignment.entity';
 import { RoomService } from '../services/entities/room-service.entity';
@@ -70,6 +70,7 @@ export class RoomsService {
       rating: dto.rating !== undefined ? Number(dto.rating).toFixed(2) : '5.00',
       reviewCount: dto.reviewCount ?? 0,
       coverImageUrl: dto.coverImageUrl?.trim() ?? null,
+      serviceTier: dto.serviceTier ?? RoomServiceTier.STANDARD,
       status: dto.status ?? RoomStatus.AVAILABLE,
     });
 
@@ -467,6 +468,10 @@ export class RoomsService {
 
     if (dto.rating !== undefined) {
       room.rating = Number(dto.rating).toFixed(2);
+    }
+
+    if (dto.serviceTier !== undefined) {
+      room.serviceTier = dto.serviceTier;
     }
 
     if (dto.reviewCount !== undefined) {

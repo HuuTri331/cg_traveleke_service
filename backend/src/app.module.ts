@@ -87,6 +87,9 @@ import { CancellationsModule } from './cancellations/cancellations.module';
 import { ChatModule } from './chat/chat.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { ApprovalsModule } from './approvals/approvals.module';
+import { StaffAvailabilityModule } from './staff-availability/staff-availability.module';
+import { BookingAssignmentModule } from './booking-assignment/booking-assignment.module';
+import { BookingPresenceModule } from './booking-presence/booking-presence.module';
 
 @Module({
   imports: [
@@ -151,6 +154,9 @@ import { ApprovalsModule } from './approvals/approvals.module';
     ChatModule,
     ShiftsModule,
     ApprovalsModule,
+    StaffAvailabilityModule,
+    BookingAssignmentModule,
+    BookingPresenceModule,
   ],
 
   controllers: [AppController],

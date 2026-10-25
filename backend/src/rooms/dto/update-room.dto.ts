@@ -12,11 +12,16 @@ import {
   Min,
 } from 'class-validator';
 
-import { RoomStatus } from '../entities/room.entity';
+import { RoomServiceTier, RoomStatus } from '../entities/room.entity';
 
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 
 export class UpdateRoomDto {
+  @IsOptional()
+  @IsEnum(RoomServiceTier, {
+    message: 'Phân hạng dịch vụ phòng (serviceTier) phải là ECONOMY, STANDARD hoặc VIP',
+  })
+  serviceTier?: RoomServiceTier;
   @IsOptional()
   @Type(() => Number)
   @IsInt({ message: 'Khách sạn (hotelId) phải là số nguyên dương' })

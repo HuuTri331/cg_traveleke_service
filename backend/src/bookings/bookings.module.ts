@@ -6,6 +6,7 @@ import { Booking } from './entities/booking.entity';
 import { BookingRoom } from './entities/booking-room.entity';
 import { BookingStatusLog } from './entities/booking-status-log.entity';
 import { HotelStaff } from '../hotel-staff/entities/hotel-staff.entity';
+import { BookingPresenceEvent } from '../booking-presence/entities/booking-presence-event.entity';
 
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
@@ -24,6 +25,7 @@ import { RedisModule } from '../redis/redis.module';
       BookingStatusLog,
       Room,
       HotelStaff,
+      BookingPresenceEvent,
     ]),
     InventoryModule,
     forwardRef(() => PaymentsModule),
