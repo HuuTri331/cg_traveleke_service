@@ -182,8 +182,11 @@ export class BookingsController {
   @Get(':id/available-staff')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  getAvailableStaff(@Param('id') id: string) {
-    return this.bookingsService.getAvailableStaffForBooking(id);
+  getAvailableStaff(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.bookingsService.getAvailableStaffForBooking(id, user);
   }
 
   // ================================

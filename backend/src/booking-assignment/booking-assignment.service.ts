@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -16,7 +17,8 @@ import {
 } from './entities/booking-assignment-state.entity';
 import { HotelAssignmentDispatchLock } from './entities/hotel-assignment-dispatch-lock.entity';
 import { BookingAssignmentCommandReceipt } from './entities/booking-assignment-command-receipt.entity';
-import { Booking } from '../bookings/entities/booking.entity';
+import { Booking, BookingStatus } from '../bookings/entities/booking.entity';
+import { User } from '../users/entities/user.entity';
 import { Room, RoomServiceTier } from '../rooms/entities/room.entity';
 import { BookingRoom } from '../bookings/entities/booking-room.entity';
 import { StaffAvailabilityService } from '../staff-availability/staff-availability.service';
@@ -73,10 +75,48 @@ export class BookingAssignmentService {
         throw new NotFoundException(`Không tìm thấy booking #${bookingId}`);
       }
 
+      // Kiểm tra trạng thái đơn: Từ chối phân công nếu đơn bị hủy, từ chối hoặc hết kỳ
+      if (
+        booking.status === BookingStatus.CANCELLED ||
+        booking.status === BookingStatus.REJECTED ||
+        booking.status === BookingStatus.PAYMENT_EXPIRED ||
+        booking.status === BookingStatus.CLOSED_NO_SHOW ||
+        booking.status === BookingStatus.COMPLETED
+      ) {
+        return {
+          success: false,
+          outcome: 'NOT_ELIGIBLE_STATUS',
+          staffUserId: null,
+          reason: `Booking ở trạng thái ${booking.status}, không đủ điều kiện phân công nhân sự.`,
+        };
+      }
+
+      // Với đơn website, kiểm tra đã có giao dịch PAID và hold COMMITTED
+      const isWebsite = !booking.bookingSource || booking.bookingSource === 'WEBSITE';
+      if (isWebsite && booking.status === BookingStatus.PENDING) {
+        const hasPaidTx = await manager.query(
+          `SELECT id FROM payment_transactions WHERE booking_id = ? AND status = 'PAID' LIMIT 1`,
+          [bookingId],
+        );
+        const hasCommittedHold = await manager.query(
+          `SELECT id FROM booking_holds WHERE booking_id = ? AND status = 'COMMITTED' LIMIT 1`,
+          [bookingId],
+        );
+
+        if (!hasPaidTx || hasPaidTx.length === 0 || !hasCommittedHold || hasCommittedHold.length === 0) {
+          return {
+            success: false,
+            outcome: 'NOT_ELIGIBLE_UNPAID',
+            staffUserId: null,
+            reason: 'Booking chưa đủ xác nhận thanh toán (PAID) và giữ phòng (COMMITTED).',
+          };
+        }
+      }
+
       const hotelId = String(booking.hotelId);
 
-      // 2. Kiểm tra Idempotency: Nếu booking đã có phân công chính đang ACTIVE -> Trả về kết quả ngay
-      const existingState = await stateRepo.findOne({
+      // 2. Kiểm tra Idempotency & Legacy Import:
+      let existingState = await stateRepo.findOne({
         where: { bookingId },
       });
 
@@ -85,6 +125,12 @@ export class BookingAssignmentService {
         existingState.status === AssignmentStateStatus.ASSIGNED &&
         existingState.currentStaffId
       ) {
+        if (booking.handledBy && String(booking.handledBy) !== String(existingState.currentStaffId)) {
+          this.logger.warn(
+            `[BookingAssignment] Phát hiện lệch owner: booking.handledBy (#${booking.handledBy}) khác state (#${existingState.currentStaffId}) tại booking #${bookingId}`,
+          );
+        }
+
         this.logger.log(
           `[BookingAssignment] Booking #${bookingId} đã được phân công cho nhân viên ${existingState.currentStaffId} trước đó (Idempotent No-op).`,
         );
@@ -93,6 +139,44 @@ export class BookingAssignmentService {
           outcome: 'ALREADY_ASSIGNED',
           staffUserId: existingState.currentStaffId,
           reason: 'Booking đã được phân công thành công trước đó.',
+          isIdempotentRepeat: true,
+        };
+      }
+
+      // Nếu booking legacy đã có handledBy từ trước nhưng chưa có state -> Import bảo toàn
+      if (!existingState && booking.handledBy) {
+        this.logger.log(
+          `[BookingAssignment] Backfill legacy owner #${booking.handledBy} cho booking #${bookingId}`,
+        );
+        const legacyAssignment = assignmentRepo.create({
+          bookingId,
+          hotelId,
+          staffUserId: String(booking.handledBy),
+          assignmentVersion: 1,
+          assignmentType: AssignmentType.LEGACY_IMPORT,
+          competencyLevel: null,
+          freshnessBucket: null,
+          reason: booking.assignmentNote || 'Import nhân viên phụ trách từ dữ liệu trước đó',
+          assignedAt: booking.reassignedAt || booking.createdAt || new Date(),
+          policyVersion: '1.0',
+          sourceEventId: 'LEGACY_IMPORT',
+        });
+        const savedLegacy = await assignmentRepo.save(legacyAssignment);
+
+        existingState = stateRepo.create({
+          bookingId,
+          currentAssignmentId: savedLegacy.id,
+          currentStaffId: String(booking.handledBy),
+          status: AssignmentStateStatus.ASSIGNED,
+          version: 1,
+        });
+        await stateRepo.save(existingState);
+
+        return {
+          success: true,
+          outcome: 'LEGACY_IMPORTED',
+          staffUserId: String(booking.handledBy),
+          reason: 'Đã bảo toàn nhân viên phụ trách hiện hữu từ hệ thống cũ.',
           isIdempotentRepeat: true,
         };
       }
@@ -264,8 +348,11 @@ export class BookingAssignmentService {
         }
         await stateRepo.save(state);
 
-        // Mirror sang bookings.handled_by để giữ tương thích 100% với các màn hình cũ
+        // Mirror sang bookings để giữ tương thích 100% với các màn hình cũ
         booking.handledBy = assignedStaffId;
+        booking.assignmentType =
+          decision.outcome === 'MANAGER_FALLBACK' ? 'MANAGER_FALLBACK' : 'AUTO';
+        booking.assignmentNote = decision.reason;
         await bookingRepo.save(booking);
 
         // Ghi command receipt thành công
@@ -349,9 +436,34 @@ export class BookingAssignmentService {
   }
 
   /**
-   * Lấy lịch sử phân công của một booking
+   * Lấy lịch sử phân công của một booking (Kiểm tra quyền truy cập theo vai trò)
    */
-  async getAssignmentHistory(bookingId: string): Promise<any[]> {
+  async getAssignmentHistory(bookingId: string, actor?: User): Promise<any[]> {
+    const booking = await this.dataSource.getRepository(Booking).findOne({
+      where: { id: bookingId },
+    });
+
+    if (!booking) {
+      throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
+    }
+
+    if (actor) {
+      if (actor.role === 'CUSTOMER') {
+        if (String(booking.userId) !== String(actor.id)) {
+          throw new ForbiddenException(
+            'Bạn không có quyền xem thông tin phân công của đơn đặt phòng này.',
+          );
+        }
+      } else if (actor.role === 'EMPLOYEE') {
+        const isStaff = await this.isStaffAtHotel(String(actor.id), String(booking.hotelId));
+        if (!isStaff) {
+          throw new ForbiddenException(
+            'Bạn không có quyền xem lịch sử phân công tại khách sạn này.',
+          );
+        }
+      }
+    }
+
     const qb = this.assignmentRepo
       .createQueryBuilder('ba')
       .leftJoin('users', 'u', 'u.id = ba.staff_user_id')
@@ -374,7 +486,50 @@ export class BookingAssignmentService {
       .where('ba.booking_id = :bookingId', { bookingId })
       .orderBy('ba.assignment_version', 'ASC');
 
-    return qb.getRawMany();
+    const history = await qb.getRawMany();
+
+    // Với CUSTOMER, bảo vệ quyền riêng tư nội bộ: không để lộ email cá nhân của nhân sự
+    if (actor?.role === 'CUSTOMER') {
+      return history.map((row) => ({
+        ...row,
+        staffEmail: null,
+      }));
+    }
+
+    return history;
+  }
+
+  /**
+   * Kích hoạt phân công thủ công bởi người dùng có quyền (ADMIN hoặc Quản lý khách sạn)
+   */
+  async triggerAssignmentForAuthorizedUser(
+    bookingId: string,
+    actor: User,
+  ): Promise<{
+    success: boolean;
+    outcome: string;
+    staffUserId: string | null;
+    reason: string;
+    isIdempotentRepeat?: boolean;
+  }> {
+    const booking = await this.dataSource.getRepository(Booking).findOne({
+      where: { id: bookingId },
+    });
+
+    if (!booking) {
+      throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
+    }
+
+    if (actor.role !== 'ADMIN') {
+      const isManager = await this.isManagerAtHotel(String(actor.id), String(booking.hotelId));
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên (ADMIN) mới có quyền kích hoạt phân công lại.',
+        );
+      }
+    }
+
+    return this.assignOnce(bookingId, 'MANUAL_TRIGGER' as any);
   }
 
   /**
@@ -386,6 +541,8 @@ export class BookingAssignmentService {
       SELECT b.id AS bookingId
       FROM bookings b
       LEFT JOIN booking_assignment_state bas ON bas.booking_id = b.id
+      JOIN payment_transactions pt ON pt.booking_id = b.id AND pt.status = 'PAID'
+      JOIN booking_holds bh ON bh.booking_id = b.id AND bh.status = 'COMMITTED'
       WHERE b.status IN ('PENDING', 'CONFIRMED')
         AND (bas.booking_id IS NULL OR bas.status = 'UNASSIGNED_CRITICAL' OR bas.current_staff_id IS NULL)
       LIMIT 20
@@ -405,5 +562,21 @@ export class BookingAssignmentService {
     }
 
     return { repairedCount: count };
+  }
+
+  async isStaffAtHotel(staffUserId: string, hotelId: string): Promise<boolean> {
+    const rows = await this.dataSource.query(
+      `SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = 'ACTIVE' LIMIT 1`,
+      [staffUserId, hotelId],
+    );
+    return rows && rows.length > 0;
+  }
+
+  async isManagerAtHotel(staffUserId: string, hotelId: string): Promise<boolean> {
+    const rows = await this.dataSource.query(
+      `SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND staff_role = 'MANAGER' AND status = 'ACTIVE' LIMIT 1`,
+      [staffUserId, hotelId],
+    );
+    return rows && rows.length > 0;
   }
 }

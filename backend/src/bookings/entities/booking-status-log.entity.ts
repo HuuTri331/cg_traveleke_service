@@ -19,8 +19,17 @@ export class BookingStatusLog {
     name: 'changed_by',
     type: 'bigint',
     unsigned: true,
+    nullable: true,
   })
-  changedBy!: string;
+  changedBy!: string | null;
+
+  @Column({
+    name: 'actor_type',
+    type: 'varchar',
+    length: 20,
+    default: 'USER',
+  })
+  actorType!: 'USER' | 'SYSTEM';
 
   @Column({
     name: 'old_status',

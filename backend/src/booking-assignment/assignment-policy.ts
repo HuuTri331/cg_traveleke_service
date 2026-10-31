@@ -83,8 +83,8 @@ export function checkCompetencyLevel(
       case 'M3':
         return skillLevel >= 2 && (yearsExp >= 1 || completedCount >= 10);
       case 'M4':
-        // Ngưỡng an toàn tối thiểu cho VIP: Có ít nhất 1 năm kinh nghiệm hoặc kỹ năng >= 2
-        return yearsExp >= 1 || skillLevel >= 2;
+        // Ngưỡng an toàn tối thiểu cho VIP: Có ít nhất 1 năm kinh nghiệm VÀ kỹ năng >= 2
+        return yearsExp >= 1 && skillLevel >= 2;
     }
   }
 

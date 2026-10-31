@@ -17,11 +17,13 @@ import {
 } from './entities/booking-presence-event.entity';
 import { BookingStatusLog } from '../bookings/entities/booking-status-log.entity';
 import { HotelStaff } from '../hotel-staff/entities/hotel-staff.entity';
+import { User } from '../users/entities/user.entity';
 import { ConfirmArrivalDto } from './dto/confirm-arrival.dto';
 import { ConfirmDepartureDto } from './dto/confirm-departure.dto';
 import { LateArrivalNoticeDto } from './dto/late-arrival-notice.dto';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { runWithDeadlockRetry } from '../common/database/transaction-retry.helper';
+import { BookingCoverageService } from '../booking-coverage/booking-coverage.service';
 
 @Injectable()
 export class BookingPresenceService {
@@ -44,6 +46,9 @@ export class BookingPresenceService {
 
     @Optional()
     private readonly realtimeGateway?: RealtimeGateway,
+
+    @Optional()
+    private readonly coverageService?: BookingCoverageService,
   ) {}
 
   /**
@@ -65,6 +70,31 @@ export class BookingPresenceService {
     });
 
     return !!relation;
+  }
+
+  /**
+   * Kiểm tra quyền Quản lý (MANAGER) hoặc ADMIN của nhân viên tại khách sạn
+   */
+  async validateManagerHotelAccess(
+    staffUserId: string,
+    hotelId: string,
+    userRole?: string,
+  ): Promise<boolean> {
+    if (userRole === 'ADMIN') return true;
+
+    const relation = await this.hotelStaffRepo.findOne({
+      where: {
+        staffUserId,
+        hotelId,
+        status: 'ACTIVE',
+      },
+    });
+
+    return !!relation && relation.staffRole === 'MANAGER';
+  }
+
+  async getBookingById(bookingId: string): Promise<Booking | null> {
+    return this.bookingRepo.findOne({ where: { id: bookingId } });
   }
 
   /**
@@ -202,6 +232,7 @@ export class BookingPresenceService {
         const statusLog = logRepo.create({
           bookingId: booking.id,
           changedBy: actorUserId,
+          actorType: 'USER',
           oldStatus: fromStatus,
           newStatus: BookingStatus.CHECKED_IN,
           note:
@@ -215,6 +246,7 @@ export class BookingPresenceService {
         return {
           booking: savedBooking,
           presenceEvent,
+          fromStatus,
           isFromNoShow,
           lateMinutes,
           alreadyCheckedIn: false,
@@ -231,18 +263,18 @@ export class BookingPresenceService {
     );
 
     // Gửi realtime thông báo ngoài transaction
-    if (this.realtimeGateway && result.booking) {
+    if (this.realtimeGateway && result.booking && !result.alreadyCheckedIn) {
       try {
         this.realtimeGateway.emitBookingStatusChanged({
           id: result.booking.id,
           bookingCode: result.booking.bookingCode,
           hotelId: result.booking.hotelId,
           userId: result.booking.userId,
-          oldStatus: result.isFromNoShow
+          oldStatus: result.fromStatus || (result.isFromNoShow
             ? BookingStatus.NO_SHOW
-            : BookingStatus.CONFIRMED,
+            : BookingStatus.CONFIRMED),
           newStatus: BookingStatus.CHECKED_IN,
-          changedAt: new Date().toISOString(),
+          changedAt: result.booking.actualCheckInAt?.toISOString() || new Date().toISOString(),
           note: result.isFromNoShow
             ? 'Khôi phục nhận phòng muộn sau No-show thành công'
             : 'Xác nhận nhận phòng tại quầy thành công',
@@ -335,6 +367,7 @@ export class BookingPresenceService {
         const statusLog = logRepo.create({
           bookingId: booking.id,
           changedBy: actorUserId,
+          actorType: 'USER',
           oldStatus: fromStatus,
           newStatus: BookingStatus.COMPLETED,
           note: dto.note || 'Xác nhận khách trả phòng thành công',
@@ -355,6 +388,24 @@ export class BookingPresenceService {
       },
     );
 
+    // Gửi realtime thông báo sau commit (P1-25)
+    if (this.realtimeGateway && result.booking && !result.alreadyCompleted) {
+      try {
+        this.realtimeGateway.emitBookingStatusChanged({
+          id: result.booking.id,
+          bookingCode: result.booking.bookingCode,
+          hotelId: result.booking.hotelId,
+          userId: result.booking.userId,
+          oldStatus: BookingStatus.CHECKED_IN,
+          newStatus: BookingStatus.COMPLETED,
+          changedAt: result.booking.actualCheckOutAt?.toISOString() || new Date().toISOString(),
+          note: dto.note || 'Khách đã hoàn tất thủ tục trả phòng',
+        });
+      } catch (err) {
+        this.logger.warn(`Failed to emit departure realtime: ${(err as any)?.message}`);
+      }
+    }
+
     return result;
   }
 
@@ -371,8 +422,12 @@ export class BookingPresenceService {
    * Bất biến quan trọng (INV-03):
    *  - Giữ nguyên hold COMMITTED! KHÔNG nhả phòng cho người khác.
    */
-  async markNoShowIfEligible(bookingId: string, customReason?: string) {
-    return await runWithDeadlockRetry(
+  async markNoShowIfEligible(
+    bookingId: string,
+    customReason?: string,
+    actor?: { id: string; role: string },
+  ) {
+    const result = await runWithDeadlockRetry(
       this.dataSource,
       async (manager: EntityManager) => {
         const bookingRepo = manager.getRepository(Booking);
@@ -399,17 +454,28 @@ export class BookingPresenceService {
         }
 
         const now = new Date();
-        const graceMinutes = booking.noShowGraceMinutes || 360;
+        const graceMinutes = booking.noShowGraceMinutes ?? 360;
         const checkInTime = new Date(booking.checkInAt).getTime();
         const noShowThreshold = checkInTime + graceMinutes * 60 * 1000;
 
         // Chưa tới hạn ân hạn No-show
         if (now.getTime() < noShowThreshold) {
+          if (actor) {
+            const remainingMinutes = Math.ceil((noShowThreshold - now.getTime()) / 60000);
+            throw new ConflictException(
+              `Chưa hết thời gian gia hạn chờ nhận phòng (còn ${remainingMinutes} phút). Chưa đủ điều kiện đánh dấu No-Show.`,
+            );
+          }
           return booking;
         }
 
         // Đã quá giờ check-out -> để closeExpiredNoShow xử lý
         if (now.getTime() >= new Date(booking.checkOutAt).getTime()) {
+          if (actor) {
+            throw new ConflictException(
+              'Booking đã quá thời hạn trả phòng (checkOutAt). Vui lòng sử dụng trạng thái CLOSED_NO_SHOW.',
+            );
+          }
           return booking;
         }
 
@@ -425,30 +491,37 @@ export class BookingPresenceService {
           hotelId: booking.hotelId,
           fromStatus,
           toStatus: BookingStatus.NO_SHOW,
-          actorType: PresenceActorType.SYSTEM,
-          actorId: null,
+          actorType: actor ? PresenceActorType.USER : PresenceActorType.SYSTEM,
+          actorId: actor ? actor.id : null,
           eventType: PresenceEventType.NO_SHOW_MARKED,
           reason:
             customReason ||
-            `Quá hạn ân hạn ${graceMinutes} phút mà chưa có xác nhận nhận phòng thực tế tại quầy lễ tân. Suất phòng tiếp tục được bảo lưu đến khi trả phòng.`,
+            (actor
+              ? 'Quản lý kiểm tra và đánh dấu No-Show thủ công tại quầy'
+              : `Quá hạn ân hạn ${graceMinutes} phút mà chưa có xác nhận nhận phòng thực tế tại quầy lễ tân. Suất phòng tiếp tục được bảo lưu đến khi trả phòng.`),
           occurredAt: now,
         });
         await presenceRepo.save(presenceEvent);
 
         const statusLog = logRepo.create({
           bookingId: booking.id,
-          changedBy: '0', // System actor
+          changedBy: actor ? actor.id : null,
+          actorType: actor ? 'USER' : 'SYSTEM',
           oldStatus: fromStatus,
           newStatus: BookingStatus.NO_SHOW,
-          note: `Hệ thống tự động chuyển sang NO_SHOW do quá thời gian ân hạn ${graceMinutes} phút`,
+          note:
+            customReason ||
+            (actor
+              ? 'Quản lý đánh dấu No-Show thủ công tại quầy'
+              : `Hệ thống tự động chuyển sang NO_SHOW do quá thời gian ân hạn ${graceMinutes} phút`),
         });
         await logRepo.save(statusLog);
 
         this.logger.log(
-          `[Presence] Booking #${booking.bookingCode} (ID: ${booking.id}) chuyển sang NO_SHOW (ân hạn ${graceMinutes}p)`,
+          `[Presence] Booking #${booking.bookingCode} (ID: ${booking.id}) chuyển sang NO_SHOW (ân hạn ${graceMinutes}p, actor: ${actor ? actor.id : 'SYSTEM'})`,
         );
 
-        return savedBooking;
+        return Object.assign(savedBooking, { oldStatus: fromStatus });
       },
       {
         contextName: 'BookingPresenceService.markNoShowIfEligible',
@@ -456,6 +529,25 @@ export class BookingPresenceService {
         baseDelayMs: 50,
       },
     );
+
+    if (result && this.realtimeGateway) {
+      try {
+        this.realtimeGateway.emitBookingStatusChanged({
+          id: result.id,
+          bookingCode: result.bookingCode,
+          hotelId: result.hotelId,
+          userId: result.userId,
+          oldStatus: (result as any).oldStatus || BookingStatus.CONFIRMED,
+          newStatus: BookingStatus.NO_SHOW,
+          changedAt: result.noShowAt?.toISOString() || new Date().toISOString(),
+          note: 'Đơn đặt phòng đã được ghi nhận No-Show (quá hạn ân hạn nhận phòng)',
+        });
+      } catch (err) {
+        this.logger.warn(`Failed to emit socket for No-Show: ${(err as any)?.message}`);
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -467,7 +559,7 @@ export class BookingPresenceService {
    *  - Không tự động hoàn tiền (refund), không gọi CancellationsService.
    */
   async closeExpiredNoShow(bookingId: string) {
-    return await runWithDeadlockRetry(
+    const result = await runWithDeadlockRetry(
       this.dataSource,
       async (manager: EntityManager) => {
         const bookingRepo = manager.getRepository(Booking);
@@ -513,7 +605,8 @@ export class BookingPresenceService {
 
         const statusLog = logRepo.create({
           bookingId: booking.id,
-          changedBy: '0',
+          changedBy: null,
+          actorType: 'SYSTEM',
           oldStatus: fromStatus,
           newStatus: BookingStatus.CLOSED_NO_SHOW,
           note: 'Hết thời gian lưu trú mà khách không nhận phòng -> CLOSED_NO_SHOW',
@@ -532,6 +625,25 @@ export class BookingPresenceService {
         baseDelayMs: 50,
       },
     );
+
+    if (result && this.realtimeGateway) {
+      try {
+        this.realtimeGateway.emitBookingStatusChanged({
+          id: result.id,
+          bookingCode: result.bookingCode,
+          hotelId: result.hotelId,
+          userId: result.userId,
+          oldStatus: BookingStatus.NO_SHOW,
+          newStatus: BookingStatus.CLOSED_NO_SHOW,
+          changedAt: result.noShowClosedAt?.toISOString() || new Date().toISOString(),
+          note: 'Đơn đặt phòng đã đóng kỳ lưu trú No-Show',
+        });
+      } catch (err) {
+        this.logger.warn(`Failed to emit socket for Closed No-Show: ${(err as any)?.message}`);
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -543,6 +655,89 @@ export class BookingPresenceService {
     customerUserId: string,
     dto: LateArrivalNoticeDto,
   ) {
+    return await runWithDeadlockRetry(
+      this.dataSource,
+      async (manager: EntityManager) => {
+        const bookingRepo = manager.getRepository(Booking);
+        const eventRepo = manager.getRepository(BookingPresenceEvent);
+
+        const booking = await bookingRepo.findOne({
+          where: { id: bookingId },
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        if (!booking) {
+          throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
+        }
+
+        if (String(booking.userId) !== String(customerUserId)) {
+          throw new ForbiddenException('Bạn không phải là chủ sở hữu của đơn đặt phòng này.');
+        }
+
+        if (
+          booking.status === BookingStatus.CANCELLED ||
+          booking.status === BookingStatus.REJECTED ||
+          booking.status === BookingStatus.COMPLETED ||
+          booking.status === BookingStatus.CLOSED_NO_SHOW ||
+          booking.status === BookingStatus.PAYMENT_EXPIRED ||
+          booking.actualCheckInAt !== null
+        ) {
+          throw new ConflictException(
+            `Không thể gửi thông báo đến muộn cho đơn đặt phòng ở trạng thái "${booking.status}" hoặc đã nhận phòng.`,
+          );
+        }
+
+        const expectedDate = new Date(dto.expectedArrivalAt);
+        const checkInDate = new Date(booking.checkInAt);
+        const checkOutDate = new Date(booking.checkOutAt);
+
+        if (expectedDate < checkInDate || expectedDate >= checkOutDate) {
+          throw new BadRequestException(
+            `Thời gian dự kiến đến (${expectedDate.toLocaleString('vi-VN')}) phải nằm trong khoảng thời gian lưu trú ` +
+              `từ ${checkInDate.toLocaleString('vi-VN')} đến ${checkOutDate.toLocaleString('vi-VN')}.`,
+          );
+        }
+
+        const note = dto.note?.trim() || 'Khách báo dự kiến đến muộn';
+        booking.lateArrivalExpectedAt = expectedDate;
+        booking.lateArrivalNote = note;
+        await bookingRepo.save(booking);
+
+        const now = new Date();
+        const event = eventRepo.create({
+          bookingId: booking.id,
+          hotelId: booking.hotelId,
+          fromStatus: booking.status,
+          toStatus: booking.status,
+          actorType: PresenceActorType.USER,
+          actorId: customerUserId,
+          eventType: PresenceEventType.LATE_ARRIVAL_NOTICED,
+          reason: `Khách báo dự kiến đến lúc ${expectedDate.toLocaleString('vi-VN')}. Lý do: ${note}`,
+          occurredAt: now,
+        });
+        await eventRepo.save(event);
+
+        return {
+          success: true,
+          data: {
+            lateArrivalExpectedAt: booking.lateArrivalExpectedAt,
+            lateArrivalNote: booking.lateArrivalNote,
+          },
+          message: 'Đã gửi thông báo dự kiến đến muộn tới khách sạn thành công!',
+        };
+      },
+      {
+        contextName: 'BookingPresenceService.recordLateArrivalNotice',
+        maxRetries: 3,
+        baseDelayMs: 50,
+      },
+    );
+  }
+
+  /**
+   * Lấy dòng thời gian hiện diện (Presence Timeline) của đơn đặt phòng
+   */
+  async getPresenceTimeline(bookingId: string, actor?: User) {
     const booking = await this.bookingRepo.findOne({
       where: { id: bookingId },
     });
@@ -551,53 +746,19 @@ export class BookingPresenceService {
       throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
     }
 
-    if (String(booking.userId) !== String(customerUserId)) {
-      throw new ForbiddenException('Bạn không phải là chủ sở hữu của đơn đặt phòng này.');
+    if (actor) {
+      if (actor.role === 'CUSTOMER') {
+        if (String(booking.userId) !== String(actor.id)) {
+          throw new ForbiddenException('Bạn không có quyền xem thông tin dòng thời gian của đơn này.');
+        }
+      } else if (actor.role === 'EMPLOYEE') {
+        const hasAccess = await this.validateStaffHotelAccess(String(actor.id), String(booking.hotelId));
+        if (!hasAccess) {
+          throw new ForbiddenException('Bạn không có quyền xem thông tin đơn tại khách sạn này.');
+        }
+      }
     }
 
-    const expectedDate = new Date(dto.expectedArrivalAt);
-    const checkInDate = new Date(booking.checkInAt);
-    const checkOutDate = new Date(booking.checkOutAt);
-
-    if (expectedDate < checkInDate || expectedDate >= checkOutDate) {
-      throw new BadRequestException(
-        `Thời gian dự kiến đến (${expectedDate.toLocaleString('vi-VN')}) phải nằm trong khoảng thời gian lưu trú ` +
-          `từ ${checkInDate.toLocaleString('vi-VN')} đến ${checkOutDate.toLocaleString('vi-VN')}.`,
-      );
-    }
-
-    booking.lateArrivalExpectedAt = expectedDate;
-    booking.lateArrivalNote = dto.note;
-    await this.bookingRepo.save(booking);
-
-    const now = new Date();
-    const event = this.presenceEventRepo.create({
-      bookingId: booking.id,
-      hotelId: booking.hotelId,
-      fromStatus: booking.status,
-      toStatus: booking.status,
-      actorType: PresenceActorType.USER,
-      actorId: customerUserId,
-      eventType: PresenceEventType.LATE_ARRIVAL_NOTICED,
-      reason: `Khách báo dự kiến đến lúc ${expectedDate.toLocaleString('vi-VN')}. Lý do: ${dto.note}`,
-      occurredAt: now,
-    });
-    await this.presenceEventRepo.save(event);
-
-    return {
-      success: true,
-      data: {
-        lateArrivalExpectedAt: booking.lateArrivalExpectedAt,
-        lateArrivalNote: booking.lateArrivalNote,
-      },
-      message: 'Đã gửi thông báo dự kiến đến muộn tới khách sạn thành công!',
-    };
-  }
-
-  /**
-   * Lấy dòng thời gian hiện diện (Presence Timeline) của đơn đặt phòng
-   */
-  async getPresenceTimeline(bookingId: string) {
     const events = await this.presenceEventRepo.find({
       where: { bookingId },
       order: { occurredAt: 'ASC' },

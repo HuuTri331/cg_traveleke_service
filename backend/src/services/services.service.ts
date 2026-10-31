@@ -31,6 +31,7 @@ import {
   CreateServiceRecoveryLogDto,
   ApproveRecoveryDto,
 } from './dto/services.dto';
+import { GuestWorkService } from '../guest-work/guest-work.service';
 
 @Injectable()
 export class ServicesService {
@@ -54,6 +55,9 @@ export class ServicesService {
 
     @Optional()
     private readonly realtimeGateway?: RealtimeGateway,
+
+    @Optional()
+    private readonly guestWorkService?: GuestWorkService,
   ) {}
 
   // ============================================================
@@ -337,6 +341,24 @@ export class ServicesService {
       status: ServiceRequestStatus.PENDING,
     });
     const saved = await this.serviceRequestRepo.save(req);
+
+    // Đồng bộ tạo nhiệm vụ GuestWorkTask theo dõi tiến độ phục vụ
+    try {
+      if (this.guestWorkService) {
+        this.guestWorkService.createTaskFromServiceRequest(
+          {
+            id: String(saved.id),
+            hotelId: String(booking.hotelId),
+            bookingId: String(saved.bookingId),
+            serviceName: saved.serviceName,
+            note: saved.note ?? undefined,
+          },
+          user ? { id: String(user.id), role: user.role } : undefined,
+        ).catch(() => {});
+      }
+    } catch {
+      // Fail-safe
+    }
 
     // Phát realtime notification tới Lễ tân
     try {

@@ -90,6 +90,11 @@ import { ApprovalsModule } from './approvals/approvals.module';
 import { StaffAvailabilityModule } from './staff-availability/staff-availability.module';
 import { BookingAssignmentModule } from './booking-assignment/booking-assignment.module';
 import { BookingPresenceModule } from './booking-presence/booking-presence.module';
+import { BookingCoverageModule } from './booking-coverage/booking-coverage.module';
+import { GuestWorkModule } from './guest-work/guest-work.module';
+import { GuestConversationsModule } from './guest-conversations/guest-conversations.module';
+import { StaffKpiModule } from './staff-kpi/staff-kpi.module';
+import { HotelAccessModule } from './common/authz/hotel-access.module';
 
 @Module({
   imports: [
@@ -157,6 +162,11 @@ import { BookingPresenceModule } from './booking-presence/booking-presence.modul
     StaffAvailabilityModule,
     BookingAssignmentModule,
     BookingPresenceModule,
+    BookingCoverageModule,
+    GuestWorkModule,
+    GuestConversationsModule,
+    StaffKpiModule,
+    HotelAccessModule,
   ],
 
   controllers: [AppController],

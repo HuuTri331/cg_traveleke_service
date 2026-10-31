@@ -31,6 +31,7 @@ export class PresenceSchedulerService {
     try {
       await this.processEligibleNoShows();
       await this.processExpiredNoShows();
+      await this.processOverdueUnmarkedArrivals();
     } catch (error: any) {
       this.logger.error(`Error in PresenceSchedulerService: ${error?.message}`, error?.stack);
     } finally {
@@ -58,7 +59,7 @@ export class PresenceSchedulerService {
       .getMany();
 
     for (const booking of candidateBookings) {
-      const graceMinutes = booking.noShowGraceMinutes || 360;
+      const graceMinutes = booking.noShowGraceMinutes ?? 360;
       const checkInTime = new Date(booking.checkInAt).getTime();
       const thresholdTime = checkInTime + graceMinutes * 60 * 1000;
 
@@ -70,6 +71,38 @@ export class PresenceSchedulerService {
             `Failed to mark No-Show for booking #${booking.bookingCode}: ${err?.message}`,
           );
         }
+      }
+    }
+  }
+
+  /**
+   * Quét và xử lý các đơn quá hạn trả phòng mà chưa từng nhận phòng và chưa được đánh dấu No-Show (P1-47)
+   */
+  private async processOverdueUnmarkedArrivals(): Promise<void> {
+    const now = new Date();
+
+    const overdueBookings = await this.bookingRepo
+      .createQueryBuilder('b')
+      .where('b.status IN (:...statuses)', {
+        statuses: [BookingStatus.CONFIRMED, BookingStatus.PENDING],
+      })
+      .andWhere('b.actualCheckInAt IS NULL')
+      .andWhere('b.checkOutAt <= :now', { now })
+      .orderBy('b.checkOutAt', 'ASC')
+      .take(50)
+      .getMany();
+
+    for (const booking of overdueBookings) {
+      try {
+        await this.presenceService.markNoShowIfEligible(
+          booking.id,
+          'Hệ thống tự động ghi nhận No-Show do kỳ lưu trú đã kết thúc mà khách chưa nhận phòng',
+        );
+        await this.presenceService.closeExpiredNoShow(booking.id);
+      } catch (err: any) {
+        this.logger.warn(
+          `Failed to reconcile overdue arrival for booking #${booking.bookingCode}: ${err?.message}`,
+        );
       }
     }
   }

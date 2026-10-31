@@ -176,9 +176,6 @@ export class PaymentsService {
               rawResponse: queryParams,
             },
             manager,
-            async (bId, mgr) => {
-              await this.bookingsService.autoAssignStaffForPaidBooking(bId, mgr);
-            },
           );
           return { RspCode: '00', Message: 'Confirm Success' };
         } else {

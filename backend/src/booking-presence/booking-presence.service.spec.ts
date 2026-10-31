@@ -268,6 +268,14 @@ describe('BookingPresenceService (Đợt 2 - No-Show & Late Check-In Recovery)',
           toStatus: BookingStatus.NO_SHOW,
         }),
       );
+      // FIX-01: Xác minh changedBy là NULL và actorType là SYSTEM khi hệ thống tự động chạy
+      expect(mockStatusLogRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          changedBy: null,
+          actorType: 'SYSTEM',
+          newStatus: BookingStatus.NO_SHOW,
+        }),
+      );
     });
 
     it('2. KHÔNG đánh dấu NO_SHOW nếu chưa quá ân hạn 360 phút', async () => {
@@ -309,6 +317,97 @@ describe('BookingPresenceService (Đợt 2 - No-Show & Late Check-In Recovery)',
           toStatus: BookingStatus.CLOSED_NO_SHOW,
         }),
       );
+      // FIX-01: Xác minh changedBy là NULL và actorType là SYSTEM khi đóng No-Show hết kỳ
+      expect(mockStatusLogRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          changedBy: null,
+          actorType: 'SYSTEM',
+          newStatus: BookingStatus.CLOSED_NO_SHOW,
+        }),
+      );
+    });
+
+    it('4. Ném ConflictException khi Quản lý đánh dấu No-Show thủ công trước hạn ân hạn', async () => {
+      const now = new Date();
+      const mockBooking: Partial<Booking> = {
+        id: '304',
+        status: BookingStatus.CONFIRMED,
+        actualCheckInAt: null,
+        checkInAt: new Date(now.getTime() - 2 * 3600 * 1000), // Mới quá 2 tiếng (< 6 tiếng)
+        checkOutAt: new Date(now.getTime() + 24 * 3600 * 1000),
+        noShowGraceMinutes: 360,
+      };
+      setupMockBookingQuery(mockBooking);
+
+      await expect(
+        service.markNoShowIfEligible(
+          '304',
+          'Quản lý kiểm tra thủ công',
+          { id: 'mgr-1', role: 'EMPLOYEE' },
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('5. Lưu changedBy và actorType USER khi Quản lý đánh dấu No-Show thủ công hợp lệ', async () => {
+      const now = new Date();
+      const mockBooking: Partial<Booking> = {
+        id: '305',
+        bookingCode: 'BK305',
+        hotelId: '10',
+        status: BookingStatus.CONFIRMED,
+        actualCheckInAt: null,
+        checkInAt: new Date(now.getTime() - 7 * 3600 * 1000), // Đã quá 7 tiếng (> 6 tiếng)
+        checkOutAt: new Date(now.getTime() + 24 * 3600 * 1000),
+        noShowGraceMinutes: 360,
+      };
+      setupMockBookingQuery(mockBooking);
+
+      const result = await service.markNoShowIfEligible(
+        '305',
+        'Quản lý kiểm tra thủ công',
+        { id: 'mgr-1', role: 'EMPLOYEE' },
+      );
+      expect(result).not.toBeNull();
+      expect(result!.status).toBe(BookingStatus.NO_SHOW);
+      expect(mockStatusLogRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          changedBy: 'mgr-1',
+          actorType: 'USER',
+          newStatus: BookingStatus.NO_SHOW,
+        }),
+      );
+    });
+  });
+
+  describe('getPresenceTimeline & Permissions (FIX-03)', () => {
+    it('Ném ForbiddenException nếu CUSTOMER xem timeline của đơn không thuộc về mình', async () => {
+      mockBookingRepo.findOne.mockResolvedValue({
+        id: '999',
+        userId: '10', // Chủ đơn là user 10
+        hotelId: '1',
+      });
+
+      const customerOtherUser: any = { id: '99', role: 'CUSTOMER' };
+
+      await expect(
+        service.getPresenceTimeline('999', customerOtherUser),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('Cho phép CUSTOMER xem timeline của chính đơn mình đặt', async () => {
+      mockBookingRepo.findOne.mockResolvedValue({
+        id: '999',
+        userId: '10',
+        hotelId: '1',
+      });
+      mockPresenceRepo.find.mockResolvedValue([
+        { id: '1', eventType: PresenceEventType.ARRIVAL_CONFIRMED },
+      ]);
+
+      const customerOwner: any = { id: '10', role: 'CUSTOMER' };
+      const res = await service.getPresenceTimeline('999', customerOwner);
+      expect(res.success).toBe(true);
+      expect(res.data).toHaveLength(1);
     });
   });
 });

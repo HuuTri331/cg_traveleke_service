@@ -476,6 +476,29 @@ export class StaffAvailabilityService {
     return { available: true };
   }
 
+  async isStaffAtHotel(staffUserId: string, hotelId: string): Promise<boolean> {
+    const staff = await this.hotelStaffRepo.findOne({
+      where: {
+        hotelId,
+        staffUserId,
+        status: 'ACTIVE',
+      },
+    });
+    return !!staff;
+  }
+
+  async isManagerAtHotel(staffUserId: string, hotelId: string): Promise<boolean> {
+    const staff = await this.hotelStaffRepo.findOne({
+      where: {
+        hotelId,
+        staffUserId,
+        staffRole: 'MANAGER',
+        status: 'ACTIVE',
+      },
+    });
+    return !!staff;
+  }
+
   /**
    * Lấy danh sách ID các nhân viên vắng mặt tại thời điểm chỉ định
    */
@@ -494,5 +517,29 @@ export class StaffAvailabilityService {
       .getRawMany();
 
     return blocks.map((row) => String(row.staffUserId));
+  }
+
+  /**
+   * Kiểm tra xem nhân viên có đang khả dụng trong khoảng thời gian [startAt, endAt] không
+   * (Không chồng lấn với bất kỳ block vắng mặt ACTIVE nào)
+   */
+  async checkStaffAvailabilityOnInterval(
+    staffUserId: string,
+    hotelId: string,
+    startAt: Date,
+    endAt: Date,
+  ): Promise<boolean> {
+    const overlappingBlock = await this.availabilityBlockRepo
+      .createQueryBuilder('b')
+      .where('b.hotel_id = :hotelId', { hotelId })
+      .andWhere('b.staff_user_id = :staffUserId', { staffUserId })
+      .andWhere('b.active = 1')
+      .andWhere('b.start_at < :endAt AND b.end_at > :startAt', {
+        startAt,
+        endAt,
+      })
+      .getOne();
+
+    return !overlappingBlock;
   }
 }

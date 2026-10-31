@@ -2,6 +2,7 @@ import { RoomServiceTier } from '../rooms/entities/room.entity';
 import {
   evaluateFreshnessBucket,
   pickReceptionist,
+  checkCompetencyLevel,
   StaffCandidate,
 } from './assignment-policy';
 import { FreshnessBucket } from './entities/booking-assignment.entity';
@@ -164,6 +165,16 @@ describe('assignment-policy (Cửa sổ trượt 40/120 & Năng lực M1-M4)', (
 
       expect(decision.outcome).toBe('UNASSIGNED_CRITICAL');
       expect(decision.chosenCandidate).toBeNull();
+    });
+
+    it('P1-12: M4 cho VIP bắt buộc có ít nhất 1 năm kinh nghiệm VÀ kỹ năng >= 2', () => {
+      // Ứng viên 0 năm kinh nghiệm nhưng level 2 skill -> KHÔNG đạt M4 VIP
+      const candidate0Years = makeCandidate('4', 'Lễ tân mới (0 năm)', 2, 0, 0, 0, null);
+      expect(checkCompetencyLevel(candidate0Years, 'M4', RoomServiceTier.VIP)).toBe(false);
+
+      // Ứng viên 1 năm kinh nghiệm và level 2 skill -> Đạt M4 VIP
+      const candidate1Year = makeCandidate('5', 'Lễ tân 1 năm', 2, 1, 5, 0, null);
+      expect(checkCompetencyLevel(candidate1Year, 'M4', RoomServiceTier.VIP)).toBe(true);
     });
 
     it('Tính tất định (deterministic): Khi cùng mọi chỉ số, sắp xếp theo ID ổn định', () => {

@@ -7,6 +7,8 @@ import { HotelStaff } from '../hotel-staff/entities/hotel-staff.entity';
 import { BookingPresenceService } from './booking-presence.service';
 import { PresenceSchedulerService } from './presence-scheduler.service';
 import { BookingPresenceController } from './booking-presence.controller';
+import { StaffAvailabilityModule } from '../staff-availability/staff-availability.module';
+import { BookingCoverageModule } from '../booking-coverage/booking-coverage.module';
 
 @Module({
   imports: [
@@ -16,6 +18,8 @@ import { BookingPresenceController } from './booking-presence.controller';
       BookingStatusLog,
       HotelStaff,
     ]),
+    StaffAvailabilityModule,
+    BookingCoverageModule,
   ],
   controllers: [BookingPresenceController],
   providers: [BookingPresenceService, PresenceSchedulerService],

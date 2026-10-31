@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Param,
   Post,
   UseGuards,
@@ -88,8 +90,11 @@ export class BookingPresenceController {
    * GET /booking-presence/:bookingId/timeline
    */
   @Get(':bookingId/timeline')
-  async getPresenceTimeline(@Param('bookingId') bookingId: string) {
-    return this.presenceService.getPresenceTimeline(bookingId);
+  async getPresenceTimeline(
+    @Param('bookingId') bookingId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.presenceService.getPresenceTimeline(bookingId, user);
   }
 
   /**
@@ -99,7 +104,20 @@ export class BookingPresenceController {
   @Get('hotel/:hotelId/arrivals')
   @UseGuards(RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  async getArrivalsSummary(@Param('hotelId') hotelId: string) {
+  async getArrivalsSummary(
+    @Param('hotelId') hotelId: string,
+    @CurrentUser() user: User,
+  ) {
+    const hasAccess = await this.presenceService.validateStaffHotelAccess(
+      String(user.id),
+      hotelId,
+      user.role,
+    );
+    if (!hasAccess) {
+      throw new ForbiddenException(
+        'Bạn không có quyền truy cập thông tin lượt đến tại khách sạn này.',
+      );
+    }
     return this.presenceService.getArrivalsSummary(hotelId);
   }
 
@@ -111,14 +129,34 @@ export class BookingPresenceController {
   @UseGuards(RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   @HttpCode(HttpStatus.OK)
-  async markNoShowManual(@Param('bookingId') bookingId: string) {
-    const booking = await this.presenceService.markNoShowIfEligible(
+  async markNoShowManual(
+    @Param('bookingId') bookingId: string,
+    @CurrentUser() user: User,
+  ) {
+    const booking = await this.presenceService.getBookingById(bookingId);
+    if (!booking) {
+      throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
+    }
+
+    const canMark = await this.presenceService.validateManagerHotelAccess(
+      String(user.id),
+      String(booking.hotelId),
+      user.role,
+    );
+    if (!canMark) {
+      throw new ForbiddenException(
+        'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên (ADMIN) mới có quyền đánh dấu No-Show thủ công.',
+      );
+    }
+
+    const bookingUpdated = await this.presenceService.markNoShowIfEligible(
       bookingId,
       'Quản lý kiểm tra và đánh dấu No-Show thủ công tại quầy',
+      { id: String(user.id), role: user.role },
     );
     return {
       success: true,
-      data: booking,
+      data: bookingUpdated,
       message: 'Đã cập nhật trạng thái No-Show cho đơn đặt phòng thành công.',
     };
   }

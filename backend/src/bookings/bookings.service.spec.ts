@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { BookingsService } from './bookings.service';
-import { BookingStatus } from './entities/booking.entity';
+import { Booking, BookingStatus } from './entities/booking.entity';
 
 describe('BookingsService - Scoping, Fallback & Front Desk Direct Booking', () => {
   let service: BookingsService;
@@ -21,6 +21,19 @@ describe('BookingsService - Scoping, Fallback & Front Desk Direct Booking', () =
     mockDataSource = {
       query: jest.fn(),
       createQueryBuilder: jest.fn(),
+      transaction: jest.fn(async (cb) => {
+        const mockManager = {
+          getRepository: (entity: any) => {
+            if (entity === Booking) return mockBookingRepo;
+            return {
+              create: jest.fn((dto) => dto),
+              save: jest.fn((dto) => Promise.resolve(dto)),
+              findOne: jest.fn().mockResolvedValue(null),
+            };
+          },
+        };
+        return cb(mockManager);
+      }),
     };
     mockIdGen = {
       generateBookingCode: jest.fn(() => 'BKG-2026-TEST'),
@@ -105,6 +118,41 @@ describe('BookingsService - Scoping, Fallback & Front Desk Direct Booking', () =
       await expect(
         service.createFrontDeskBooking(dto, staffUser, '127.0.0.1'),
       ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  describe('updateStatus & Presence Invariants (FIX-04)', () => {
+    it('should throw ConflictException if PATCH NO_SHOW before grace period ends', async () => {
+      const now = new Date();
+      mockBookingRepo.findOne.mockResolvedValue({
+        id: '1',
+        hotelId: '10',
+        status: BookingStatus.CONFIRMED,
+        actualCheckInAt: null,
+        checkInAt: new Date(now.getTime() - 2 * 3600 * 1000), // Mới 2 tiếng trước (< 6 tiếng grace)
+        checkOutAt: new Date(now.getTime() + 24 * 3600 * 1000),
+        noShowGraceMinutes: 360,
+      });
+
+      await expect(
+        service.updateStatus('1', { status: 'NO_SHOW' as any }, 'user-1'),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw ConflictException if PATCH COMPLETED without actualCheckInAt', async () => {
+      const now = new Date();
+      mockBookingRepo.findOne.mockResolvedValue({
+        id: '2',
+        hotelId: '10',
+        status: BookingStatus.CHECKED_IN,
+        actualCheckInAt: null, // Chưa từng check-in!
+        checkInAt: new Date(now.getTime() - 2 * 3600 * 1000),
+        checkOutAt: new Date(now.getTime() + 24 * 3600 * 1000),
+      });
+
+      await expect(
+        service.updateStatus('2', { status: 'COMPLETED' as any }, 'user-1'),
+      ).rejects.toThrow(ConflictException);
     });
   });
 });

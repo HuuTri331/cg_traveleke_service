@@ -42,6 +42,14 @@ import {
   PresenceEventType,
   PresenceActorType,
 } from '../booking-presence/entities/booking-presence-event.entity';
+import {
+  BookingAssignment,
+  AssignmentType,
+} from '../booking-assignment/entities/booking-assignment.entity';
+import {
+  BookingAssignmentState,
+  AssignmentStateStatus,
+} from '../booking-assignment/entities/booking-assignment-state.entity';
 
 /**
  * State machine: Các chuyển trạng thái hợp lệ cho booking.
@@ -665,6 +673,13 @@ export class BookingsService {
         b.rejected_at AS rejectedAt,
         b.cancelled_at AS cancelledAt,
         b.created_at AS createdAt,
+        b.actual_check_in_at AS actualCheckInAt,
+        b.actual_check_out_at AS actualCheckOutAt,
+        b.no_show_at AS noShowAt,
+        b.no_show_closed_at AS noShowClosedAt,
+        b.late_arrival_expected_at AS lateArrivalExpectedAt,
+        b.late_arrival_note AS lateArrivalNote,
+        b.presence_version AS presenceVersion,
 
         br.room_id AS roomId,
         br.quantity,
@@ -770,6 +785,7 @@ export class BookingsService {
 
         const booking = await bookingRepo.findOne({
           where: { id: bookingId },
+          lock: { mode: 'pessimistic_write' },
         });
 
         if (!booking) {
@@ -821,9 +837,6 @@ export class BookingsService {
 
         // Cập nhật trạng thái và timestamps tương ứng
         booking.status = newStatus as unknown as BookingStatus;
-        if (!booking.handledBy) {
-          booking.handledBy = changedByUserId;
-        }
 
         const now = new Date();
         const presenceRepo = manager.getRepository(BookingPresenceEvent);
@@ -878,6 +891,11 @@ export class BookingsService {
             break;
           }
           case 'COMPLETED': {
+            if (!booking.actualCheckInAt) {
+              throw new ConflictException(
+                'Đơn đặt phòng chưa được làm thủ tục nhận phòng thực tế, không thể xác nhận trả phòng (COMPLETED).',
+              );
+            }
             booking.actualCheckOutAt = now;
             booking.checkOutConfirmedBy = changedByUserId;
             booking.presenceVersion = (booking.presenceVersion || 1) + 1;
@@ -896,6 +914,31 @@ export class BookingsService {
             break;
           }
           case 'NO_SHOW': {
+            const nowTime = now.getTime();
+            const graceMinutes = booking.noShowGraceMinutes ?? 360;
+            const checkInTime = new Date(booking.checkInAt).getTime();
+            const checkOutTime = new Date(booking.checkOutAt).getTime();
+            const noShowThreshold = checkInTime + graceMinutes * 60 * 1000;
+
+            if (nowTime < noShowThreshold) {
+              const remainingMinutes = Math.ceil((noShowThreshold - nowTime) / 60000);
+              throw new ConflictException(
+                `Chưa hết thời gian gia hạn chờ nhận phòng (còn ${remainingMinutes} phút). Không thể đánh dấu No-Show trước thời hạn.`,
+              );
+            }
+
+            if (nowTime >= checkOutTime) {
+              throw new ConflictException(
+                'Booking đã quá thời hạn trả phòng (checkOutAt). Vui lòng sử dụng trạng thái CLOSED_NO_SHOW.',
+              );
+            }
+
+            if (booking.actualCheckInAt) {
+              throw new ConflictException(
+                'Khách đã làm thủ tục nhận phòng thực tế, không thể chuyển sang No-Show.',
+              );
+            }
+
             booking.noShowAt = now;
             booking.presenceVersion = (booking.presenceVersion || 1) + 1;
             const presenceEv = presenceRepo.create({
@@ -906,13 +949,26 @@ export class BookingsService {
               actorType: PresenceActorType.USER,
               actorId: changedByUserId,
               eventType: PresenceEventType.NO_SHOW_MARKED,
-              reason: dto.note || 'Đánh dấu No-Show',
+              reason: dto.note || 'Đánh dấu No-Show tại quầy',
               occurredAt: now,
             });
             await presenceRepo.save(presenceEv);
             break;
           }
           case 'CLOSED_NO_SHOW': {
+            const nowTime = now.getTime();
+            const checkOutTime = new Date(booking.checkOutAt).getTime();
+            if (nowTime < checkOutTime) {
+              throw new ConflictException(
+                'Chưa kết thúc kỳ lưu trú (chưa tới hạn trả phòng). Không thể đóng No-Show trước hạn.',
+              );
+            }
+            if (booking.actualCheckInAt) {
+              throw new ConflictException(
+                'Khách đã làm thủ tục nhận phòng thực tế, không thể đóng No-Show.',
+              );
+            }
+
             booking.noShowClosedAt = now;
             booking.presenceVersion = (booking.presenceVersion || 1) + 1;
             const presenceEv = presenceRepo.create({
@@ -937,6 +993,7 @@ export class BookingsService {
         const statusLog = statusLogRepo.create({
           bookingId: booking.id,
           changedBy: changedByUserId,
+          actorType: 'USER',
           oldStatus: currentStatus,
           newStatus: newStatus,
           note: dto.note ?? null,
@@ -1059,13 +1116,68 @@ export class BookingsService {
     const saved = await runWithDeadlockRetry(
       this.dataSource,
       async (manager) => {
+        const assignmentRepo = manager.getRepository(BookingAssignment);
+        const stateRepo = manager.getRepository(BookingAssignmentState);
+
+        const now = new Date();
+
         booking.handledBy = targetStaffUserId;
         booking.assignmentType = 'MANUAL';
         booking.assignmentNote = noteText;
         booking.reassignedBy = changedByUserId;
-        booking.reassignedAt = new Date();
+        booking.reassignedAt = now;
 
         const updated = await manager.getRepository(Booking).save(booking);
+
+        // 3a. Tìm assignment hiện tại của booking
+        const currentAssignment = await assignmentRepo.findOne({
+          where: { bookingId: booking.id },
+          order: { assignmentVersion: 'DESC' },
+        });
+
+        const nextVersion = (currentAssignment?.assignmentVersion || 0) + 1;
+
+        // Đóng assignment trước đó nếu có và chưa kết thúc
+        if (currentAssignment && !currentAssignment.endedAt) {
+          currentAssignment.endedAt = now;
+          await assignmentRepo.save(currentAssignment);
+        }
+
+        // Tạo assignment mới (MANUAL_OVERRIDE)
+        const newAssignment = assignmentRepo.create({
+          bookingId: booking.id,
+          hotelId: String(booking.hotelId),
+          staffUserId: targetStaffUserId,
+          assignmentVersion: nextVersion,
+          assignmentType: AssignmentType.MANUAL_OVERRIDE,
+          competencyLevel: null,
+          freshnessBucket: null,
+          reason: noteText,
+          assignedAt: now,
+          assignedBy: changedByUserId,
+          previousAssignmentId: currentAssignment?.id ?? null,
+          policyVersion: '1.0',
+          sourceEventId: 'MANUAL_REASSIGN',
+        });
+        const savedNewAssignment = await assignmentRepo.save(newAssignment);
+
+        // Cập nhật hoặc khởi tạo BookingAssignmentState
+        let state = await stateRepo.findOne({ where: { bookingId: booking.id } });
+        if (!state) {
+          state = stateRepo.create({
+            bookingId: booking.id,
+            currentAssignmentId: savedNewAssignment.id,
+            currentStaffId: targetStaffUserId,
+            status: AssignmentStateStatus.ASSIGNED,
+            version: 1,
+          });
+        } else {
+          state.currentAssignmentId = savedNewAssignment.id;
+          state.currentStaffId = targetStaffUserId;
+          state.status = AssignmentStateStatus.ASSIGNED;
+          state.version += 1;
+        }
+        await stateRepo.save(state);
 
         await manager.getRepository(BookingStatusLog).save(
           manager.getRepository(BookingStatusLog).create({
@@ -1074,6 +1186,7 @@ export class BookingsService {
             newStatus: booking.status,
             note: `[PHÂN CÔNG LẠI] Đổi nhân viên phụ trách từ #${oldStaffId ?? 'Chưa có'} sang ${targetStaff.full_name} (#${targetStaff.id}). Lý do: ${note || 'Quản trị viên điều chỉnh thủ công'}`,
             changedBy: changedByUserId,
+            actorType: 'USER',
           }),
         );
 
@@ -1114,12 +1227,16 @@ export class BookingsService {
   // DANH SÁCH NHÂN VIÊN KHẢ DỤNG CHO ĐƠN ĐẶT PHÒNG
   // ============================================================
 
-  async getAvailableStaffForBooking(bookingId: string) {
+  async getAvailableStaffForBooking(bookingId: string, actor?: User) {
     const booking = await this.bookingRepository.findOne({
       where: { id: bookingId },
     });
     if (!booking) {
       throw new NotFoundException('Không tìm thấy đơn đặt phòng.');
+    }
+
+    if (actor && this.bookingAccessService) {
+      await this.bookingAccessService.assertCanView(booking, actor);
     }
 
     // Lấy thông tin phòng của booking
@@ -1232,6 +1349,13 @@ export class BookingsService {
         b.status,
         b.special_request AS specialRequest,
         b.created_at AS createdAt,
+        b.actual_check_in_at AS actualCheckInAt,
+        b.actual_check_out_at AS actualCheckOutAt,
+        b.no_show_at AS noShowAt,
+        b.no_show_closed_at AS noShowClosedAt,
+        b.late_arrival_expected_at AS lateArrivalExpectedAt,
+        b.late_arrival_note AS lateArrivalNote,
+        b.presence_version AS presenceVersion,
 
         br.room_id AS roomId,
         br.quantity,

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -111,19 +112,52 @@ export class StaffAvailabilityController {
 
   /**
    * Kiểm tra tình trạng khả dụng của một nhân viên tại thời điểm hiện tại
+   * (Chỉ Quản lý hoặc chính nhân viên mới được xem chi tiết lý do; vai trò khác chỉ nhận boolean khả dụng)
    */
   @Get('check/:hotelId/:staffUserId')
   async checkAvailability(
     @Param('hotelId') hotelId: string,
     @Param('staffUserId') staffUserId: string,
+    @CurrentUser() user: User,
     @Query('at') atStr?: string,
   ) {
+    // Kiểm tra quyền
+    const isSelf = String(user.id) === staffUserId;
+    const isAdmin = user.role === 'ADMIN';
+
+    if (!isAdmin && !isSelf) {
+      const isStaffOfHotel = await this.staffAvailabilityService.isStaffAtHotel(
+        String(user.id),
+        hotelId,
+      );
+      if (!isStaffOfHotel) {
+        throw new ForbiddenException(
+          'Bạn không có quyền kiểm tra trạng thái nhân sự tại khách sạn này.',
+        );
+      }
+    }
+
     const targetDate = atStr ? new Date(atStr) : new Date();
     const data = await this.staffAvailabilityService.isStaffAvailableAt(
       hotelId,
       staffUserId,
       targetDate,
     );
+
+    const isManager =
+      isAdmin ||
+      (await this.staffAvailabilityService.isManagerAtHotel(String(user.id), hotelId));
+
+    // Nếu không phải là Manager, Admin hoặc chính nhân sự: ẩn thông tin chi tiết lý do nghỉ (redaction)
+    if (!isManager && !isSelf) {
+      return {
+        success: true,
+        data: {
+          available: data.available,
+        },
+      };
+    }
+
     return {
       success: true,
       data,

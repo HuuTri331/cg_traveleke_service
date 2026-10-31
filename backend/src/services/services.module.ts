@@ -7,6 +7,7 @@ import { BookingServiceSnapshot } from './entities/booking-service-snapshot.enti
 import { ServiceRecoveryLog } from './entities/service-recovery-log.entity';
 import { ServicesService } from './services.service';
 import { ServicesController } from './services.controller';
+import { GuestWorkModule } from '../guest-work/guest-work.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { ServicesController } from './services.controller';
       BookingServiceSnapshot,
       ServiceRecoveryLog,
     ]),
+    GuestWorkModule,
   ],
   controllers: [ServicesController],
   providers: [ServicesService],
