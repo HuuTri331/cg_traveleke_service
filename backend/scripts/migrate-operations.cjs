@@ -8,6 +8,7 @@ const files = [
   'migration_guest_work_and_messages.sql',
   'migration_staff_kpi_v2.sql',
   'migration_promotions_v1.sql',
+  'migration_promotions_v2_finance.sql',
 ];
 const requiredBase = ['users', 'hotels', 'hotel_staff', 'rooms', 'bookings', 'booking_rooms',
   'booking_holds', 'payment_transactions', 'outbox_events', 'skill_categories', 'staff_skills',
@@ -53,7 +54,8 @@ async function migrate(config) {
       'guest_work_events', 'guest_work_evidence', 'guest_conversations', 'guest_messages',
       'guest_staff_reviews', 'guest_staff_review_revisions', 'staff_kpi_policies',
       'staff_kpi_period_scores', 'staff_kpi_metric_scores', 'staff_kpi_adjustments',
-      'promotion_campaigns', 'booking_price_quotes', 'booking_benefit_accounts', 'booking_benefit_ledger'];
+      'promotion_campaigns', 'booking_price_quotes', 'booking_benefit_accounts', 'booking_benefit_ledger',
+      'promotion_refund_intents', 'benefit_consent_records'];
     const [tables] = await db.query('SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()');
     if (expected.some((t) => !tables.some((r) => r.name === t))) throw new Error('Operations schema incomplete');
     console.log('Operations migrations verified (phases 3–5).');

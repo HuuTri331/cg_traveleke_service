@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -28,7 +29,7 @@ import {
   PromotionCampaignStatus,
 } from '../../promotions/entities/promotion-campaign.entity';
 import { BookingPriceQuote } from '../../promotions/entities/booking-price-quote.entity';
-import { computeNightlyQuote } from '../../promotions/promotion-engine';
+import { computeNightlyQuote, hasRemainingCampaignBudget } from '../../promotions/promotion-engine';
 
 @Injectable()
 export class CheckoutService {
@@ -159,33 +160,19 @@ export class CheckoutService {
     }
 
     const pricePerNight = Number(room.pricePerNight);
-    if (dto.quoteId) {
-      const existingQuote = await this.dataSource.getRepository(BookingPriceQuote).findOne({
-        where: [{ id: dto.quoteId }, { quoteCode: dto.quoteId }],
-      });
-      if (!existingQuote) {
-        throw new NotFoundException(`Không tìm thấy báo giá #${dto.quoteId}`);
-      }
-      if (
-        new Date(existingQuote.expiresAt) <= new Date() ||
-        existingQuote.status === 'EXPIRED' ||
-        (dto.quoteVersion !== undefined && Number(existingQuote.version) !== Number(dto.quoteVersion))
-      ) {
-        throw new ConflictException(
-          'PRICE_QUOTE_EXPIRED: Báo giá đã hết hạn hoặc phiên bản giá đã thay đổi, vui lòng xác nhận lại báo giá mới.',
-        );
-      }
-    }
+    // PP-P0-09 / PIT-10: Do not silently swallow SQL/DB errors on PromotionCampaign when repository is registered
     let activeCampaigns: PromotionCampaign[] = [];
-    try {
-      activeCampaigns = await this.dataSource.getRepository(PromotionCampaign).find({
+    const promoRepo =
+      typeof this.dataSource.getRepository === 'function'
+        ? this.dataSource.getRepository(PromotionCampaign)
+        : null;
+    if (promoRepo && typeof promoRepo.find === 'function') {
+      activeCampaigns = await promoRepo.find({
         where: {
           hotelId: String(room.hotelId),
           status: PromotionCampaignStatus.ACTIVE,
         },
       });
-    } catch {
-      activeCampaigns = [];
     }
 
     const quoteCalc = computeNightlyQuote({
@@ -198,6 +185,61 @@ export class CheckoutService {
       checkOutAt: checkOut,
       activeCampaigns,
     });
+
+    // PP-P0-04 / PIT-08 / PIT-09: Authoritative quote binding & validation
+    let existingQuote: BookingPriceQuote | null = null;
+    if (dto.quoteId) {
+      const quoteRepoTop =
+        typeof this.dataSource.getRepository === 'function'
+          ? this.dataSource.getRepository(BookingPriceQuote)
+          : null;
+      if (quoteRepoTop && typeof quoteRepoTop.findOne === 'function') {
+        existingQuote = await quoteRepoTop.findOne({
+          where: [{ id: dto.quoteId }, { quoteCode: dto.quoteId }],
+        });
+      }
+      if (!existingQuote) {
+        throw new NotFoundException(`Không tìm thấy báo giá #${dto.quoteId}`);
+      }
+      if (existingQuote.userId && String(existingQuote.userId) !== String(userId)) {
+        throw new ForbiddenException('QUOTE_OWNER_MISMATCH: Bạn không được dùng báo giá của khách hàng khác.');
+      }
+      if (
+        String(existingQuote.roomId) !== String(room.id) ||
+        Number(existingQuote.roomQuantity) !== Number(dto.roomCount) ||
+        Number(existingQuote.totalGuests) !== Number(dto.totalGuests || 1) ||
+        existingQuote.checkInLocalDate !== quoteCalc.checkInLocalDate ||
+        existingQuote.checkOutLocalDate !== quoteCalc.checkOutLocalDate
+      ) {
+        throw new ConflictException(
+          'PRICE_QUOTE_PARAMETER_MISMATCH: Thông tin phòng, kỳ lưu trú hoặc số lượng khách không khớp với báo giá đã chọn.',
+        );
+      }
+      if (
+        new Date(existingQuote.expiresAt) <= new Date() ||
+        existingQuote.status === 'EXPIRED' ||
+        existingQuote.status === 'SUPERSEDED' ||
+        existingQuote.status === 'CONFIRMED' ||
+        (dto.quoteVersion !== undefined && Number(existingQuote.version) !== Number(dto.quoteVersion))
+      ) {
+        throw new ConflictException(
+          'PRICE_QUOTE_EXPIRED: Báo giá đã hết hạn hoặc đã được sử dụng, vui lòng xác nhận lại báo giá mới.',
+        );
+      }
+      if (
+        Math.round(Number(existingQuote.payableTotal)) !== Math.round(quoteCalc.payableTotal) ||
+        (dto.priceHash && dto.priceHash !== quoteCalc.priceHash)
+      ) {
+        throw new ConflictException(
+          'PRICE_CHANGED: Giá phòng hoặc chương trình khuyến mãi vừa thay đổi so với báo giá ban đầu, vui lòng xác nhận lại giá mới trước khi thanh toán.',
+        );
+      }
+    } else if (dto.priceHash && dto.priceHash !== quoteCalc.priceHash) {
+      throw new ConflictException(
+        'PRICE_CHANGED: Báo giá đã thay đổi, vui lòng xác nhận lại giá mới trước khi thanh toán.',
+      );
+    }
+
     const nights = quoteCalc.nightsCount;
     const subtotal = quoteCalc.payableTotal;
     const bookingCode = this.idGen.generateBookingCode();
@@ -244,37 +286,72 @@ export class CheckoutService {
         });
         await bookingRoomRepo.save(bookingRoom);
 
-        // INV-P11: Lưu snapshot báo giá theo đêm tại thời điểm checkout
-        try {
-          const quoteRepo = manager.getRepository(BookingPriceQuote);
-          await quoteRepo.save(
-            quoteRepo.create({
-              quoteCode: `QT-${savedBooking.bookingCode}`,
-              hotelId: String(room.hotelId),
-              bookingId: savedBooking.id,
-              userId,
-              roomId: String(room.id),
-              roomQuantity: dto.roomCount,
-              totalGuests: dto.totalGuests || 1,
-              checkInLocalDate: quoteCalc.checkInLocalDate,
-              checkOutLocalDate: quoteCalc.checkOutLocalDate,
-              nightsCount: quoteCalc.nightsCount,
-              baseTotal: quoteCalc.baseTotal,
-              discountTotal: quoteCalc.discountTotal,
-              payableTotal: quoteCalc.payableTotal,
-              currency: 'VND',
-              hotelTimezone: 'Asia/Ho_Chi_Minh',
-              priceHash: quoteCalc.priceHash,
-              nightlyLines: quoteCalc.nightlyLines,
-              appliedCampaigns: quoteCalc.appliedCampaigns,
-              status: 'CONFIRMED',
-              expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-              confirmedAt: new Date(),
-              version: 1,
-            }),
-          );
-        } catch {
-          // Không chặn nếu chạy unit test mock không đăng ký BookingPriceQuote
+        // PP-P1-03 / PIT-14: Atomic campaign budget & redemption reservation inside the checkout transaction
+        if (quoteCalc.appliedCampaigns && quoteCalc.appliedCampaigns.length > 0) {
+          const campRepoTx =
+            typeof manager.getRepository === 'function' ? manager.getRepository(PromotionCampaign) : null;
+          if (campRepoTx && typeof campRepoTx.findOne === 'function') {
+            for (const applied of quoteCalc.appliedCampaigns) {
+              const lockedCamp = await campRepoTx.findOne({
+                where: { id: applied.campaignId },
+                lock: { mode: 'pessimistic_write' },
+              });
+              if (!lockedCamp || lockedCamp.status !== PromotionCampaignStatus.ACTIVE) {
+                throw new ConflictException(
+                  'PRICE_CHANGED: Chương trình khuyến mãi vừa tạm dừng hoặc kết thúc, vui lòng lấy báo giá mới.',
+                );
+              }
+              const discAmt = Math.max(0, Math.round(Number(applied.discountAmount || 0)));
+              if (!hasRemainingCampaignBudget(lockedCamp, discAmt)) {
+                throw new ConflictException(
+                  'PROMO_BUDGET_EXHAUSTED: Ngân sách hoặc số lượt áp dụng chương trình khuyến mãi vừa hết.',
+                );
+              }
+              lockedCamp.budgetReserved = Number(lockedCamp.budgetReserved || 0) + discAmt;
+              lockedCamp.redemptionsCount = Number(lockedCamp.redemptionsCount || 0) + 1;
+              await campRepoTx.save(lockedCamp);
+            }
+          }
+        }
+
+        // INV-P11 & PP-P0-09 / PIT-11: Lưu snapshot báo giá theo đêm tại thời điểm checkout (fail-closed if DB insert fails)
+        const quoteRepo =
+          typeof manager.getRepository === 'function' ? manager.getRepository(BookingPriceQuote) : null;
+        if (quoteRepo && typeof quoteRepo.save === 'function') {
+          if (existingQuote) {
+            existingQuote.bookingId = savedBooking.id;
+            existingQuote.userId = userId;
+            existingQuote.status = 'CONFIRMED';
+            existingQuote.confirmedAt = new Date();
+            await quoteRepo.save(existingQuote);
+          } else if (typeof quoteRepo.create === 'function') {
+            await quoteRepo.save(
+              quoteRepo.create({
+                quoteCode: `QT-${savedBooking.bookingCode}`,
+                hotelId: String(room.hotelId),
+                bookingId: savedBooking.id,
+                userId,
+                roomId: String(room.id),
+                roomQuantity: dto.roomCount,
+                totalGuests: dto.totalGuests || 1,
+                checkInLocalDate: quoteCalc.checkInLocalDate,
+                checkOutLocalDate: quoteCalc.checkOutLocalDate,
+                nightsCount: quoteCalc.nightsCount,
+                baseTotal: quoteCalc.baseTotal,
+                discountTotal: quoteCalc.discountTotal,
+                payableTotal: quoteCalc.payableTotal,
+                currency: 'VND',
+                hotelTimezone: 'Asia/Ho_Chi_Minh',
+                priceHash: quoteCalc.priceHash,
+                nightlyLines: quoteCalc.nightlyLines,
+                appliedCampaigns: quoteCalc.appliedCampaigns,
+                status: 'CONFIRMED',
+                expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+                confirmedAt: new Date(),
+                version: 1,
+              }),
+            );
+          }
         }
 
         // Log trạng thái ban đầu PAYMENT_PENDING

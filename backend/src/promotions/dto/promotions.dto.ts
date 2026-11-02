@@ -1,9 +1,49 @@
 import {
-  IsArray, IsBoolean, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Min,
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import {
-  BenefitKind, ChargeComponentType, PromotionCampaignType, PromotionDiscountType, PromotionTargetScope,
+  BenefitKind,
+  ChargeComponentType,
+  PromotionCampaignType,
+  PromotionDiscountType,
+  PromotionTargetScope,
 } from '../entities/promotion-campaign.entity';
+
+export class IncludedQuotaItemDto {
+  @IsString() @IsNotEmpty() serviceCode!: string;
+  @IsString() @IsNotEmpty() serviceName!: string;
+  @IsInt() @Min(1) quantity!: number;
+}
+
+export class PackageConfigDto {
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => IncludedQuotaItemDto)
+  includedQuotas?: IncludedQuotaItemDto[];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  roomPriceDiscountPercent?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  allocatedRoomIds?: string[];
+}
 
 export class CreatePromotionCampaignDto {
   @IsString() @IsNotEmpty() hotelId!: string;
@@ -13,33 +53,31 @@ export class CreatePromotionCampaignDto {
   @IsEnum(PromotionCampaignType) @IsOptional() campaignType?: PromotionCampaignType;
   @IsEnum(ChargeComponentType) @IsOptional() chargeComponentType?: ChargeComponentType;
   @IsEnum(PromotionTargetScope) @IsOptional() targetScope?: PromotionTargetScope;
-  @IsArray() @IsOptional() targetRoomIds?: string[];
-  @IsArray() @IsOptional() targetServiceIds?: string[];
-  @IsString() @IsNotEmpty() stayStartDate!: string; // YYYY-MM-DD
-  // Supports either stayEndExclusiveDate or inclusive stayEndDate (normalized to +1 day)
+  @IsArray() @IsString({ each: true }) @IsOptional() targetRoomIds?: string[];
+  @IsArray() @IsString({ each: true }) @IsOptional() targetServiceIds?: string[];
+  @IsString() @IsNotEmpty() stayStartDate!: string;
   @IsString() @IsOptional() stayEndExclusiveDate?: string;
   @IsString() @IsOptional() stayEndDate?: string;
-  @IsNumber() @IsOptional() serviceStartHour?: number;
-  @IsNumber() @IsOptional() serviceEndHour?: number;
+  @IsInt() @Min(0) @Max(24) @IsOptional() serviceStartHour?: number;
+  @IsInt() @Min(0) @Max(24) @IsOptional() serviceEndHour?: number;
   @IsEnum(PromotionDiscountType) @IsOptional() discountType?: PromotionDiscountType;
   @IsNumber() @Min(0) discountValue!: number;
   @IsNumber() @Min(0) @IsOptional() floorPrice?: number;
   @IsNumber() @Min(0) @IsOptional() maxDiscountPerNight?: number;
   @IsNumber() @Min(0) @IsOptional() maxDiscountPerBooking?: number;
-  @IsNumber() @Min(1) @IsOptional() minNights?: number;
-  @IsNumber() @Min(1) @IsOptional() minRooms?: number;
-  @IsNumber() @Min(1) @IsOptional() minGuests?: number;
+  @IsInt() @Min(1) @IsOptional() minNights?: number;
+  @IsInt() @Min(1) @IsOptional() minRooms?: number;
+  @IsInt() @Min(1) @IsOptional() minGuests?: number;
   @IsNumber() @Min(0) @IsOptional() minOrderAmount?: number;
   @IsEnum(BenefitKind) @IsOptional() benefitKind?: BenefitKind;
   @IsBoolean() @IsOptional() existingBookingsEligible?: boolean;
   @IsBoolean() @IsOptional() retroactiveMode?: boolean;
   @IsNumber() @Min(0) @IsOptional() budgetTotal?: number;
-  @IsNumber() @Min(1) @IsOptional() maxRedemptions?: number;
-  @IsOptional() packageConfig?: {
-    includedQuotas?: Array<{ serviceCode: string; serviceName: string; quantity: number }>;
-    roomPriceDiscountPercent?: number;
-    allocatedRoomIds?: string[];
-  };
+  @IsInt() @Min(1) @IsOptional() maxRedemptions?: number;
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PackageConfigDto)
+  packageConfig?: PackageConfigDto;
 }
 
 export class CalculateQuoteDto {
@@ -50,13 +88,26 @@ export class CalculateQuoteDto {
   @IsNumber() @Min(1) @IsOptional() totalGuests?: number;
 }
 
+export class AcceptConsentDto {
+  @IsOptional() @IsString() channel?: string;
+  @IsOptional() @IsString() termsVersion?: string;
+  @IsOptional() @IsString() evidenceRef?: string;
+}
+
 export class RedeemBenefitDto {
   @IsString() @IsNotEmpty() bookingId!: string;
+  @IsString() @IsNotEmpty() serviceRequestId!: string;
   @IsNumber() @Min(0) @IsOptional() requestedAmount?: number;
   @IsNumber() @Min(0) @IsOptional() requestedQuota?: number;
-  @IsString() @IsOptional() serviceRequestId?: string;
   @IsString() @IsOptional() serviceId?: string;
   @IsString() @IsNotEmpty() idempotencyKey!: string;
   @IsString() @IsOptional() reason?: string;
-  @IsBoolean() @IsOptional() customerAgreedToOffset?: boolean;
 }
+
+export class SettleRefundDto {
+  @IsOptional() @IsString() idempotencyKey?: string;
+  @IsOptional() @IsString() channel?: 'VNPAY_PROVIDER' | 'BANK_TRANSFER_PROOF' | 'CASH_RECEIPT';
+  @IsOptional() @IsString() payoutReceiptRef?: string;
+  @IsOptional() @IsString() reason?: string;
+}
+

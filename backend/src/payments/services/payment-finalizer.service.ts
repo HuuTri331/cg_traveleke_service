@@ -263,6 +263,20 @@ export class PaymentFinalizerService {
       },
     );
 
+    // PP-P0-10 & PP-P1-07: Cấp quyền lợi tín dụng dịch vụ / gói gia đình đã cam kết tại báo giá sau khi thanh toán thành công
+    await this.outboxService.addEvent(
+      manager,
+      'promotion.benefit.grant_requested',
+      'Booking',
+      targetBooking.id,
+      {
+        bookingId: targetBooking.id,
+        hotelId: targetBooking.hotelId,
+        paymentId: targetPayment.id,
+        occurredAt: new Date(),
+      },
+    );
+
     await this.outboxService.addEvent(
       manager,
       'mail.payment_success',

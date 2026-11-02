@@ -26,11 +26,11 @@ export class CreateTemporaryCoverageDto {
   @IsArray()
   @ArrayMinSize(1)
   @IsEnum(CoverageTaskType, { each: true })
-  allowedTaskTypes!: CoverageTaskType[];
+  allowedTaskTypes?: CoverageTaskType[];
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  reason!: string;
+  reason?: string;
 
   @IsNumber()
   @IsOptional()

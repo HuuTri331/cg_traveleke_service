@@ -20,6 +20,9 @@ import { Booking, BookingStatus } from '../bookings/entities/booking.entity';
 import { BookingStatusLog } from '../bookings/entities/booking-status-log.entity';
 import { GuestWorkService } from '../guest-work/guest-work.service';
 import { BookingAssignmentService } from '../booking-assignment/booking-assignment.service';
+import { PromotionsService } from '../promotions/promotions.service';
+import { BookingPriceQuote } from '../promotions/entities/booking-price-quote.entity';
+import { PromotionCampaign } from '../promotions/entities/promotion-campaign.entity';
 
 @Injectable()
 export class WorkersService {
@@ -39,6 +42,7 @@ export class WorkersService {
     private readonly dataSource: DataSource,
     private readonly bookingAssignmentService: BookingAssignmentService,
     private readonly guestWorkService: GuestWorkService,
+    private readonly promotionsService: PromotionsService,
   ) {}
 
   /**
@@ -122,6 +126,39 @@ export class WorkersService {
                 'PAYMENT_PAID',
               );
               break;
+
+            case 'promotion.benefit.grant_requested':
+              await this.promotionsService.grantQuoteBenefitsForPaidBooking(String(payload.bookingId));
+              break;
+
+            case 'promotion.retroactive_scan_requested':
+              await this.promotionsService.evaluateExistingBookingsForHotel(
+                String(payload.hotelId),
+                payload.actorId ? { id: String(payload.actorId), role: 'ADMIN' } : undefined,
+                50,
+                payload.afterBookingId || '0',
+              );
+              break;
+
+            case 'promotion.refund.requested': {
+              const promoRefundRes = await this.refundService.processRefund({
+                paymentId: payload.paymentId,
+                txnRef: payload.txnRef,
+                amount: Number(payload.amount),
+                createBy: 'PromotionRefundWorker',
+                reason: payload.reason,
+              });
+              if (promoRefundRes.success && payload.intentId) {
+                await this.promotionsService.confirmRefundIntentSettlement(
+                  { id: '1', role: 'ADMIN' },
+                  String(payload.intentId),
+                  { providerRef: promoRefundRes.data?.vnp_TransactionNo || `VNP-REF-${payload.txnRef}` },
+                );
+              } else if (!promoRefundRes.success) {
+                throw new Error(`Promotion VNPay refund failed: ${promoRefundRes.error || 'Unknown error'}`);
+              }
+              break;
+            }
 
             case 'refund.requested':
             case 'refund.process':
@@ -267,6 +304,29 @@ export class WorkersService {
       if (booking && booking.status === BookingStatus.PAYMENT_PENDING) {
         booking.status = BookingStatus.PAYMENT_EXPIRED;
         await manager.getRepository(Booking).save(booking);
+
+        // PP-P1-03: Giải phóng ngân sách khuyến mãi đã giữ chỗ (budgetReserved) khi phiên thanh toán hết hạn
+        try {
+          const quoteRepo = manager.getRepository(BookingPriceQuote);
+          const campRepo = manager.getRepository(PromotionCampaign);
+          const quote = await quoteRepo.findOne({ where: { bookingId: booking.id, status: 'CONFIRMED' } });
+          if (quote) {
+            quote.status = 'EXPIRED';
+            await quoteRepo.save(quote);
+            for (const applied of quote.appliedCampaigns || []) {
+              const camp = await campRepo.findOne({
+                where: { id: applied.campaignId },
+                lock: { mode: 'pessimistic_write' },
+              });
+              if (camp) {
+                const disc = Math.max(0, Math.round(Number(applied.discountAmount || 0)));
+                camp.budgetReserved = Math.max(0, Number(camp.budgetReserved || 0) - disc);
+                camp.redemptionsCount = Math.max(0, Number(camp.redemptionsCount || 0) - 1);
+                await campRepo.save(camp);
+              }
+            }
+          }
+        } catch {}
 
         await manager.getRepository(BookingStatusLog).save(
           manager.getRepository(BookingStatusLog).create({

@@ -38,6 +38,9 @@ import { BookingCoverageService } from '../booking-coverage/booking-coverage.ser
 import { BookingPresenceService } from '../booking-presence/booking-presence.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { User } from '../users/entities/user.entity';
+import { PromotionCampaign, PromotionCampaignStatus } from '../promotions/entities/promotion-campaign.entity';
+import { BookingPriceQuote } from '../promotions/entities/booking-price-quote.entity';
+import { computeNightlyQuote, hasRemainingCampaignBudget } from '../promotions/promotion-engine';
 
 import {
   BookingPresenceEvent,
@@ -1060,14 +1063,36 @@ export class BookingsService {
       throw new BadRequestException('Ngày trả phòng phải sau ngày nhận phòng.');
     }
 
-    const diffMs = checkOut.getTime() - checkIn.getTime();
-    const nights = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
-
     if (!this.inventoryService) throw new BadRequestException('Dịch vụ tồn phòng chưa sẵn sàng.');
 
-    // 5. Tính giá
+    // PP-P1-01: Dùng chung động cơ tính giá theo đêm & khuyến mãi (computeNightlyQuote) cho cả đặt phòng tại quầy
     const pricePerNight = Number(room.pricePerNight);
-    const subtotal = pricePerNight * nights * dto.roomCount;
+    let activeCampaigns: PromotionCampaign[] = [];
+    if (typeof this.dataSource.getRepository === 'function') {
+      const promoRepo = this.dataSource.getRepository(PromotionCampaign);
+      if (promoRepo && typeof promoRepo.find === 'function') {
+        try {
+          activeCampaigns = await promoRepo.find({
+            where: { hotelId: String(room.hotelId), status: PromotionCampaignStatus.ACTIVE },
+          });
+        } catch {
+          activeCampaigns = [];
+        }
+      }
+    }
+
+    const quoteCalc = computeNightlyQuote({
+      hotelId: String(room.hotelId),
+      roomId: String(room.id),
+      baseRatePerNight: pricePerNight,
+      roomQuantity: dto.roomCount,
+      totalGuests: dto.totalGuests || 1,
+      checkInAt: checkIn,
+      checkOutAt: checkOut,
+      activeCampaigns,
+    });
+    const nights = quoteCalc.nightsCount;
+    const subtotal = quoteCalc.payableTotal;
 
     // 6. Tìm hoặc tạo khách hàng theo email
     let customerUserId: string = staffUser.id;
@@ -1142,6 +1167,57 @@ export class BookingsService {
           subtotal: subtotal.toFixed(2),
         });
         await manager.getRepository(BookingRoom).save(bookingRoom);
+
+        // PP-P1-01 & PP-P1-12: Lưu snapshot báo giá theo đêm & trừ ngân sách khuyến mãi cho đơn tại quầy
+        if (typeof manager.getRepository === 'function') {
+          try {
+            const quoteRepo = manager.getRepository(BookingPriceQuote);
+            if (quoteRepo && typeof quoteRepo.save === 'function') {
+              await quoteRepo.save(
+                quoteRepo.create({
+                  quoteCode: `QT-${savedBooking.bookingCode}`,
+                  hotelId: String(room.hotelId),
+                  bookingId: savedBooking.id,
+                  userId: customerUserId,
+                  roomId: String(room.id),
+                  roomQuantity: dto.roomCount,
+                  totalGuests: dto.totalGuests || 1,
+                  checkInLocalDate: quoteCalc.checkInLocalDate,
+                  checkOutLocalDate: quoteCalc.checkOutLocalDate,
+                  nightsCount: quoteCalc.nightsCount,
+                  baseTotal: quoteCalc.baseTotal,
+                  discountTotal: quoteCalc.discountTotal,
+                  payableTotal: quoteCalc.payableTotal,
+                  currency: 'VND',
+                  hotelTimezone: 'Asia/Ho_Chi_Minh',
+                  priceHash: quoteCalc.priceHash,
+                  nightlyLines: quoteCalc.nightlyLines,
+                  appliedCampaigns: quoteCalc.appliedCampaigns,
+                  status: 'CONFIRMED',
+                  expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+                  confirmedAt: new Date(),
+                  version: 1,
+                }),
+              );
+            }
+            if (quoteCalc.appliedCampaigns?.length) {
+              const campRepo = manager.getRepository(PromotionCampaign);
+              if (campRepo && typeof campRepo.findOne === 'function') {
+                for (const applied of quoteCalc.appliedCampaigns) {
+                  const lockedCamp = await campRepo.findOne({
+                    where: { id: applied.campaignId },
+                    lock: { mode: 'pessimistic_write' },
+                  });
+                  if (lockedCamp && hasRemainingCampaignBudget(lockedCamp, Number(applied.discountAmount || 0))) {
+                    lockedCamp.budgetConsumed = Number(lockedCamp.budgetConsumed || 0) + Number(applied.discountAmount || 0);
+                    lockedCamp.redemptionsCount = Number(lockedCamp.redemptionsCount || 0) + 1;
+                    await campRepo.save(lockedCamp);
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
 
         await manager.getRepository(BookingStatusLog).save(
           manager.getRepository(BookingStatusLog).create({

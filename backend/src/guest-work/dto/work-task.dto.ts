@@ -5,7 +5,7 @@ export class CreateWorkTaskDto {
   @IsString() @IsOptional() hotelId?: string;
   @IsString() @IsNotEmpty() bookingId!: string;
   @IsEnum(WorkTaskType) type!: WorkTaskType;
-  @IsString() @IsNotEmpty() title!: string;
+  @IsString() @IsOptional() title?: string;
   @IsString() @IsOptional() description?: string;
   @IsEnum(WorkTaskPriority) @IsOptional() priority?: WorkTaskPriority;
   @IsString() @IsOptional() assignedStaffId?: string;

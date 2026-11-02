@@ -61,4 +61,8 @@ export class CheckoutSessionDto {
   @Type(() => Number)
   @IsInt()
   quoteVersion?: number;
+
+  @IsOptional()
+  @IsString()
+  priceHash?: string;
 }

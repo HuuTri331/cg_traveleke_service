@@ -282,6 +282,54 @@ export class ShiftsService {
       );
     }
 
+    // PP-P1-22: Tổng hợp danh sách công nợ / quyền lợi khuyến mãi đang mở tại khách sạn khi bàn giao ca A -> B
+    // (Chỉ đọc projection để ca sau theo dõi, KHÔNG cấp lại tiền 360k và KHÔNG đổi chủ sở hữu booking A)
+    let openFinancialItems: Array<{
+      bookingId: string;
+      bookingCode: string;
+      handledBy: string | null;
+      benefitKind: string;
+      availableAmount: number;
+      availableQuota: number;
+      customerAcceptedCredit: boolean;
+      status: string;
+    }> = [];
+    if (typeof this.dataSource.query === 'function') {
+      try {
+        const rows = await this.dataSource.query(
+          `SELECT a.booking_id AS bookingId, b.booking_code AS bookingCode, b.handled_by AS handledBy,
+                  a.benefit_kind AS benefitKind, a.available_amount AS availableAmount,
+                  a.available_quota AS availableQuota, a.customer_accepted_credit AS customerAcceptedCredit,
+                  a.status AS status
+           FROM booking_benefit_accounts a
+           INNER JOIN bookings b ON b.id = a.booking_id
+           WHERE a.hotel_id = ? AND a.status IN ('APPROVED', 'REFUND_PENDING')
+             AND (a.available_amount > 0 OR a.available_quota > 0)
+           ORDER BY a.id ASC`,
+          [shift.hotelId],
+        );
+        if (Array.isArray(rows)) {
+          openFinancialItems = rows.map((r: any) => ({
+            bookingId: String(r.bookingId),
+            bookingCode: String(r.bookingCode || ''),
+            handledBy: r.handledBy ? String(r.handledBy) : null,
+            benefitKind: String(r.benefitKind),
+            availableAmount: Number(r.availableAmount || 0),
+            availableQuota: Number(r.availableQuota || 0),
+            customerAcceptedCredit: Boolean(r.customerAcceptedCredit),
+            status: String(r.status),
+          }));
+        }
+      } catch {}
+    }
+
+    const financialSummaryNote =
+      openFinancialItems.length > 0
+        ? ` [Sổ quyền lợi mở bàn giao ca: ${openFinancialItems
+            .map((i) => `${i.bookingCode}: ${i.availableAmount.toLocaleString('vi-VN')}đ (${i.status})`)
+            .join('; ')}]`
+        : '';
+
     const handover = this.handoverRepo.create({
       shiftId,
       hotelId: shift.hotelId,
@@ -289,7 +337,7 @@ export class ShiftsService {
       toStaffId: dto.toStaffId,
       pendingTasks: dto.pendingTasks || null,
       cashAmount: dto.cashAmount !== undefined ? String(dto.cashAmount) : '0.00',
-      specialNotes: dto.specialNotes || null,
+      specialNotes: `${dto.specialNotes || ''}${financialSummaryNote}`.trim() || null,
       status: HandoverStatus.PENDING,
     });
 
@@ -297,7 +345,10 @@ export class ShiftsService {
     return {
       success: true,
       message: 'Tạo biên bản bàn giao ca thành công. Chờ ca sau xác nhận tiếp nhận.',
-      data: saved,
+      data: {
+        ...saved,
+        openFinancialItems,
+      },
     };
   }
 

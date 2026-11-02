@@ -321,20 +321,42 @@ describe('Six-phase MySQL verification (P0/P1 invariants)', () => {
     const folio1 = await promos.getBookingBenefitsAndFolio(bid, { id: ctx.cust, role: 'CUSTOMER' });
     expect(folio1.refundReceivableAmount).toBe(360000);
 
-    // B22: Cannot offset ROOM_PRICE_ADJUSTMENT against laundry service before customer consent
+    // B22 & PIT-05: Staff cannot self-consent without guest evidenceRef; cannot redeem before customer consent
+    const svcId = nextId();
+    const sreqId = nextId();
+    await ds.query(`INSERT INTO service_categories(id,code,name,status) VALUES (?,'LAUNDRY','Giặt ủi','ACTIVE')`, [svcId]);
+    await ds.query(`INSERT INTO room_services(id,category_id,hotel_id,name,unit,base_price,is_complimentary,service_type,status)
+      VALUES (?,?,?,'Giặt ủi cao cấp','lần',200000,0,'ADD_ON','ACTIVE')`, [svcId, svcId, ctx.hid]);
+    await ds.query(`INSERT INTO service_requests(id,booking_id,service_id,service_name,unit_price,quantity,total_price,status)
+      VALUES (?,?,?,'Giặt ủi cao cấp',200000,1,200000,'PENDING')`, [sreqId, bid, svcId]);
+
+    await expect(promos.acceptRoomAdjustmentAsCredit(bid, folio1.accounts[0].id, { id: ctx.a, role: 'EMPLOYEE' })).rejects.toThrow();
     await expect(promos.redeemBenefitForService({ id: ctx.a, role: 'EMPLOYEE' }, {
-      bookingId: bid, requestedAmount: 200000, serviceRequestId: '901', idempotencyKey: `red_${bid}_1`,
+      bookingId: bid, requestedAmount: 200000, serviceRequestId: String(sreqId), idempotencyKey: `red_${bid}_1`,
     })).rejects.toThrow(ConflictException);
 
-    // Customer consents -> B23: redeem 200.000đ laundry -> balance 160.000đ
+    // Customer consents -> B23 & PIT-04: redeem 200.000đ against real ServiceRequest -> balance 160.000đ, second redeem on paid service is blocked
     await promos.acceptRoomAdjustmentAsCredit(bid, folio1.accounts[0].id, { id: ctx.cust, role: 'CUSTOMER' });
     const red = await promos.redeemBenefitForService({ id: ctx.a, role: 'EMPLOYEE' }, {
-      bookingId: bid, requestedAmount: 200000, serviceRequestId: '901', idempotencyKey: `red_${bid}_1`,
+      bookingId: bid, requestedAmount: 200000, serviceRequestId: String(sreqId), idempotencyKey: `red_${bid}_1`,
     });
     expect(red).toMatchObject({ redeemedAmount: 200000, remainingServicePayable: 0 });
     expect((await promos.getBookingBenefitsAndFolio(bid, { id: ctx.cust, role: 'CUSTOMER' })).availableServiceCredit).toBe(160000);
 
-    // B29: Settle remaining 160.000đ refund at checkout -> balance 0
+    // PIT-24: Reusing same idempotencyKey with different requestedAmount throws 409 IDEMPOTENCY_KEY_REUSED
+    await expect(promos.redeemBenefitForService({ id: ctx.a, role: 'EMPLOYEE' }, {
+      bookingId: bid, requestedAmount: 100000, serviceRequestId: String(sreqId), idempotencyKey: `red_${bid}_1`,
+    })).rejects.toThrow(ConflictException);
+
+    // PIT-01: Gateway timeout reserves refund in REFUND_PENDING / UNKNOWN_RECONCILE without falsely settling balance to 0
+    const timeoutRes = await promos.settleRemainingRefundAtCheckout(
+      { id: ctx.mgr, role: 'EMPLOYEE' }, bid, folio1.accounts[0].id, `settle_timeout_${bid}`, 'Gateway timeout test',
+      { simulateProviderTimeout: true },
+    );
+    expect(timeoutRes.settledRefundAmount).toBe(0);
+    expect(timeoutRes.status).toBe('UNKNOWN_RECONCILE');
+
+    // B29: Confirm/Settle remaining 160.000đ refund -> balance 0
     const settled = await promos.settleRemainingRefundAtCheckout(
       { id: ctx.mgr, role: 'EMPLOYEE' }, bid, folio1.accounts[0].id, `settle_${bid}`,
     );

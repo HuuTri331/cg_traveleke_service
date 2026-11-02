@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -12,9 +13,11 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PromotionsService } from './promotions.service';
 import {
+  AcceptConsentDto,
   CalculateQuoteDto,
   CreatePromotionCampaignDto,
   RedeemBenefitDto,
+  SettleRefundDto,
 } from './dto/promotions.dto';
 
 @Controller(['promotions', 'pricing-promotions'])
@@ -68,8 +71,11 @@ export class PromotionsController {
 
   @Get('quotes/:quoteId')
   @Roles('ADMIN', 'EMPLOYEE', 'CUSTOMER')
-  async getQuote(@Param('quoteId') quoteId: string) {
-    return await this.promotionsService.getQuoteById(quoteId);
+  async getQuote(
+    @Param('quoteId') quoteId: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    return await this.promotionsService.getQuoteById(quoteId, user);
   }
 
   @Get('bookings/:bookingId/benefits')
@@ -127,8 +133,9 @@ export class PromotionsController {
     return await this.promotionsService.pauseCampaign(user, id, reason);
   }
 
+  // PP-P0-05 / PIT-06: Restrict internal campaign list to ADMIN / hotel EMPLOYEE (never CUSTOMER)
   @Get('hotel/:hotelId/campaigns')
-  @Roles('ADMIN', 'EMPLOYEE', 'CUSTOMER')
+  @Roles('ADMIN', 'EMPLOYEE')
   async getHotelCampaigns(
     @Param('hotelId') hotelId: string,
     @CurrentUser() user: { id: string; role: string },
@@ -145,6 +152,21 @@ export class PromotionsController {
     return await this.promotionsService.calculateAndSaveQuote(dto, user);
   }
 
+  @Post('service-quotes')
+  @Roles('ADMIN', 'EMPLOYEE', 'CUSTOMER')
+  async calculateServiceQuote(
+    @Body()
+    dto: {
+      hotelId: string;
+      serviceId: string;
+      baseUnitPrice: number;
+      quantity?: number;
+      usageAt?: string;
+    },
+  ) {
+    return await this.promotionsService.quoteServiceItem(dto);
+  }
+
   @Post('booking/:bookingId/evaluate-benefits')
   @Roles('ADMIN', 'EMPLOYEE')
   async evaluateBookingBenefits(
@@ -152,6 +174,22 @@ export class PromotionsController {
     @CurrentUser() user: { id: string; role: string },
   ) {
     return await this.promotionsService.evaluateExistingBookingBenefits(bookingId, user);
+  }
+
+  @Post('hotel/:hotelId/evaluate-benefits-batch')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async evaluateHotelBenefitsBatch(
+    @Param('hotelId') hotelId: string,
+    @CurrentUser() user: { id: string; role: string },
+    @Query('batchSize') batchSize?: string,
+    @Query('afterBookingId') afterBookingId?: string,
+  ) {
+    return await this.promotionsService.evaluateExistingBookingsForHotel(
+      hotelId,
+      user,
+      batchSize ? Number(batchSize) : 50,
+      afterBookingId || '0',
+    );
   }
 
   @Get('booking/:bookingId/folio')
@@ -169,8 +207,9 @@ export class PromotionsController {
     @Param('bookingId') bookingId: string,
     @Param('accountId') accountId: string,
     @CurrentUser() user: { id: string; role: string },
+    @Body() dto?: AcceptConsentDto,
   ) {
-    return await this.promotionsService.acceptRoomAdjustmentAsCredit(bookingId, accountId, user);
+    return await this.promotionsService.acceptRoomAdjustmentAsCredit(bookingId, accountId, user, dto);
   }
 
   @Post('redeem')
@@ -199,7 +238,7 @@ export class PromotionsController {
     @Param('bookingId') bookingId: string,
     @Param('accountId') accountId: string,
     @CurrentUser() user: { id: string; role: string },
-    @Body() body: { idempotencyKey?: string; reason?: string },
+    @Body() body?: SettleRefundDto,
   ) {
     return await this.promotionsService.settleRemainingRefundAtCheckout(
       user,
@@ -207,6 +246,17 @@ export class PromotionsController {
       accountId,
       body?.idempotencyKey || `settle_${bookingId}_${accountId}`,
       body?.reason,
+      body,
     );
+  }
+
+  @Post('refund-intents/:intentId/confirm')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async confirmRefundIntent(
+    @Param('intentId') intentId: string,
+    @CurrentUser() user: { id: string; role: string },
+    @Body() body: { providerRef?: string; payoutReceiptRef?: string },
+  ) {
+    return await this.promotionsService.confirmRefundIntentSettlement(user, intentId, body);
   }
 }

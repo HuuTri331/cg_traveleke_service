@@ -103,9 +103,14 @@ export function detectCampaignConflicts(
     if (candidate.id && String(ex.id) === String(candidate.id)) continue;
     if (String(ex.hotelId) !== String(candidate.hotelId)) continue;
     if (!(startA < ex.stayEndExclusiveDate && endA > ex.stayStartDate)) continue;
+    // PP-P1-10: COMBINABLE_INDEPENDENT only applies when at least one campaign is an INDEPENDENT_BENEFIT
+    // that does not discount the same monetary charge component (never bypasses two ROOM_NIGHT or two SERVICE_ITEM campaigns).
     if (
       candidate.combinabilityPolicy === 'COMBINABLE_INDEPENDENT' &&
-      ex.combinabilityPolicy === 'COMBINABLE_INDEPENDENT'
+      ex.combinabilityPolicy === 'COMBINABLE_INDEPENDENT' &&
+      (candidate.chargeComponentType === ChargeComponentType.INDEPENDENT_BENEFIT ||
+        ex.chargeComponentType === ChargeComponentType.INDEPENDENT_BENEFIT) &&
+      candidate.chargeComponentType !== ex.chargeComponentType
     ) {
       continue;
     }
@@ -205,6 +210,7 @@ export function computeNightlyQuote(params: {
   hotelTimezone?: string;
   activeCampaigns: PromotionCampaign[];
   forExistingBooking?: boolean;
+  sharedCampaignUsedTotals?: Map<string, number>;
 }) {
   const tz = params.hotelTimezone || 'Asia/Ho_Chi_Minh';
   const checkInLocalDate = toLocalHotelDate(params.checkInAt, tz);
@@ -223,13 +229,23 @@ export function computeNightlyQuote(params: {
     if (qty < Number(c.minRooms || 1)) return false;
     if (guests < Number(c.minGuests || 1)) return false;
     if (baseTotal < Number(c.minOrderAmount || 0)) return false;
-    if (!affectsRoomCharge(c) && c.discountType !== PromotionDiscountType.SERVICE_CREDIT) return false;
+    const hasQuotas = (c.packageConfig?.includedQuotas || []).some((q) => Number(q.quantity || 0) > 0);
+    if (
+      !affectsRoomCharge(c) &&
+      c.discountType !== PromotionDiscountType.SERVICE_CREDIT &&
+      c.benefitKind !== 'INCLUDED_QUOTA' &&
+      !hasQuotas
+    ) {
+      return false;
+    }
     const t = effectiveRoomTargets(c);
     if (!t.all && !t.ids.has(String(params.roomId))) return false;
-    return hasRemainingCampaignBudget(c, 1);
+    return hasRemainingCampaignBudget(c, 0);
   });
 
-  const campaignUsedTotals = new Map<string, number>();
+  // PP-P1-05: Share campaignUsedTotals across multi-room lines when provided
+  const campaignUsedTotals = params.sharedCampaignUsedTotals || new Map<string, number>();
+  const lineCampaignTotals = new Map<string, number>();
   const nightlyLines: NightlyPriceLine[] = [];
 
   for (const nightDate of nights) {
@@ -268,6 +284,10 @@ export function computeNightlyQuote(params: {
         String(chosen.id),
         (campaignUsedTotals.get(String(chosen.id)) || 0) + bestDiscount,
       );
+      lineCampaignTotals.set(
+        String(chosen.id),
+        (lineCampaignTotals.get(String(chosen.id)) || 0) + bestDiscount,
+      );
     }
 
     const discountOnRoom =
@@ -286,9 +306,23 @@ export function computeNightlyQuote(params: {
     });
   }
 
+  // PP-P1-06 / B40 / PIT-17: Include quota-only package campaigns that match the stay window even when monetary discount is 0
+  for (const c of eligibleCampaigns) {
+    const hasQuotas = (c.packageConfig?.includedQuotas || []).some((q) => Number(q.quantity || 0) > 0);
+    if (
+      hasQuotas &&
+      !lineCampaignTotals.has(String(c.id)) &&
+      nights.some((nd) => nd >= c.stayStartDate && nd < c.stayEndExclusiveDate)
+    ) {
+      lineCampaignTotals.set(String(c.id), 0);
+    }
+  }
+
   const discountTotal = nightlyLines.reduce((sum, l) => sum + l.discountAmount, 0);
   const payableTotal = nightlyLines.reduce((sum, l) => sum + l.payableSubtotal, 0);
-  const appliedCampaigns = [...campaignUsedTotals.entries()].map(([cid, amount]) => {
+  const monetaryDiscountTotal = Math.max(0, baseTotal - payableTotal);
+  const noncashBenefitValue = Math.max(0, discountTotal - monetaryDiscountTotal);
+  const appliedCampaigns = [...lineCampaignTotals.entries()].map(([cid, amount]) => {
     const camp = eligibleCampaigns.find((c) => String(c.id) === cid)!;
     return {
       campaignId: cid,
@@ -297,6 +331,7 @@ export function computeNightlyQuote(params: {
       version: camp.version,
       benefitKind: camp.benefitKind,
       discountAmount: amount,
+      includedQuotas: camp.packageConfig?.includedQuotas || [],
     };
   });
 
@@ -322,9 +357,77 @@ export function computeNightlyQuote(params: {
     nightsCount: nights.length,
     baseTotal,
     discountTotal,
+    monetaryDiscountTotal,
+    noncashBenefitValue,
     payableTotal,
     priceHash,
     nightlyLines,
     appliedCampaigns,
+  };
+}
+
+/**
+ * PP-P1-02 / PIT-16: Computes time-sliced service item discount (e.g. Spa 14:00-17:00 20% off).
+ */
+export function computeServiceItemPricing(params: {
+  hotelId: string;
+  serviceId: string;
+  baseUnitPrice: number;
+  quantity: number;
+  usageAt: Date | string;
+  hotelTimezone?: string;
+  activeCampaigns: PromotionCampaign[];
+}) {
+  const tz = params.hotelTimezone || 'Asia/Ho_Chi_Minh';
+  const usageDate = toLocalHotelDate(params.usageAt, tz);
+  const dt = new Date(params.usageAt);
+  const hourParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(dt);
+  const h = parseInt(hourParts.find((p) => p.type === 'hour')?.value || '0', 10);
+  const m = parseInt(hourParts.find((p) => p.type === 'minute')?.value || '0', 10);
+  const usageDecimalHour = h + m / 60;
+
+  const qty = Math.max(1, Number(params.quantity || 1));
+  const baseUnit = Math.max(0, Math.round(Number(params.baseUnitPrice || 0)));
+  const grossTotal = baseUnit * qty;
+
+  let bestDiscount = 0;
+  let chosenCampaign: PromotionCampaign | null = null;
+
+  for (const c of params.activeCampaigns) {
+    if (String(c.hotelId) !== String(params.hotelId) || c.status !== 'ACTIVE') continue;
+    if (c.chargeComponentType !== ChargeComponentType.SERVICE_ITEM) continue;
+    if (!(usageDate >= c.stayStartDate && usageDate < c.stayEndExclusiveDate)) continue;
+    const sTargets = effectiveServiceTargets(c);
+    if (!sTargets.all && !sTargets.ids.has(String(params.serviceId))) continue;
+
+    const startH = c.serviceStartHour ?? 0;
+    const endH = c.serviceEndHour ?? 24;
+    if (!(usageDecimalHour >= startH && usageDecimalHour < endH)) continue;
+    if (!hasRemainingCampaignBudget(c, 1)) continue;
+
+    let disc = 0;
+    if (c.discountType === PromotionDiscountType.PERCENT) {
+      disc = Math.round((grossTotal * Number(c.discountValue || 0)) / 100);
+    } else {
+      disc = Math.round(Number(c.discountValue || 0) * qty);
+    }
+    const maxReduction = Math.max(0, grossTotal - Math.round(Number(c.floorPrice || 0)) * qty);
+    disc = Math.max(0, Math.min(disc, maxReduction));
+    if (disc > bestDiscount) {
+      bestDiscount = disc;
+      chosenCampaign = c;
+    }
+  }
+
+  return {
+    grossTotal,
+    discountAmount: bestDiscount,
+    netTotal: Math.max(0, grossTotal - bestDiscount),
+    appliedCampaign: chosenCampaign,
   };
 }

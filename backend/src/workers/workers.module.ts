@@ -8,6 +8,7 @@ import { PaymentsModule } from '../payments/payments.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { GuestWorkModule } from '../guest-work/guest-work.module';
 import { BookingAssignmentModule } from '../booking-assignment/booking-assignment.module';
+import { PromotionsModule } from '../promotions/promotions.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { BookingAssignmentModule } from '../booking-assignment/booking-assignmen
     InventoryModule,
     BookingAssignmentModule,
     GuestWorkModule,
+    PromotionsModule,
   ],
   providers: [WorkersService],
   exports: [WorkersService],

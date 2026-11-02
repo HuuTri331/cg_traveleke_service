@@ -206,7 +206,22 @@ export class CancellationsService {
           order: { attemptNo: 'DESC' },
         });
 
-        if (payment) {
+        // PP-P0-08 / PIT-19: Tính số tiền hoàn ròng = số đã thu trừ các khoản hoàn một phần đã tất toán trước đó,
+        // đồng thời khóa/hủy các tài khoản quyền lợi khuyến mãi đang mở của đơn bị hủy.
+        const paidAmt = payment ? Number(payment.amount || 0) : Number(booking.estimatedTotal || 0);
+        const priorRefundedAmt = payment ? Number(payment.refundAmount || 0) : 0;
+        const netRefundableAmt = Math.max(0, paidAmt - priorRefundedAmt);
+
+        if (typeof manager.query === 'function') {
+          try {
+            await manager.query(
+              `UPDATE booking_benefit_accounts SET status = 'CANCELLED', available_amount = 0, available_quota = 0, version = version + 1 WHERE booking_id = ? AND status IN ('APPROVED', 'PENDING_REVIEW', 'REFUND_PENDING')`,
+              [booking.id],
+            );
+          } catch {}
+        }
+
+        if (payment && netRefundableAmt > 0) {
           payment.status = PaymentTransactionStatus.REFUND_PENDING;
           await paymentRepo.save(payment);
         }
@@ -216,7 +231,7 @@ export class CancellationsService {
         request.reviewedBy = user.id;
         request.reviewedAt = new Date();
         request.reviewNote = dto.reviewNote || null;
-        request.refundAmount = payment ? payment.amount : booking.estimatedTotal;
+        request.refundAmount = netRefundableAmt.toFixed(2);
         await reqRepo.save(request);
 
         // 5. Ghi nhật ký trạng thái
@@ -226,12 +241,12 @@ export class CancellationsService {
             oldStatus,
             newStatus: BookingStatus.CANCELLED,
             changedBy: user.id,
-            note: `Hủy đơn và chấp thuận hoàn tiền: ${dto.reviewNote || ''}`,
+            note: `Hủy đơn và chấp thuận hoàn tiền (${netRefundableAmt.toLocaleString('vi-VN')}đ): ${dto.reviewNote || ''}`,
           }),
         );
 
-        // 6. Ghi Outbox event command "refund.process"
-        if (payment) {
+        // 6. Ghi Outbox event command "refund.process" với số tiền hoàn ròng
+        if (payment && netRefundableAmt > 0) {
           await this.outboxService.addEvent(
             manager,
             'refund.process',
@@ -241,7 +256,7 @@ export class CancellationsService {
               bookingId: booking.id,
               paymentId: payment.id,
               txnRef: payment.txnRef,
-              amount: payment.amount,
+              amount: netRefundableAmt.toFixed(2),
               transactionNo: payment.vnpTransactionNo,
               transactionDate: payment.payDate || payment.paidAt || new Date(),
               requestId: request.id,

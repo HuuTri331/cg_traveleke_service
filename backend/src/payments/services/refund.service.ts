@@ -40,13 +40,26 @@ export class RefundService {
       payment = await paymentRepo.findOne({ where: { txnRef: params.txnRef } });
     }
 
+    const paidTotal = payment ? Number(payment.amount || 0) : Number(params.amount || 0);
+    const prevRefunded = payment ? Number(payment.refundAmount || 0) : 0;
+    const maxRemainingRefundable = Math.max(0, paidTotal - prevRefunded);
+    const effectiveRefundAmount =
+      paidTotal > 0 ? Math.min(Number(params.amount || 0), maxRemainingRefundable) : Number(params.amount || 0);
+
+    if (payment && effectiveRefundAmount <= 0) {
+      this.logger.warn(
+        `[RefundService] Giao dịch ${params.txnRef} đã hoàn đủ (${prevRefunded}/${paidTotal}), bỏ qua hoàn trùng.`,
+      );
+      return { success: true, data: { vnp_ResponseCode: '00', alreadyRefunded: true } };
+    }
+
     const tDate = params.transactionDate
       ? new Date(params.transactionDate)
       : payment?.payDate || payment?.paidAt || new Date();
 
     const refundRes = await this.vnpayService.refund({
       txnRef: params.txnRef,
-      amount: Number(params.amount),
+      amount: effectiveRefundAmount,
       transactionNo: params.transactionNo || payment?.vnpTransactionNo || '0',
       transactionDate: tDate,
       createBy: params.createBy || 'RefundServiceWorker',
@@ -54,9 +67,7 @@ export class RefundService {
 
     if (refundRes?.vnp_ResponseCode === '00') {
       if (payment) {
-        const paidTotal = Number(payment.amount || 0);
-        const prevRefunded = Number(payment.refundAmount || 0);
-        const newTotalRefunded = prevRefunded + Number(params.amount || 0);
+        const newTotalRefunded = prevRefunded + effectiveRefundAmount;
         // IT19 / B28: Partial refund (e.g. 160k or 360k on 5M) keeps status PAID with accumulated refundAmount;
         // only mark REFUNDED when the entire paid amount has been refunded.
         if (paidTotal > 0 && newTotalRefunded >= paidTotal) {

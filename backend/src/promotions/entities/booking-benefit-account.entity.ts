@@ -11,6 +11,7 @@ import { BenefitKind } from './promotion-campaign.entity';
 export enum BenefitAccountStatus {
   PENDING_REVIEW = 'PENDING_REVIEW',
   APPROVED = 'APPROVED',
+  REFUND_PENDING = 'REFUND_PENDING',
   SETTLED = 'SETTLED',
   EXPIRED = 'EXPIRED',
   CANCELLED = 'CANCELLED',

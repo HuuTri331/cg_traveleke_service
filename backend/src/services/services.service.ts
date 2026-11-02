@@ -33,6 +33,10 @@ import {
 } from './dto/services.dto';
 import { OutboxService } from '../outbox/outbox.service';
 import { GuestWorkService } from '../guest-work/guest-work.service';
+import { PromotionCampaign, PromotionCampaignStatus } from '../promotions/entities/promotion-campaign.entity';
+import { BenefitAccountStatus, BookingBenefitAccount } from '../promotions/entities/booking-benefit-account.entity';
+import { BenefitLedgerEntryType, BookingBenefitLedger } from '../promotions/entities/booking-benefit-ledger.entity';
+import { computeServiceItemPricing } from '../promotions/promotion-engine';
 
 @Injectable()
 export class ServicesService {
@@ -321,19 +325,46 @@ export class ServicesService {
     }
 
     const quantity = dto.quantity ?? 1;
-    const totalPrice = service.isComplimentary
-      ? 0
-      : Number(service.basePrice) * quantity;
     const scheduledAt = dto.scheduledAt
       ? new Date(dto.scheduledAt)
       : new Date();
+
+    // PP-P1-02 / PIT-16: Tính giảm giá dịch vụ theo khung giờ (VD: Spa 14:00-17:00 giảm 20%)
+    let totalPrice = service.isComplimentary
+      ? 0
+      : Number(service.basePrice) * quantity;
+    let promoNoteSuffix = '';
+    if (!service.isComplimentary && typeof this.dataSource.getRepository === 'function') {
+      try {
+        const promoRepo = this.dataSource.getRepository(PromotionCampaign);
+        if (promoRepo && typeof promoRepo.find === 'function') {
+          const activeCampaigns = await promoRepo.find({
+            where: { hotelId: String(booking.hotelId), status: PromotionCampaignStatus.ACTIVE },
+          });
+          const priced = computeServiceItemPricing({
+            hotelId: String(booking.hotelId),
+            serviceId: String(dto.serviceId),
+            baseUnitPrice: Number(service.basePrice),
+            quantity,
+            usageAt: scheduledAt,
+            activeCampaigns,
+          });
+          totalPrice = priced.netTotal;
+          if (priced.discountAmount > 0 && priced.appliedCampaign) {
+            promoNoteSuffix = ` [KM ${priced.appliedCampaign.code}: -${priced.discountAmount.toLocaleString('vi-VN')}đ]`;
+          }
+        }
+      } catch {}
+    }
+
     const slaMinutes = service.slaMinutes ?? 30;
     const slaDueAt = new Date(scheduledAt.getTime() + slaMinutes * 60 * 1000);
 
     const saved = await this.dataSource.transaction(async (em) => {
       const created = await em.getRepository(ServiceRequest).save(em.getRepository(ServiceRequest).create({
         bookingId: dto.bookingId, serviceId: dto.serviceId, serviceName: service.name,
-        unitPrice: service.basePrice, quantity, totalPrice, note: dto.note,
+        unitPrice: service.basePrice, quantity, totalPrice,
+        note: dto.note ? `${dto.note}${promoNoteSuffix}` : promoNoteSuffix ? promoNoteSuffix.trim() : null,
         scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
         slaDueAt, isSlaBreahed: false, status: ServiceRequestStatus.PENDING,
       }));
@@ -451,7 +482,78 @@ export class ServicesService {
     if (payload?.note) req.note = payload.note;
     if (payload?.assignedTo !== undefined) req.assignedTo = payload.assignedTo;
 
-    return this.serviceRequestRepo.save(req);
+    const savedReq = await this.serviceRequestRepo.save(req);
+
+    // PP-P1-15 / PIT-18 / B27 / B42: Khi hủy hoặc dịch vụ thất bại, tự động đảo (REVERSAL) các bút toán đã cấn trừ credit
+    if (
+      targetStatus === ServiceRequestStatus.CANCELLED ||
+      targetStatus === ServiceRequestStatus.FAILED
+    ) {
+      await this.autoReverseServiceBenefitRedemptions(savedReq);
+    }
+
+    return savedReq;
+  }
+
+  private async autoReverseServiceBenefitRedemptions(req: ServiceRequest): Promise<void> {
+    if (!this.dataSource?.transaction) return;
+    try {
+      await this.dataSource.transaction(async (em) => {
+        const redeems = await em.find(BookingBenefitLedger, {
+          where: {
+            bookingId: String(req.bookingId),
+            serviceRequestId: String(req.id),
+            entryType: BenefitLedgerEntryType.REDEEM,
+          },
+        });
+        for (const red of redeems) {
+          const revKey = `reversal:ledger:${red.id}`;
+          const existingRev = await em.findOne(BookingBenefitLedger, {
+            where: { idempotencyKey: revKey },
+          });
+          if (existingRev) continue;
+
+          const acc = await em.findOne(BookingBenefitAccount, {
+            where: { id: red.accountId },
+            lock: { mode: 'pessimistic_write' },
+          });
+          if (!acc) continue;
+
+          const restoreAmt = Math.abs(Math.round(Number(red.amountDelta || 0)));
+          const restoreQ = Math.abs(Math.round(Number(red.quotaDelta || 0)));
+          acc.reversedAmount = Number(acc.reversedAmount || 0) + restoreAmt;
+          acc.redeemedAmount = Math.max(0, Number(acc.redeemedAmount || 0) - restoreAmt);
+          acc.availableAmount = Number(acc.availableAmount || 0) + restoreAmt;
+          acc.usedQuota = Math.max(0, Number(acc.usedQuota || 0) - restoreQ);
+          acc.availableQuota = Number(acc.availableQuota || 0) + restoreQ;
+          if (acc.status === BenefitAccountStatus.SETTLED && (acc.availableAmount > 0 || acc.availableQuota > 0)) {
+            acc.status = BenefitAccountStatus.APPROVED;
+          }
+          acc.version += 1;
+          await em.save(BookingBenefitAccount, acc);
+
+          await em.save(
+            BookingBenefitLedger,
+            em.create(BookingBenefitLedger, {
+              accountId: acc.id,
+              bookingId: String(req.bookingId),
+              hotelId: red.hotelId,
+              campaignId: acc.campaignId,
+              entryType: BenefitLedgerEntryType.REVERSAL,
+              amountDelta: restoreAmt,
+              balanceAfter: acc.availableAmount,
+              quotaDelta: restoreQ,
+              quotaAfter: acc.availableQuota,
+              serviceRequestId: String(req.id),
+              referenceEntryId: red.id,
+              performedBy: req.assignedTo ? String(req.assignedTo) : null,
+              idempotencyKey: revKey,
+              reason: `Tự động hoàn lại tín dụng do dịch vụ #${req.id} chuyển sang trạng thái ${req.status}`,
+            }),
+          );
+        }
+      });
+    } catch {}
   }
 
   // ============================================================
