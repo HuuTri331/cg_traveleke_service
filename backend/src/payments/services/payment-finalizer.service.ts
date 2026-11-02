@@ -229,10 +229,8 @@ export class PaymentFinalizerService {
       }),
     );
 
-    // Phân công nhân viên ngầm sau khi đã PAID
-    if (autoAssignFn) {
-      await autoAssignFn(targetBooking.id, manager);
-    }
+    // D1-08: Đã loại bỏ callback autoAssignFn legacy để đảm bảo duy nhất 1 bộ máy phân công công bằng
+    // qua sự kiện Outbox 'booking.assignment.requested' -> BookingAssignmentService.assignOnce()
 
     // Ghi Outbox Events
     await this.outboxService.addEvent(

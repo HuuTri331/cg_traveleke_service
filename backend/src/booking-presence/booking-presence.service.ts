@@ -182,6 +182,54 @@ export class BookingPresenceService {
           );
         }
 
+        // D2-05: Đối với đơn website, kiểm tra đảm bảo giữ phòng chưa bị giải phóng (RELEASED)
+        try {
+          if (typeof (manager as any).query === 'function') {
+            const isWebsite = !booking.bookingSource || booking.bookingSource === 'WEBSITE';
+            if (isWebsite) {
+              const holdRows = await (manager as any).query(
+                `SELECT status FROM booking_holds WHERE booking_id = ?`,
+                [booking.id],
+              );
+              if (Array.isArray(holdRows) && holdRows.length > 0) {
+                const hasValidHold = holdRows.some(
+                  (h: any) => h.status === 'COMMITTED' || h.status === 'HELD',
+                );
+                if (!hasValidHold) {
+                  throw new ConflictException(
+                    'Đơn đặt phòng này đã bị giải phóng giữ chỗ (RELEASED). Không thể nhận phòng.',
+                  );
+                }
+              }
+            }
+          }
+        } catch (err) {
+          if (err instanceof ConflictException) throw err;
+        }
+
+        // D3-05 / A.2: Phân biệt người phụ trách chính (owner=A) và người thực hiện tại quầy (performedBy=B)
+        const isActingForOtherOwner =
+          Boolean(booking.handledBy) && String(booking.handledBy) !== String(actorUserId);
+        let actingPrefix = '';
+        if (isActingForOtherOwner) {
+          let hasCoverage = false;
+          if (this.coverageService) {
+            try {
+              hasCoverage = await this.coverageService.isStaffCoveringTask(
+                String(booking.id),
+                String(actorUserId),
+                'CHECK_IN',
+                now,
+              );
+            } catch {
+              hasCoverage = false;
+            }
+          }
+          actingPrefix = hasCoverage
+            ? `[Ủy quyền hỗ trợ #${actorUserId} thực hiện thay #${booking.handledBy}] `
+            : `[Hỗ trợ trực tiếp tại quầy: #${actorUserId} thực hiện Check-in cho đơn của #${booking.handledBy}] `;
+        }
+
         const fromStatus = booking.status;
         const isFromNoShow = fromStatus === BookingStatus.NO_SHOW;
         const eventType = isFromNoShow
@@ -196,7 +244,7 @@ export class BookingPresenceService {
             ? Math.floor((currentTime - checkInTime) / 60000)
             : 0;
 
-        // Cập nhật booking
+        // Cập nhật booking (Giữ nguyên booking.handledBy = A, chỉ ghi checkInConfirmedBy = B)
         booking.status = BookingStatus.CHECKED_IN;
         booking.actualCheckInAt = now;
         booking.checkInConfirmedBy = actorUserId;
@@ -208,6 +256,10 @@ export class BookingPresenceService {
 
         const savedBooking = await bookingRepo.save(booking);
 
+        const defaultReason = isFromNoShow
+          ? `Khôi phục nhận phòng muộn sau No-Show (${lateMinutes} phút sau giờ nhận phòng)`
+          : `Khách nhận phòng tại quầy (${lateMinutes} phút)`;
+
         // Lưu bản ghi sự kiện hiện diện
         const presenceEvent = presenceRepo.create({
           bookingId: booking.id,
@@ -218,11 +270,7 @@ export class BookingPresenceService {
           actorId: actorUserId,
           eventType,
           lateMinutes,
-          reason:
-            dto.note ||
-            (isFromNoShow
-              ? `Khôi phục nhận phòng muộn sau No-Show (${lateMinutes} phút sau giờ nhận phòng)`
-              : `Khách nhận phòng tại quầy (${lateMinutes} phút)`),
+          reason: `${actingPrefix}${dto.note || defaultReason}`.trim(),
           idempotencyKey: dto.commandId || null,
           occurredAt: now,
         });
@@ -647,6 +695,105 @@ export class BookingPresenceService {
   }
 
   /**
+   * D2-04: Đối soát đóng các đơn PENDING/CONFIRMED đã quá hạn trả phòng (checkOutAt <= now)
+   * mà chưa từng nhận phòng thực tế (actualCheckInAt IS NULL) do scheduler từng bị gián đoạn.
+   * Chuyển trực tiếp sang CLOSED_NO_SHOW kèm sự kiện kiểm toán rõ ràng, không tạo sự kiện check-in giả,
+   * không tự hoàn tiền hay giải phóng hold.
+   */
+  async reconcileOverdueNeverCheckedIn(bookingId: string) {
+    const result = await runWithDeadlockRetry(
+      this.dataSource,
+      async (manager: EntityManager) => {
+        const bookingRepo = manager.getRepository(Booking);
+        const presenceRepo = manager.getRepository(BookingPresenceEvent);
+        const logRepo = manager.getRepository(BookingStatusLog);
+
+        const booking = await bookingRepo
+          .createQueryBuilder('booking')
+          .setLock('pessimistic_write')
+          .where('booking.id = :id', { id: bookingId })
+          .getOne();
+
+        if (!booking) return null;
+
+        if (
+          booking.actualCheckInAt !== null ||
+          (booking.status !== BookingStatus.PENDING &&
+            booking.status !== BookingStatus.CONFIRMED)
+        ) {
+          return booking;
+        }
+
+        const now = new Date();
+        if (now.getTime() < new Date(booking.checkOutAt).getTime()) {
+          return booking;
+        }
+
+        const fromStatus = booking.status;
+        booking.status = BookingStatus.CLOSED_NO_SHOW;
+        booking.noShowAt = booking.noShowAt || new Date(booking.checkOutAt);
+        booking.noShowClosedAt = now;
+        booking.presenceVersion = (booking.presenceVersion || 1) + 1;
+
+        const savedBooking = await bookingRepo.save(booking);
+
+        const presenceEvent = presenceRepo.create({
+          bookingId: booking.id,
+          hotelId: booking.hotelId,
+          fromStatus,
+          toStatus: BookingStatus.CLOSED_NO_SHOW,
+          actorType: PresenceActorType.SYSTEM,
+          actorId: null,
+          eventType: PresenceEventType.NO_SHOW_CLOSED,
+          reason: `Đối soát tự động sau khi kết thúc kỳ lưu trú (${new Date(booking.checkOutAt).toLocaleString('vi-VN')}): Khách chưa từng nhận phòng thực tế -> CLOSED_NO_SHOW.`,
+          occurredAt: now,
+        });
+        await presenceRepo.save(presenceEvent);
+
+        const statusLog = logRepo.create({
+          bookingId: booking.id,
+          changedBy: null,
+          actorType: 'SYSTEM',
+          oldStatus: fromStatus,
+          newStatus: BookingStatus.CLOSED_NO_SHOW,
+          note: 'Đối soát tự động đơn quá hạn trả phòng chưa từng nhận phòng -> CLOSED_NO_SHOW',
+        });
+        await logRepo.save(statusLog);
+
+        this.logger.log(
+          `[Presence] Reconciled overdue never-checked-in booking #${booking.bookingCode} (${fromStatus} -> CLOSED_NO_SHOW)`,
+        );
+
+        return Object.assign(savedBooking, { oldStatus: fromStatus });
+      },
+      {
+        contextName: 'BookingPresenceService.reconcileOverdueNeverCheckedIn',
+        maxRetries: 3,
+        baseDelayMs: 50,
+      },
+    );
+
+    if (result && (result as any).oldStatus && this.realtimeGateway) {
+      try {
+        this.realtimeGateway.emitBookingStatusChanged({
+          id: result.id,
+          bookingCode: result.bookingCode,
+          hotelId: result.hotelId,
+          userId: result.userId,
+          oldStatus: (result as any).oldStatus,
+          newStatus: BookingStatus.CLOSED_NO_SHOW,
+          changedAt: result.noShowClosedAt?.toISOString() || new Date().toISOString(),
+          note: 'Đối soát tự động: Kỳ lưu trú đã kết thúc mà khách chưa từng nhận phòng (CLOSED_NO_SHOW)',
+        });
+      } catch (err) {
+        this.logger.warn(`Failed to emit socket for Reconciled No-Show: ${(err as any)?.message}`);
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Khách hàng gửi thông báo "Tôi dự kiến đến muộn"
    * Chỉ ghi nhận ý định và thời gian dự kiến (ARRIVAL_INTENT), KHÔNG phải là nhận phòng tự động!
    */
@@ -808,6 +955,48 @@ export class BookingPresenceService {
       .andWhere('b.status = :checkedIn', { checkedIn: BookingStatus.CHECKED_IN })
       .getCount();
 
+    // A.3 / D2-03: Thống kê tách biệt 3 con số phòng tại khách sạn:
+    // 1. inHouseRooms (Số phòng đang có khách thực tế CHECKED_IN)
+    // 2. reservedOrCommittedRooms (Số suất phòng đã bán/giữ trong ngày, gồm cả NO_SHOW đang bảo lưu)
+    // 3. sellableRooms (Số phòng còn được phép bán thêm = totalRooms - reservedOrCommittedRooms)
+    let totalRooms = 0;
+    let inHouseRooms = inHouseCount;
+    let reservedOrCommittedRooms = inHouseCount + activeNoShows.length;
+    let noShowCommittedRooms = activeNoShows.length;
+
+    try {
+      const now = new Date();
+      const roomRows = await this.dataSource.query(
+        `SELECT COALESCE(SUM(total_rooms), 0) AS totalRooms FROM rooms WHERE hotel_id = ?`,
+        [hotelId],
+      );
+      totalRooms = Number(roomRows?.[0]?.totalRooms ?? 0);
+
+      const occRows = await this.dataSource.query(
+        `
+        SELECT
+          COALESCE(SUM(CASE WHEN b.status = 'CHECKED_IN' THEN br.quantity ELSE 0 END), 0) AS inHouseRooms,
+          COALESCE(SUM(CASE WHEN b.status = 'NO_SHOW' THEN br.quantity ELSE 0 END), 0) AS noShowCommittedRooms,
+          COALESCE(SUM(CASE WHEN b.status IN ('PENDING', 'CONFIRMED', 'CHECKED_IN', 'NO_SHOW') THEN br.quantity ELSE 0 END), 0) AS reservedRooms
+        FROM bookings b
+        INNER JOIN booking_rooms br ON br.booking_id = b.id
+        WHERE b.hotel_id = ?
+          AND b.check_in_at <= ?
+          AND b.check_out_at > ?
+        `,
+        [hotelId, todayEnd, now],
+      );
+      if (occRows && occRows.length > 0) {
+        inHouseRooms = Number(occRows[0].inHouseRooms ?? inHouseCount);
+        noShowCommittedRooms = Number(occRows[0].noShowCommittedRooms ?? activeNoShows.length);
+        reservedOrCommittedRooms = Number(occRows[0].reservedRooms ?? inHouseRooms + noShowCommittedRooms);
+      }
+    } catch {
+      // Fallback sang counts cơ bản nếu môi trường test không hỗ trợ raw query
+    }
+
+    const sellableRooms = Math.max(0, totalRooms - reservedOrCommittedRooms);
+
     return {
       success: true,
       data: {
@@ -817,6 +1006,11 @@ export class BookingPresenceService {
           todayArrivalsCount: todayArrivals.length,
           activeNoShowsCount: activeNoShows.length,
           inHouseCount,
+          totalRooms,
+          inHouseRooms,
+          noShowCommittedRooms,
+          reservedOrCommittedRooms,
+          sellableRooms,
         },
       },
     };

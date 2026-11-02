@@ -276,6 +276,57 @@ export class StaffAvailabilityService {
               note: dto.reviewNote?.trim() || 'Duyệt chấp thuận đơn vắng mặt',
             }),
           );
+
+          // D1-07: Tự động phát hiện các booking / tác vụ mà nhân viên A đang phụ trách bị ảnh hưởng trong khoảng nghỉ
+          try {
+            if (typeof (manager as any).query === 'function') {
+              const affectedBookings = await (manager as any).query(
+                `
+                SELECT
+                  b.id AS id,
+                  b.booking_code AS bookingCode,
+                  b.contact_name AS contactName,
+                  b.contact_phone AS contactPhone,
+                  b.status AS status,
+                  b.check_in_at AS checkInAt,
+                  b.check_out_at AS checkOutAt
+                FROM bookings b
+                WHERE b.hotel_id = ?
+                  AND b.handled_by = ?
+                  AND b.status IN ('PENDING', 'CONFIRMED', 'NO_SHOW', 'CHECKED_IN')
+                  AND b.check_in_at < ?
+                  AND b.check_out_at > ?
+                ORDER BY b.check_in_at ASC
+                `,
+                [request.hotelId, request.staffUserId, request.endAt, request.startAt],
+              );
+
+              const affectedTasks = await (manager as any).query(
+                `
+                SELECT
+                  t.id AS id,
+                  t.booking_id AS bookingId,
+                  t.type AS type,
+                  t.status AS status,
+                  t.priority AS priority,
+                  t.title AS title,
+                  t.response_sla_due_at AS responseSlaDueAt,
+                  t.resolution_sla_due_at AS resolutionSlaDueAt
+                FROM guest_work_tasks t
+                WHERE t.hotel_id = ?
+                  AND t.assigned_staff_id = ?
+                  AND t.status IN ('CREATED', 'ASSIGNED', 'ACCEPTED', 'IN_PROGRESS')
+                ORDER BY t.created_at ASC
+                `,
+                [request.hotelId, request.staffUserId],
+              );
+
+              (request as any).affectedBookings = affectedBookings || [];
+              (request as any).affectedTasks = affectedTasks || [];
+            }
+          } catch {
+            // Không làm gián đoạn giao dịch duyệt đơn nếu truy vấn cảnh báo gặp lỗi
+          }
         }
       } else {
         // REJECT
@@ -541,5 +592,206 @@ export class StaffAvailabilityService {
       .getOne();
 
     return !overlappingBlock;
+  }
+
+  /**
+   * D1-07: Quét danh sách các booking và tác vụ của nhân viên A bị ảnh hưởng trong khoảng vắng mặt [startAt, endAt)
+   */
+  async getRequestImpact(actor: User, requestId: string) {
+    const request = await this.absenceRequestRepo.findOne({
+      where: { id: requestId },
+    });
+    if (!request) {
+      throw new NotFoundException(`Không tìm thấy đơn xin phép #${requestId}`);
+    }
+
+    if (actor.role !== 'ADMIN') {
+      const isManager = await this.isManagerAtHotel(String(actor.id), String(request.hotelId));
+      const isSelf = String(actor.id) === String(request.staffUserId);
+      if (!isManager && !isSelf) {
+        throw new ForbiddenException('Chỉ Quản lý khách sạn hoặc chính nhân viên mới được xem tác động của đơn.');
+      }
+    }
+
+    return this.getAbsenceImpact(
+      String(request.hotelId),
+      String(request.staffUserId),
+      new Date(request.startAt),
+      new Date(request.endAt),
+    );
+  }
+
+  async getAbsenceImpact(
+    hotelId: string,
+    staffUserId: string,
+    startAt: Date,
+    endAt: Date,
+  ): Promise<{ affectedBookings: any[]; affectedTasks: any[] }> {
+    let affectedBookings: any[] = [];
+    let affectedTasks: any[] = [];
+
+    try {
+      affectedBookings = await this.dataSource.query(
+        `
+        SELECT
+          b.id AS id,
+          b.booking_code AS bookingCode,
+          b.contact_name AS contactName,
+          b.contact_phone AS contactPhone,
+          b.status AS status,
+          b.check_in_at AS checkInAt,
+          b.check_out_at AS checkOutAt,
+          b.handled_by AS handledBy
+        FROM bookings b
+        WHERE b.hotel_id = ?
+          AND b.handled_by = ?
+          AND b.status IN ('PENDING', 'CONFIRMED', 'NO_SHOW', 'CHECKED_IN')
+          AND b.check_in_at < ?
+          AND b.check_out_at > ?
+        ORDER BY b.check_in_at ASC
+        `,
+        [hotelId, staffUserId, endAt, startAt],
+      );
+    } catch {
+      affectedBookings = [];
+    }
+
+    try {
+      affectedTasks = await this.dataSource.query(
+        `
+        SELECT
+          t.id AS id,
+          t.booking_id AS bookingId,
+          t.type AS type,
+          t.status AS status,
+          t.priority AS priority,
+          t.title AS title,
+          t.response_sla_due_at AS responseSlaDueAt,
+          t.resolution_sla_due_at AS resolutionSlaDueAt
+        FROM guest_work_tasks t
+        WHERE t.hotel_id = ?
+          AND t.assigned_staff_id = ?
+          AND t.status IN ('CREATED', 'ASSIGNED', 'ACCEPTED', 'IN_PROGRESS')
+        ORDER BY t.created_at ASC
+        `,
+        [hotelId, staffUserId],
+      );
+    } catch {
+      affectedTasks = [];
+    }
+
+    return { affectedBookings, affectedTasks };
+  }
+
+  /**
+   * D1-07 / C2: Quản lý xác nhận nhân sự vắng mặt khẩn cấp tạm thời (EMERGENCY_UNAVAILABLE) có thời hạn và lưu kiểm toán
+   */
+  async createEmergencyUnavailable(
+    actor: User,
+    dto: {
+      hotelId: string;
+      staffUserId: string;
+      startAt?: string;
+      endAt: string;
+      reason: string;
+    },
+  ) {
+    if (actor.role !== 'ADMIN') {
+      const isManager = await this.isManagerAtHotel(String(actor.id), String(dto.hotelId));
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền xác nhận vắng mặt khẩn cấp.',
+        );
+      }
+    }
+
+    const isStaff = await this.isStaffAtHotel(String(dto.staffUserId), String(dto.hotelId));
+    if (!isStaff) {
+      throw new BadRequestException('Nhân sự không thuộc danh sách ACTIVE tại khách sạn này.');
+    }
+
+    const startAt = dto.startAt ? new Date(dto.startAt) : new Date();
+    const endAt = new Date(dto.endAt);
+    if (isNaN(startAt.getTime()) || isNaN(endAt.getTime()) || startAt >= endAt) {
+      throw new BadRequestException('Khoảng thời gian vắng mặt khẩn cấp không hợp lệ.');
+    }
+
+    const durationHours = (endAt.getTime() - startAt.getTime()) / (1000 * 3600);
+    if (durationHours > 72) {
+      throw new BadRequestException(
+        'Xác nhận vắng mặt khẩn cấp tạm thời tối đa 72 giờ. Với kỳ nghỉ dài hơn vui lòng lập đơn hoặc chuyển giao hoàn toàn.',
+      );
+    }
+
+    if (!dto.reason || !dto.reason.trim()) {
+      throw new BadRequestException('Bắt buộc ghi rõ lý do xác nhận vắng mặt khẩn cấp để kiểm toán.');
+    }
+
+    const block = this.availabilityBlockRepo.create({
+      hotelId: String(dto.hotelId),
+      staffUserId: String(dto.staffUserId),
+      requestId: null,
+      blockType: AvailabilityBlockType.EMERGENCY_UNAVAILABLE,
+      startAt,
+      endAt,
+      reason: `[KHẨN CẤP - MANAGER OVERRIDE] ${dto.reason.trim()}`,
+      active: 1,
+      source: AvailabilityBlockSource.MANAGER_OVERRIDE,
+      createdBy: String(actor.id),
+    });
+
+    const savedBlock = await this.availabilityBlockRepo.save(block);
+    const impact = await this.getAbsenceImpact(
+      String(dto.hotelId),
+      String(dto.staffUserId),
+      startAt,
+      endAt,
+    );
+
+    return {
+      block: savedBlock,
+      ...impact,
+    };
+  }
+
+  async endAvailabilityBlockEarly(actor: User, blockId: string, note?: string) {
+    const block = await this.availabilityBlockRepo.findOne({ where: { id: blockId } });
+    if (!block) {
+      throw new NotFoundException(`Không tìm thấy khoảng vắng mặt #${blockId}`);
+    }
+
+    if (actor.role !== 'ADMIN') {
+      const isManager = await this.isManagerAtHotel(String(actor.id), String(block.hotelId));
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn hoặc Quản trị viên mới có quyền kết thúc khoảng vắng mặt.',
+        );
+      }
+    }
+
+    block.active = 0;
+    block.endAt = new Date();
+    if (note?.trim()) {
+      block.reason = `${block.reason || ''} | Kết thúc sớm: ${note.trim()}`;
+    }
+    return await this.availabilityBlockRepo.save(block);
+  }
+
+  async getActiveBlocksForHotel(actor: User, hotelId: string) {
+    if (actor.role !== 'ADMIN') {
+      const isStaff = await this.isStaffAtHotel(String(actor.id), String(hotelId));
+      if (!isStaff) {
+        throw new ForbiddenException('Bạn không thuộc khách sạn này.');
+      }
+    }
+
+    const now = new Date();
+    return await this.availabilityBlockRepo
+      .createQueryBuilder('b')
+      .where('b.hotel_id = :hotelId', { hotelId })
+      .andWhere('b.active = 1')
+      .andWhere('b.end_at > :now', { now })
+      .orderBy('b.start_at', 'ASC')
+      .getMany();
   }
 }

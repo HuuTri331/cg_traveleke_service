@@ -22,11 +22,12 @@ export class StaffKpiController {
   @Get('me')
   @Roles('ADMIN', 'EMPLOYEE')
   async getMyKpi(
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: string },
     @Query('hotelId') hotelId: string,
     @Query('period') period?: string,
   ) {
     const currentPeriod = period || new Date().toISOString().slice(0, 7);
+    await this.kpiService.validateStaffAccess(user, hotelId, user.id);
     return await this.kpiService.getStaffPeriodScore(hotelId, user.id, currentPeriod);
   }
 
@@ -34,9 +35,11 @@ export class StaffKpiController {
   @Roles('ADMIN', 'EMPLOYEE')
   async getHotelKpis(
     @Param('hotelId') hotelId: string,
+    @CurrentUser() user: { id: string; role: string },
     @Query('period') period?: string,
   ) {
     const currentPeriod = period || new Date().toISOString().slice(0, 7);
+    await this.kpiService.validateStaffAccess(user, hotelId);
     return await this.kpiService.getHotelPeriodScores(hotelId, currentPeriod);
   }
 
@@ -45,9 +48,11 @@ export class StaffKpiController {
   async getStaffKpi(
     @Param('hotelId') hotelId: string,
     @Param('staffId') staffId: string,
+    @CurrentUser() user: { id: string; role: string },
     @Query('period') period?: string,
   ) {
     const currentPeriod = period || new Date().toISOString().slice(0, 7);
+    await this.kpiService.validateStaffAccess(user, hotelId, staffId);
     return await this.kpiService.getStaffPeriodScore(hotelId, staffId, currentPeriod);
   }
 
@@ -56,12 +61,19 @@ export class StaffKpiController {
   async recalculate(
     @Param('period') period: string,
     @Query('hotelId') hotelId: string,
+    @CurrentUser() user: { id: string; role: string },
     @Body() dto: RecalculateKpiDto,
   ) {
-    if (dto.staffUserId) {
-      return await this.kpiService.calculatePeriodScore(hotelId, dto.staffUserId, period);
+    const targetPeriod = period || dto?.periodKey || new Date().toISOString().slice(0, 7);
+    if (dto?.staffUserId) {
+      await this.kpiService.validateStaffAccess(user, hotelId, dto.staffUserId);
+      return await this.kpiService.calculatePeriodScore(hotelId, dto.staffUserId, targetPeriod);
     }
-    return { message: 'Đã nhận yêu cầu tính toán lại' };
+    const res = await this.kpiService.recalculateHotelPeriodScores(hotelId, targetPeriod, user);
+    return {
+      message: `Đã hoàn tất tính toán lại KPI cho ${res.recalculatedCount} nhân sự kỳ ${targetPeriod}`,
+      ...res,
+    };
   }
 
   @Post('periods/:period/approve')

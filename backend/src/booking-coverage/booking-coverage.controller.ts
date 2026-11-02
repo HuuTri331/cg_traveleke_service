@@ -65,14 +65,20 @@ export class BookingCoverageController {
 
   @Get(':bookingId/timeline')
   @Roles('ADMIN', 'EMPLOYEE', 'CUSTOMER')
-  async getTimeline(@Param('bookingId') bookingId: string) {
-    return await this.coverageService.getCoverageTimeline(bookingId);
+  async getTimeline(
+    @Param('bookingId') bookingId: string,
+    @CurrentUser() actor: { id: string; role: string },
+  ) {
+    return await this.coverageService.getCoverageTimeline(bookingId, actor);
   }
 
   @Get('hotel/:hotelId/active')
   @Roles('ADMIN', 'EMPLOYEE')
-  async getActiveGrants(@Param('hotelId') hotelId: string) {
-    return await this.coverageService.getActiveGrantsForHotel(hotelId);
+  async getActiveGrants(
+    @Param('hotelId') hotelId: string,
+    @CurrentUser() actor: { id: string; role: string },
+  ) {
+    return await this.coverageService.getActiveGrantsForHotel(hotelId, actor);
   }
 }
 

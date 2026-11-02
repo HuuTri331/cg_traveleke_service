@@ -16,6 +16,9 @@ export interface RoomAvailabilityResult {
   bookedRooms: number;
   remainingRooms: number;
   available: boolean;
+  inHouseRooms?: number;
+  noShowCommittedRooms?: number;
+  sellableRooms?: number;
 }
 
 @Injectable()
@@ -78,24 +81,14 @@ export class RoomAvailabilityService {
     }
 
     // ==========================================
-    // 3. TÍNH SỐ PHÒNG ĐÃ ĐƯỢC GIỮ
+    // 3. TÍNH SỐ PHÒNG ĐÃ ĐƯỢC GIỮ (D2-03: Bắt buộc tính cả NO_SHOW và đối chiếu booking_holds COMMITTED/HELD)
     // ==========================================
     //
-    // Chỉ tính:
-    // PENDING
-    // CONFIRMED
-    // CHECKED_IN
+    // Tính:
+    // PENDING, CONFIRMED, CHECKED_IN, NO_SHOW (vì NO_SHOW vẫn giữ suất phòng đã thanh toán trong kỳ [checkInAt, checkOutAt))
     //
     // Không tính:
-    // REJECTED
-    // CANCELLED
-    // COMPLETED
-    //
-    // Điều kiện overlap:
-    //
-    // booking.check_in_at < checkOut
-    // AND
-    // booking.check_out_at > checkIn
+    // REJECTED, CANCELLED, COMPLETED, CLOSED_NO_SHOW, PAYMENT_EXPIRED
     // ==========================================
 
     const raw = await this.bookingRoomRepository
@@ -108,6 +101,14 @@ export class RoomAvailabilityService {
       .select(
         'COALESCE(SUM(bookingRoom.quantity), 0)',
         'bookedRooms',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN booking.status = 'CHECKED_IN' THEN bookingRoom.quantity ELSE 0 END), 0)`,
+        'inHouseRooms',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN booking.status = 'NO_SHOW' THEN bookingRoom.quantity ELSE 0 END), 0)`,
+        'noShowRooms',
       )
       .where(
         'bookingRoom.room_id = :roomId',
@@ -122,6 +123,7 @@ export class RoomAvailabilityService {
             BookingStatus.PENDING,
             BookingStatus.CONFIRMED,
             BookingStatus.CHECKED_IN,
+            BookingStatus.NO_SHOW,
           ],
         },
       )
@@ -139,7 +141,28 @@ export class RoomAvailabilityService {
       )
       .getRawOne<{
         bookedRooms: string | number | null;
+        inHouseRooms?: string | number | null;
+        noShowRooms?: string | number | null;
       }>();
+
+    // Đối chiếu thêm với nguồn canonical booking_holds (COMMITTED + HELD còn hạn) nếu có
+    let holdsOccupied = 0;
+    try {
+      const holdRows = await this.bookingRoomRepository.manager.query(
+        `
+        SELECT COALESCE(SUM(quantity), 0) AS occupied
+        FROM booking_holds
+        WHERE room_id = ?
+          AND check_in_at < ?
+          AND check_out_at > ?
+          AND (status = 'COMMITTED' OR (status = 'HELD' AND hold_expires_at > NOW()))
+        `,
+        [roomId, checkOut, checkIn],
+      );
+      holdsOccupied = Number(holdRows?.[0]?.occupied ?? 0);
+    } catch {
+      holdsOccupied = 0;
+    }
 
     // ==========================================
     // 4. CHUYỂN DỮ LIỆU VỀ NUMBER
@@ -147,12 +170,13 @@ export class RoomAvailabilityService {
 
     const totalRooms = Number(room.totalRooms);
 
-    const bookedRooms = Number(
-      raw?.bookedRooms ?? 0,
-    );
+    const statusBookedRooms = Number(raw?.bookedRooms ?? 0);
+    const bookedRooms = Math.max(statusBookedRooms, holdsOccupied);
+    const inHouseRooms = Number(raw?.inHouseRooms ?? 0);
+    const noShowCommittedRooms = Number(raw?.noShowRooms ?? 0);
 
     // ==========================================
-    // 5. TÍNH SỐ PHÒNG CÒN LẠI
+    // 5. TÍNH SỐ PHÒNG CÒN LẠI ĐƯỢC PHÉP BÁN (SELLABLE INVENTORY)
     // ==========================================
 
     const remainingRooms = Math.max(
@@ -166,6 +190,9 @@ export class RoomAvailabilityService {
       bookedRooms,
       remainingRooms,
       available: remainingRooms > 0,
+      inHouseRooms,
+      noShowCommittedRooms,
+      sellableRooms: remainingRooms,
     };
   }
 

@@ -87,8 +87,8 @@ export class DecideKpiAdjustmentDto {
 
 export class RecalculateKpiDto {
   @IsString()
-  @IsNotEmpty()
-  periodKey!: string;
+  @IsOptional()
+  periodKey?: string;
 
   @IsString()
   @IsOptional()

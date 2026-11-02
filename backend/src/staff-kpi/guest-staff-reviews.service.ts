@@ -55,14 +55,37 @@ export class GuestStaffReviewsService {
 
     const targets: Map<string, EligibleReviewTarget> = new Map();
 
-    // 1. Giai đoạn PRE_ARRIVAL
-    if (booking.handledBy) {
+    // 1. Giai đoạn PRE_ARRIVAL (D5-05: Ưu tiên nhân sự thực tế đã tương tác/chuẩn bị trước nhận phòng từ workEvents, bảo lưu cả khi đơn đã chuyển giao sang B)
+    const allWorkEvents = await this.workEventRepo.find({
+      where: { bookingId },
+    });
+    for (const evt of allWorkEvents) {
+      if (
+        evt.actorStaffId &&
+        (evt.evidenceType === 'MESSAGE' || evt.eventType === WorkEventType.TASK_STARTED)
+      ) {
+        const key = `${evt.actorStaffId}_${ReviewStage.PRE_ARRIVAL}`;
+        targets.set(key, {
+          staffUserId: evt.actorStaffId,
+          stage: ReviewStage.PRE_ARRIVAL,
+          alreadyReviewed: false,
+        });
+      }
+    }
+    if (
+      booking.handledBy &&
+      booking.status !== 'CANCELLED' &&
+      booking.status !== 'REJECTED' &&
+      booking.status !== 'PAYMENT_PENDING'
+    ) {
       const key = `${booking.handledBy}_${ReviewStage.PRE_ARRIVAL}`;
-      targets.set(key, {
-        staffUserId: booking.handledBy,
-        stage: ReviewStage.PRE_ARRIVAL,
-        alreadyReviewed: false,
-      });
+      if (!targets.has(key)) {
+        targets.set(key, {
+          staffUserId: booking.handledBy,
+          stage: ReviewStage.PRE_ARRIVAL,
+          alreadyReviewed: false,
+        });
+      }
     }
 
     // 2. Giai đoạn CHECK_IN
@@ -79,12 +102,9 @@ export class GuestStaffReviewsService {
     }
 
     // 3. Giai đoạn IN_STAY (các nhân sự đã xử lý task dịch vụ)
-    const serviceEvents = await this.workEventRepo.find({
-      where: {
-        bookingId,
-        eventType: WorkEventType.TASK_COMPLETED,
-      },
-    });
+    const serviceEvents = allWorkEvents.filter(
+      (evt) => evt.eventType === WorkEventType.TASK_COMPLETED,
+    );
     for (const evt of serviceEvents) {
       if (evt.actorStaffId) {
         const key = `${evt.actorStaffId}_${ReviewStage.IN_STAY}`;

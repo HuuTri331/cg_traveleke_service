@@ -9,6 +9,8 @@ export interface StaffCandidate {
   userActive: boolean;
   hotelStaffActive: boolean;
   isAbsent: boolean; // Có availability block nào đang hiệu lực tại thời điểm xét duyệt không
+  isBusyNow?: boolean; // Đang trực tiếp thực hiện tác vụ độc quyền IN_PROGRESS tại chính thời điểm T
+  hasVerifiedSkill?: boolean; // Đáp ứng yêu cầu kỹ năng xác minh (nếu khách sạn cấu hình)
   skillLevel: number; // 1 - 5
   yearsExp: number;
   completedCount: number;
@@ -72,9 +74,12 @@ export function checkCompetencyLevel(
   level: 'M1' | 'M2' | 'M3' | 'M4',
   serviceTier: RoomServiceTier,
 ): boolean {
-  const { skillLevel, yearsExp, completedCount } = candidate;
+  const { skillLevel, yearsExp, completedCount, hasVerifiedSkill } = candidate;
 
   if (serviceTier === RoomServiceTier.VIP) {
+    if (hasVerifiedSkill === false) {
+      return false;
+    }
     switch (level) {
       case 'M1':
         return skillLevel >= 4 && (yearsExp >= 4 || completedCount >= 40);
@@ -88,33 +93,51 @@ export function checkCompetencyLevel(
     }
   }
 
-  // STANDARD & ECONOMY
+  // STANDARD & ECONOMY: Phân bậc thực chất M1 -> M4 để chọn đúng người theo từng tầng
   switch (level) {
     case 'M1':
+      return skillLevel >= 4 || (skillLevel >= 3 && (yearsExp >= 2 || completedCount >= 20));
     case 'M2':
+      return skillLevel >= 3 || (skillLevel >= 2 && (yearsExp >= 1 || completedCount >= 10));
     case 'M3':
-      return skillLevel >= 2 || yearsExp >= 0.5;
+      return skillLevel >= 2 || yearsExp >= 0.5 || completedCount >= 5;
     case 'M4':
-      // Mọi lễ tân hợp lệ
+      // Mọi lễ tân hợp lệ đạt ngưỡng cơ bản
       return true;
   }
 }
 
 /**
- * Xếp hạng tất định (deterministic) giữa các ứng viên trong cùng một nhóm:
- * 1. Tải công việc ít hơn xếp trước (activeLoad ASC)
- * 2. Lần phân công gần nhất xa hơn xếp trước (lastAssignedAt ASC, null xếp đầu)
- * 3. Kỹ năng & kinh nghiệm cao hơn xếp trước (skillLevel DESC, yearsExp DESC)
+ * Xếp hạng tất định (deterministic) giữa các ứng viên trong cùng một nhóm (FRESH hoặc SOFT_RECENT) & cùng tầng (M1..M4):
+ * 1. Kỹ năng & kinh nghiệm đã xác minh cao hơn xếp trước (skillLevel DESC, yearsExp DESC, completedCount DESC)
+ *    để đảm bảo ở booking đầu tiên hoặc khi cùng nhóm/tầng, người giỏi nhất được ưu tiên có giải thích
+ * 2. Tải công việc ít hơn xếp trước (activeLoad ASC) để giảm dồn việc
+ * 3. Lần phân công gần nhất xa hơn xếp trước (lastAssignedAt ASC, null xếp đầu)
  * 4. Mã nhân viên (staffUserId ASC) để đảm bảo kết quả luôn duy nhất và ổn định cho test
  */
 export function rankCandidates(candidates: StaffCandidate[]): StaffCandidate[] {
   return [...candidates].sort((a, b) => {
-    // 1. activeLoad ASC
+    // 1. skillLevel DESC
+    if (a.skillLevel !== b.skillLevel) {
+      return b.skillLevel - a.skillLevel;
+    }
+
+    // 2. yearsExp DESC
+    if (a.yearsExp !== b.yearsExp) {
+      return b.yearsExp - a.yearsExp;
+    }
+
+    // 3. completedCount DESC
+    if (a.completedCount !== b.completedCount) {
+      return b.completedCount - a.completedCount;
+    }
+
+    // 4. activeLoad ASC
     if (a.activeLoad !== b.activeLoad) {
       return a.activeLoad - b.activeLoad;
     }
 
-    // 2. lastAssignedAt ASC (null xếp trước)
+    // 5. lastAssignedAt ASC (null xếp trước)
     if (!a.lastAssignedAt && b.lastAssignedAt) return -1;
     if (a.lastAssignedAt && !b.lastAssignedAt) return 1;
     if (a.lastAssignedAt && b.lastAssignedAt) {
@@ -122,17 +145,7 @@ export function rankCandidates(candidates: StaffCandidate[]): StaffCandidate[] {
       if (diffTime !== 0) return diffTime;
     }
 
-    // 3. skillLevel DESC
-    if (a.skillLevel !== b.skillLevel) {
-      return b.skillLevel - a.skillLevel;
-    }
-
-    // 4. yearsExp DESC
-    if (a.yearsExp !== b.yearsExp) {
-      return b.yearsExp - a.yearsExp;
-    }
-
-    // 5. staffUserId ASC (Deterministic tie-breaker)
+    // 6. staffUserId ASC (Deterministic tie-breaker)
     return a.staffUserId.localeCompare(b.staffUserId, undefined, {
       numeric: true,
     });
@@ -149,11 +162,13 @@ export function pickReceptionist(ctx: DecisionContext): AssignmentDecision {
   // - Tài khoản user ACTIVE, hotel_staff ACTIVE
   // - Đúng vai trò lễ tân (EMPLOYEE)
   // - Không trong khoảng nghỉ/đi muộn đã duyệt (isAbsent = false)
+  // - Không đang bận xử lý tác vụ độc quyền IN_PROGRESS tại thời điểm T (isBusyNow = false)
   // - Không nằm trong cửa sổ loại trừ cứng (< 40 phút)
   const eligibleCandidates = candidates.filter((c) => {
     if (!c.userActive || !c.hotelStaffActive) return false;
     if (c.staffRole === 'MANAGER') return false; // Quản lý xét ở nhánh fallback
     if (c.isAbsent) return false;
+    if (c.isBusyNow) return false;
 
     const freshness = evaluateFreshnessBucket(now, c.lastAssignedAt);
     if (freshness === FreshnessBucket.HARD_COOLDOWN) {

@@ -342,22 +342,25 @@ export class ServicesService {
     });
     const saved = await this.serviceRequestRepo.save(req);
 
-    // Đồng bộ tạo nhiệm vụ GuestWorkTask theo dõi tiến độ phục vụ
-    try {
-      if (this.guestWorkService) {
-        this.guestWorkService.createTaskFromServiceRequest(
-          {
-            id: String(saved.id),
-            hotelId: String(booking.hotelId),
-            bookingId: String(saved.bookingId),
-            serviceName: saved.serviceName,
-            note: saved.note ?? undefined,
-          },
-          user ? { id: String(user.id), role: user.role } : undefined,
-        ).catch(() => {});
+    // D4-03: Đồng bộ tạo nhiệm vụ GuestWorkTask có await và retry an toàn, chống thất lạc tác vụ nhưng không rollback yêu cầu của khách
+    if (this.guestWorkService) {
+      const taskPayload = {
+        id: String(saved.id),
+        hotelId: String(booking.hotelId),
+        bookingId: String(saved.bookingId),
+        serviceName: saved.serviceName,
+        note: saved.note ?? undefined,
+      };
+      const taskActor = user ? { id: String(user.id), role: user.role } : undefined;
+      try {
+        await this.guestWorkService.createTaskFromServiceRequest(taskPayload, taskActor);
+      } catch {
+        try {
+          await this.guestWorkService.createTaskFromServiceRequest(taskPayload, taskActor);
+        } catch {
+          // Đã có unique (source_table, source_id) để đối soát bù nếu DB tạm thời gián đoạn
+        }
       }
-    } catch {
-      // Fail-safe
     }
 
     // Phát realtime notification tới Lễ tân

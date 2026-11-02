@@ -134,6 +134,20 @@ describe('KpiCalculationService (Đợt 5 - Staff KPI & Weight Rebalancing)', ()
       const result = await service.calculatePeriodScore('100', '1', '2026-10');
       expect(result.sampleCount).toBe(1);
     });
+
+    it('3. K01 / D5-01: Khi nhân viên không có bất kỳ task, sự kiện, đánh giá sao hay rubric quản lý nào (sampleCount = 0), điểm tổng = 0 (N/A / Chưa đủ dữ liệu), tuyệt đối KHÔNG trả 100/100 giả', async () => {
+      mockPeriodScoreRepo.findOne.mockResolvedValue(null);
+      mockTaskRepo.find.mockResolvedValue([]);
+      mockWorkEventRepo.find.mockResolvedValue([]);
+      mockPresenceEventRepo.find.mockResolvedValue([]);
+      mockReviewRepo.find.mockResolvedValue([]);
+      mockAdjustmentRepo.find.mockResolvedValue([]);
+
+      const result = await service.calculatePeriodScore('100', '1', '2026-10');
+      expect(result.sampleCount).toBe(0);
+      expect(result.totalScore).toBe(0);
+      expect(result.coverageRatio).toBe(0);
+    });
   });
 
   describe('requestAdjustment (Điều chỉnh KPI bởi Quản lý)', () => {

@@ -201,6 +201,22 @@ export class GuestWorkService {
       throw new ForbiddenException('Chỉ nhân viên của khách sạn mới có quyền tiếp nhận nhiệm vụ');
     }
 
+    // D4-01: Chống nhận việc chéo người: nếu task đã có assignedStaffId khác người gọi,
+    // phải là Manager đúng hotel hoặc có quyền coverage hợp lệ tại thời điểm nhận
+    const isAssignedToOther = task.assignedStaffId && String(task.assignedStaffId) !== String(actor.id);
+    if (isAssignedToOther && actor.role !== 'ADMIN') {
+      const isManager = await this.staffAvailabilityService.isManagerAtHotel(actor.id, task.hotelId);
+      let isCovering = false;
+      if (this.coverageService) {
+        isCovering = await this.coverageService.isStaffCoveringTask(task.bookingId, actor.id, task.type);
+      }
+      if (!isManager && !isCovering) {
+        throw new ForbiddenException(
+          `Nhiệm vụ này đã được phân công cho nhân sự #${task.assignedStaffId}. Bạn chưa có ủy quyền hỗ trợ để tiếp nhận việc này.`,
+        );
+      }
+    }
+
     const now = new Date();
     return await this.dataSource.transaction(async (em) => {
       const fromStatus = task.status;
@@ -235,6 +251,28 @@ export class GuestWorkService {
   ): Promise<GuestWorkTask> {
     const task = await this.taskRepo.findOne({ where: { id: taskId } });
     if (!task) throw new NotFoundException(`Không tìm thấy nhiệm vụ #${taskId}`);
+
+    const isStaff =
+      typeof this.staffAvailabilityService.isStaffAtHotel === 'function'
+        ? await this.staffAvailabilityService.isStaffAtHotel(actor.id, task.hotelId)
+        : true;
+    if (!isStaff && actor.role !== 'ADMIN') {
+      throw new ForbiddenException('Chỉ nhân viên thuộc khách sạn mới có quyền bắt đầu nhiệm vụ');
+    }
+
+    // D4-01: Kiểm tra quyền bắt đầu tác vụ: người được gán, manager hoặc coverage
+    const isAssigned = String(task.assignedStaffId) === String(actor.id);
+    const isManager =
+      typeof this.staffAvailabilityService.isManagerAtHotel === 'function'
+        ? await this.staffAvailabilityService.isManagerAtHotel(actor.id, task.hotelId)
+        : false;
+    let isCovering = false;
+    if (this.coverageService) {
+      isCovering = await this.coverageService.isStaffCoveringTask(task.bookingId, actor.id, task.type);
+    }
+    if (!isAssigned && !isManager && !isCovering && actor.role !== 'ADMIN') {
+      throw new ForbiddenException('Bạn không có quyền bắt đầu nhiệm vụ này');
+    }
 
     const now = new Date();
     const fromStatus = task.status;
@@ -342,6 +380,21 @@ export class GuestWorkService {
       );
     }
 
+    // D4-02: Xác thực quyền nghiệm thu: Phải là Quản lý đúng khách sạn (hoặc khách đúng booking trong trường hợp khách xác nhận)
+    if (actor.role !== 'ADMIN') {
+      const isManager = await this.staffAvailabilityService.isManagerAtHotel(actor.id, task.hotelId);
+      if (!isManager) {
+        // Kiểm tra xem có phải là khách hàng của booking không
+        const booking = await this.bookingRepo.findOne({ where: { id: task.bookingId } });
+        const isCustomerOwner = booking && String(booking.userId) === String(actor.id);
+        if (!isCustomerOwner) {
+          throw new ForbiddenException(
+            'Chỉ Quản lý khách sạn (MANAGER) hoặc khách hàng của đơn đặt phòng mới có quyền nghiệm thu nhiệm vụ này',
+          );
+        }
+      }
+    }
+
     const now = new Date();
     const fromStatus = task.status;
     task.status = dto.decision === 'VERIFIED' ? WorkTaskStatus.VERIFIED : WorkTaskStatus.FAILED;
@@ -367,15 +420,21 @@ export class GuestWorkService {
     return updated;
   }
 
-  async recordFirstResponse(bookingId: string, staffUserId: string, now: Date = new Date()): Promise<void> {
-    const pendingTasks = await this.taskRepo.find({
-      where: {
-        bookingId,
-        firstResponseAt: undefined as any,
-      },
-    });
+  async recordFirstResponse(
+    bookingId: string,
+    staffUserId: string,
+    now: Date = new Date(),
+    taskId?: string,
+    clientMsgId?: string,
+  ): Promise<void> {
+    const where: any = { bookingId };
+    if (taskId) {
+      where.id = taskId;
+    }
 
-    for (const task of pendingTasks) {
+    const tasks = await this.taskRepo.find({ where });
+
+    for (const task of tasks) {
       if (!task.firstResponseAt) {
         task.firstResponseAt = now;
         await this.taskRepo.save(task);
@@ -391,11 +450,91 @@ export class GuestWorkService {
           toStatus: task.status,
           occurredAt: now,
           evidenceType: WorkEvidenceType.MESSAGE,
-          evidenceRef: 'Lễ tân đã gửi tin nhắn phản hồi đầu tiên cho khách',
+          evidenceRef: clientMsgId
+            ? `Tin nhắn phản hồi [msgId:${clientMsgId}] cho ticket #${task.id}`
+            : `Lễ tân #${staffUserId} đã gửi tin nhắn phản hồi đầu tiên cho khách`,
         });
         await this.eventRepo.save(event);
       }
     }
+  }
+
+  /**
+   * B5 / D4 / Section B5: Ghi nhận nhật ký công việc ngoài đời thực (gọi điện thoại, gặp tại quầy...)
+   * Lưu rõ claimedOccurredAt (thời điểm tự khai) và recordedAt (thời điểm máy chủ ghi nhận),
+   * không mạo danh là dữ liệu tự động của máy chủ (AUTO_VERIFIED).
+   */
+  async createOfflineWorkLog(
+    actor: { id: string; role: string },
+    dto: {
+      bookingId: string;
+      type?: WorkTaskType;
+      channel: 'PHONE' | 'FRONT_DESK' | 'OFFLINE_OTHER';
+      claimedOccurredAt: string;
+      summary: string;
+      evidenceRef?: string;
+      taskId?: string;
+    },
+  ): Promise<GuestWorkTask> {
+    const booking = await this.bookingRepo.findOne({ where: { id: dto.bookingId } });
+    if (!booking) {
+      throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${dto.bookingId}`);
+    }
+
+    if (actor.role !== 'ADMIN') {
+      const isStaff = await this.staffAvailabilityService.isStaffAtHotel(actor.id, booking.hotelId);
+      if (!isStaff) {
+        throw new ForbiddenException('Bạn không thuộc khách sạn của đơn đặt phòng này.');
+      }
+    }
+
+    const now = new Date();
+    const claimedTime = new Date(dto.claimedOccurredAt);
+    if (isNaN(claimedTime.getTime())) {
+      throw new BadRequestException('Thời gian sự kiện ngoài đời khai báo không hợp lệ.');
+    }
+
+    let targetTask: GuestWorkTask | null = null;
+    if (dto.taskId) {
+      targetTask = await this.taskRepo.findOne({ where: { id: dto.taskId, bookingId: dto.bookingId } });
+    }
+
+    if (!targetTask) {
+      targetTask = this.taskRepo.create({
+        hotelId: booking.hotelId,
+        bookingId: booking.id,
+        type: dto.type || WorkTaskType.SERVICE_REQUEST,
+        assignedStaffId: actor.id,
+        ownerAtCreate: booking.handledBy || null,
+        status: WorkTaskStatus.COMPLETED,
+        priority: WorkTaskPriority.NORMAL,
+        title: `[Nhật ký ${dto.channel}] ${dto.summary.slice(0, 80)}`,
+        description: dto.summary,
+        completedAt: now,
+        version: 1,
+      });
+      targetTask = await this.taskRepo.save(targetTask);
+    }
+
+    const isManager = await this.staffAvailabilityService.isManagerAtHotel(actor.id, booking.hotelId);
+
+    const event = this.eventRepo.create({
+      taskId: targetTask.id,
+      bookingId: booking.id,
+      hotelId: booking.hotelId,
+      actorType: 'USER',
+      actorStaffId: actor.id,
+      eventType: WorkEventType.TASK_COMPLETED,
+      fromStatus: targetTask.status,
+      toStatus: targetTask.status,
+      occurredAt: claimedTime,
+      recordedAt: now,
+      evidenceType: isManager ? WorkEvidenceType.DOCUMENT : WorkEvidenceType.SELF_REPORTED,
+      evidenceRef: `[${dto.channel}] Khai báo diễn ra lúc ${claimedTime.toLocaleString('vi-VN')} (Server ghi nhận lúc ${now.toLocaleString('vi-VN')}). Chứng cứ: ${dto.evidenceRef || 'Nhật ký đối soát quầy'} | Trạng thái: ${isManager ? 'MANUAL_VERIFIED' : 'SELF_REPORTED'}`,
+    });
+    await this.eventRepo.save(event);
+
+    return targetTask;
   }
 
   async getTasksForStaff(staffId: string, status?: WorkTaskStatus): Promise<GuestWorkTask[]> {
@@ -407,16 +546,44 @@ export class GuestWorkService {
     });
   }
 
-  async getTasksForBooking(bookingId: string): Promise<GuestWorkTask[]> {
+  async getTasksForBooking(
+    bookingId: string,
+    actor?: { id: string; role: string },
+  ): Promise<GuestWorkTask[]> {
+    if (actor && actor.role !== 'ADMIN') {
+      const booking = await this.bookingRepo.findOne({ where: { id: bookingId } });
+      if (!booking) {
+        throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
+      }
+      if (actor.role === 'CUSTOMER') {
+        if (String(booking.userId) !== String(actor.id)) {
+          throw new ForbiddenException('Bạn không có quyền xem nhiệm vụ của đơn đặt phòng này');
+        }
+      } else {
+        const isStaff = await this.staffAvailabilityService.isStaffAtHotel(actor.id, booking.hotelId);
+        if (!isStaff) {
+          throw new ForbiddenException('Bạn không thuộc khách sạn của đơn đặt phòng này');
+        }
+      }
+    }
     return await this.taskRepo.find({
       where: { bookingId },
       order: { createdAt: 'ASC' },
     });
   }
 
-  async getTaskTimeline(taskId: string): Promise<{ task: GuestWorkTask; events: GuestWorkEvent[] }> {
+  async getTaskTimeline(
+    taskId: string,
+    actor?: { id: string; role: string },
+  ): Promise<{ task: GuestWorkTask; events: GuestWorkEvent[] }> {
     const task = await this.taskRepo.findOne({ where: { id: taskId } });
     if (!task) throw new NotFoundException(`Không tìm thấy nhiệm vụ #${taskId}`);
+    if (actor && actor.role !== 'ADMIN') {
+      const isStaff = await this.staffAvailabilityService.isStaffAtHotel(actor.id, task.hotelId);
+      if (!isStaff) {
+        throw new ForbiddenException('Bạn không thuộc khách sạn của nhiệm vụ này');
+      }
+    }
     const events = await this.eventRepo.find({
       where: { taskId },
       order: { occurredAt: 'ASC' },

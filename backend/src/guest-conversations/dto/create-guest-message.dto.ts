@@ -8,5 +8,9 @@ export class CreateGuestMessageDto {
   @IsString()
   @IsOptional()
   clientMsgId?: string;
+
+  @IsString()
+  @IsOptional()
+  taskId?: string;
 }
 

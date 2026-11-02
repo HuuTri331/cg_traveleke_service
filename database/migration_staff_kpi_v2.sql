@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS `staff_kpi_period_scores` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE INDEX `ux_kpi_period_staff_calc` (`hotel_id`, `staff_user_id`, `period_key`, `calculation_version`),
-  INDEX `ix_kpi_hotel_period` (`hotel_id`, `periodKey`)
+  INDEX `ix_kpi_hotel_period` (`hotel_id`, `period_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `staff_kpi_metric_scores` (

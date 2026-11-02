@@ -12,7 +12,12 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { GuestWorkService } from './guest-work.service';
-import { CreateWorkTaskDto, CompleteTaskDto, VerifyTaskDto } from './dto/work-task.dto';
+import {
+  CreateWorkTaskDto,
+  CompleteTaskDto,
+  VerifyTaskDto,
+  CreateOfflineWorkLogDto,
+} from './dto/work-task.dto';
 import { WorkTaskStatus } from './entities/guest-work-task.entity';
 
 @Controller('guest-work')
@@ -31,14 +36,29 @@ export class GuestWorkController {
 
   @Get('booking/:bookingId')
   @Roles('ADMIN', 'EMPLOYEE', 'CUSTOMER')
-  async getTasksForBooking(@Param('bookingId') bookingId: string) {
-    return await this.guestWorkService.getTasksForBooking(bookingId);
+  async getTasksForBooking(
+    @Param('bookingId') bookingId: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    return await this.guestWorkService.getTasksForBooking(bookingId, user);
   }
 
   @Get(':taskId/timeline')
   @Roles('ADMIN', 'EMPLOYEE')
-  async getTaskTimeline(@Param('taskId') taskId: string) {
-    return await this.guestWorkService.getTaskTimeline(taskId);
+  async getTaskTimeline(
+    @Param('taskId') taskId: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    return await this.guestWorkService.getTaskTimeline(taskId, user);
+  }
+
+  @Post('offline-log')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async createOfflineLog(
+    @Body() dto: CreateOfflineWorkLogDto,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    return await this.guestWorkService.createOfflineWorkLog(user, dto);
   }
 
   @Post()

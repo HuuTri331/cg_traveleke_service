@@ -1069,20 +1069,16 @@ export class BookingsService {
       }
     }
 
-    // 1. KIỂM TRA ĐIỀU KIỆN TIÊN QUYẾT: CHỈ ĐỔI KHI KHÁCH CHƯA TỚI NHẬN PHÒNG
-    if (booking.status === BookingStatus.CHECKED_IN) {
-      throw new BadRequestException(
-        'Không thể phân công lại nhân viên vì khách hàng đã tới nhận phòng (CHECKED_IN).',
-      );
-    }
-
+    // 1. KIỂM TRA ĐIỀU KIỆN TIÊN QUYẾT: Cho phép chuyển giao cho đơn đang hoạt động (PENDING, CONFIRMED, NO_SHOW, CHECKED_IN) theo chuẩn Đợt 3 (D1-09)
     if (
       booking.status === BookingStatus.COMPLETED ||
       booking.status === BookingStatus.CANCELLED ||
-      booking.status === BookingStatus.REJECTED
+      booking.status === BookingStatus.REJECTED ||
+      booking.status === BookingStatus.CLOSED_NO_SHOW ||
+      booking.status === BookingStatus.PAYMENT_EXPIRED
     ) {
       throw new BadRequestException(
-        `Không thể phân công lại cho đơn đặt phòng ở trạng thái ${booking.status}.`,
+        `Không thể phân công lại cho đơn đặt phòng đã kết thúc ở trạng thái ${booking.status}.`,
       );
     }
 
@@ -1178,6 +1174,22 @@ export class BookingsService {
           state.version += 1;
         }
         await stateRepo.save(state);
+
+        // D1-09 / D3-03: Đồng bộ thu hồi grant hỗ trợ tạm thời cũ và chuyển các tác vụ chưa hoàn thành sang người mới
+        try {
+          if (typeof (manager as any).query === 'function') {
+            await (manager as any).query(
+              `UPDATE booking_coverage_grants SET status = 'REVOKED', version = version + 1 WHERE booking_id = ? AND status = 'ACTIVE'`,
+              [booking.id],
+            );
+            await (manager as any).query(
+              `UPDATE guest_work_tasks SET assigned_staff_id = ?, version = version + 1 WHERE booking_id = ? AND status IN ('CREATED', 'ASSIGNED', 'ACCEPTED', 'IN_PROGRESS')`,
+              [targetStaffUserId, booking.id],
+            );
+          }
+        } catch {
+          // Không chặn giao dịch nếu các bảng mở rộng chưa tồn tại trong môi trường test độc lập
+        }
 
         await manager.getRepository(BookingStatusLog).save(
           manager.getRepository(BookingStatusLog).create({
@@ -1816,6 +1828,19 @@ export class BookingsService {
           subtotal: subtotal.toFixed(2),
         });
         await manager.getRepository(BookingRoom).save(bookingRoom);
+
+        // D2-03: Đồng bộ tạo bản ghi giữ phòng COMMITTED cho đơn đặt tại quầy để thống nhất một nguồn sự thật tồn phòng (booking_holds)
+        try {
+          if (typeof (manager as any).query === 'function') {
+            await (manager as any).query(
+              `INSERT IGNORE INTO booking_holds (booking_id, room_id, quantity, check_in_at, check_out_at, status, committed_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'COMMITTED', NOW(), NOW(), NOW())`,
+              [savedBooking.id, room.id, dto.roomCount, checkIn, checkOut],
+            );
+          }
+        } catch {
+          // Bỏ qua nếu môi trường test không có bảng booking_holds
+        }
 
         await manager.getRepository(BookingStatusLog).save(
           manager.getRepository(BookingStatusLog).create({

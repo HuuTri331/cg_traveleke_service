@@ -94,11 +94,7 @@ export class PresenceSchedulerService {
 
     for (const booking of overdueBookings) {
       try {
-        await this.presenceService.markNoShowIfEligible(
-          booking.id,
-          'Hệ thống tự động ghi nhận No-Show do kỳ lưu trú đã kết thúc mà khách chưa nhận phòng',
-        );
-        await this.presenceService.closeExpiredNoShow(booking.id);
+        await this.presenceService.reconcileOverdueNeverCheckedIn(booking.id);
       } catch (err: any) {
         this.logger.warn(
           `Failed to reconcile overdue arrival for booking #${booking.bookingCode}: ${err?.message}`,

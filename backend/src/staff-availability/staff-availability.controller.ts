@@ -163,4 +163,74 @@ export class StaffAvailabilityController {
       data,
     };
   }
+
+  /**
+   * D1-07: Xem danh sách các booking và tác vụ bị ảnh hưởng bởi đơn nghỉ/đi muộn
+   */
+  @Get('requests/:id/impact')
+  async getRequestImpact(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+  ) {
+    const data = await this.staffAvailabilityService.getRequestImpact(user, id);
+    return {
+      success: true,
+      data,
+    };
+  }
+
+  /**
+   * D1-07: Quản lý xác nhận vắng mặt khẩn cấp tạm thời có giới hạn giờ và lưu audit
+   */
+  @Post('emergency-unavailable')
+  async createEmergencyUnavailable(
+    @CurrentUser() user: User,
+    @Body()
+    dto: {
+      hotelId: string;
+      staffUserId: string;
+      startAt?: string;
+      endAt: string;
+      reason: string;
+    },
+  ) {
+    const data = await this.staffAvailabilityService.createEmergencyUnavailable(user, dto);
+    return {
+      success: true,
+      data,
+      message: 'Đã xác nhận trạng thái vắng mặt khẩn cấp tạm thời và quét các đơn bị ảnh hưởng.',
+    };
+  }
+
+  /**
+   * Quản lý kết thúc sớm khoảng vắng mặt khi nhân viên quay lại làm việc
+   */
+  @Post('blocks/:blockId/end')
+  async endBlockEarly(
+    @CurrentUser() user: User,
+    @Param('blockId') blockId: string,
+    @Body('note') note?: string,
+  ) {
+    const data = await this.staffAvailabilityService.endAvailabilityBlockEarly(user, blockId, note);
+    return {
+      success: true,
+      data,
+      message: 'Đã kết thúc khoảng vắng mặt, nhân sự sẵn sàng nhận phân công trở lại.',
+    };
+  }
+
+  /**
+   * Lấy danh sách các block vắng mặt đang hiệu lực tại khách sạn
+   */
+  @Get('blocks/hotel/:hotelId')
+  async getActiveBlocksForHotel(
+    @CurrentUser() user: User,
+    @Param('hotelId') hotelId: string,
+  ) {
+    const data = await this.staffAvailabilityService.getActiveBlocksForHotel(user, hotelId);
+    return {
+      success: true,
+      data,
+    };
+  }
 }

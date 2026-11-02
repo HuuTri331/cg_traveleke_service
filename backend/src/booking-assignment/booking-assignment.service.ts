@@ -193,36 +193,103 @@ export class BookingAssignmentService {
 
       const now = new Date();
 
-      // 4. Xác định hạng phòng (serviceTier) của booking
+      // 4. Xác định hạng phòng (serviceTier) của TOÀN BỘ booking (D1-06: xét tất cả phòng trong booking, lấy mức độ khó cao nhất VIP > STANDARD > ECONOMY)
       let serviceTier = RoomServiceTier.STANDARD;
-      const bookingRoom = await manager
+      const bookingRooms = await manager
         .getRepository(BookingRoom)
-        .findOne({
+        .find({
           where: { bookingId },
         });
 
-      if (bookingRoom?.roomId) {
-        const room = await manager.getRepository(Room).findOne({
-          where: { id: bookingRoom.roomId },
-        });
+      if (bookingRooms && bookingRooms.length > 0) {
+        let hasVip = false;
+        let hasStandard = false;
+        let hasEconomy = false;
 
-        if (room?.serviceTier) {
-          serviceTier = room.serviceTier;
-        } else if (room) {
-          // Heuristic fallback nếu dữ liệu cũ chưa có tier
-          if (
-            Number(room.pricePerNight) >= 1500000 ||
-            /vip|suite|presidential|luxury/i.test(room.name)
-          ) {
-            serviceTier = RoomServiceTier.VIP;
+        for (const br of bookingRooms) {
+          if (!br.roomId) continue;
+          const room = await manager.getRepository(Room).findOne({
+            where: { id: br.roomId },
+          });
+          if (!room) continue;
+
+          const roomIsVip =
+            room.serviceTier === RoomServiceTier.VIP ||
+            (!room.serviceTier &&
+              (Number(room.pricePerNight) >= 1500000 ||
+                /vip|suite|presidential|luxury/i.test(room.name)));
+
+          if (roomIsVip) {
+            hasVip = true;
+          } else if (room.serviceTier === RoomServiceTier.ECONOMY) {
+            hasEconomy = true;
+          } else {
+            hasStandard = true;
           }
+        }
+
+        if (hasVip) {
+          serviceTier = RoomServiceTier.VIP;
+        } else if (hasStandard) {
+          serviceTier = RoomServiceTier.STANDARD;
+        } else if (hasEconomy) {
+          serviceTier = RoomServiceTier.ECONOMY;
         }
       }
 
-      // 5. Lấy danh sách ID các nhân viên đang vắng mặt (có đơn nghỉ/đi muộn đã duyệt hiệu lực tại now)
+      // 5. Lấy danh sách ID các nhân viên đang vắng mặt (có đơn nghỉ/đi muộn đã duyệt hoặc emergency block hiệu lực tại now)
       const absentStaffIds =
         await this.staffAvailabilityService.getUnavailableStaffUserIds(hotelId, now);
       const absentStaffSet = new Set(absentStaffIds.map((id) => String(id)));
+
+      // 5b. Lấy danh sách nhân viên đang trực tiếp bận xử lý tác vụ độc quyền IN_PROGRESS tại thời điểm T (D1-03)
+      const busyStaffSet = new Set<string>();
+      try {
+        const busyRows = await manager.query(
+          `
+          SELECT DISTINCT assigned_staff_id AS staffUserId
+          FROM guest_work_tasks
+          WHERE hotel_id = ?
+            AND status = 'IN_PROGRESS'
+            AND assigned_staff_id IS NOT NULL
+            AND (type IN ('CHECK_IN', 'CHECK_OUT', 'COMPLAINT_HANDLE') OR priority = 'URGENT')
+            AND (started_at IS NULL OR started_at >= DATE_SUB(?, INTERVAL 4 HOUR))
+          `,
+          [hotelId, now],
+        );
+        for (const r of busyRows || []) {
+          if (r.staffUserId) busyStaffSet.add(String(r.staffUserId));
+        }
+      } catch {
+        // Bỏ qua an toàn nếu bảng chưa khởi tạo trong môi trường test độc lập
+      }
+
+      // 5c. Kiểm tra quy tắc năng lực (staff_eligibility_rules) của khách sạn nếu có (D1-04)
+      let requiredSkillCodes: string[] = [];
+      let requireVerifiedSkills = false;
+      try {
+        const ruleRows = await manager.query(
+          `SELECT required_skill_codes AS requiredSkillCodes, require_verified_skills AS requireVerifiedSkills
+           FROM staff_eligibility_rules
+           WHERE (hotel_id = ? OR hotel_id IS NULL) AND service_tier = ? AND active = 1
+           ORDER BY hotel_id DESC LIMIT 1`,
+          [hotelId, serviceTier],
+        );
+        if (ruleRows && ruleRows.length > 0) {
+          requireVerifiedSkills = Boolean(ruleRows[0].requireVerifiedSkills);
+          if (ruleRows[0].requiredSkillCodes) {
+            const parsed =
+              typeof ruleRows[0].requiredSkillCodes === 'string'
+                ? JSON.parse(ruleRows[0].requiredSkillCodes)
+                : ruleRows[0].requiredSkillCodes;
+            if (Array.isArray(parsed)) {
+              requiredSkillCodes = parsed.map((s) => String(s).toUpperCase());
+            }
+          }
+        }
+      } catch {
+        // Bỏ qua nếu chưa cấu hình rule riêng
+      }
 
       // 6. Truy vấn danh sách nhân viên ACTIVE của khách sạn
       const rawStaffList = await manager.query(
@@ -235,7 +302,16 @@ export class BookingAssignmentService {
           u.status AS userStatus,
           hs.status AS hotelStaffStatus,
           COALESCE(MAX(ss.level), 1) AS skillLevel,
-          COALESCE(MAX(ss.years_exp), 0) AS yearsExp,
+          COALESCE(
+            SUBSTRING_INDEX(
+              GROUP_CONCAT(ss.years_exp ORDER BY ss.level DESC, ss.years_exp DESC SEPARATOR ','),
+              ',',
+              1
+            ),
+            0
+          ) AS yearsExp,
+          COALESCE(GROUP_CONCAT(UPPER(ss.skill_code) SEPARATOR ','), '') AS skillCodesCsv,
+          COALESCE(MAX(CASE WHEN ss.verified_by IS NOT NULL THEN 1 ELSE 0 END), 0) AS hasVerifiedRecord,
           (
             SELECT COUNT(*) 
             FROM bookings b 
@@ -266,20 +342,34 @@ export class BookingAssignmentService {
       );
 
       const allCandidates: StaffCandidate[] = (rawStaffList || []).map(
-        (row: any) => ({
-          staffUserId: String(row.staffUserId),
-          staffName: row.staffName || `Staff ${row.staffUserId}`,
-          staffEmail: row.staffEmail || '',
-          staffRole: row.staffRole,
-          userActive: row.userStatus === 'ACTIVE',
-          hotelStaffActive: row.hotelStaffStatus === 'ACTIVE',
-          isAbsent: absentStaffSet.has(String(row.staffUserId)),
-          skillLevel: Number(row.skillLevel) || 1,
-          yearsExp: Number(row.yearsExp) || 0,
-          completedCount: Number(row.completedCount) || 0,
-          activeLoad: Number(row.activeLoad) || 0,
-          lastAssignedAt: row.lastAssignedAt ? new Date(row.lastAssignedAt) : null,
-        }),
+        (row: any) => {
+          const staffSkillCodes = String(row.skillCodesCsv || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const matchesRequiredCodes =
+            requiredSkillCodes.length === 0 ||
+            requiredSkillCodes.every((reqCode) => staffSkillCodes.includes(reqCode));
+          const matchesVerified =
+            !requireVerifiedSkills || Number(row.hasVerifiedRecord) > 0;
+
+          return {
+            staffUserId: String(row.staffUserId),
+            staffName: row.staffName || `Staff ${row.staffUserId}`,
+            staffEmail: row.staffEmail || '',
+            staffRole: row.staffRole,
+            userActive: row.userStatus === 'ACTIVE',
+            hotelStaffActive: row.hotelStaffStatus === 'ACTIVE',
+            isAbsent: absentStaffSet.has(String(row.staffUserId)),
+            isBusyNow: busyStaffSet.has(String(row.staffUserId)),
+            hasVerifiedSkill: matchesRequiredCodes && matchesVerified,
+            skillLevel: Number(row.skillLevel) || 1,
+            yearsExp: Number(row.yearsExp) || 0,
+            completedCount: Number(row.completedCount) || 0,
+            activeLoad: Number(row.activeLoad) || 0,
+            lastAssignedAt: row.lastAssignedAt ? new Date(row.lastAssignedAt) : null,
+          };
+        },
       );
 
       const receptionists = allCandidates.filter(

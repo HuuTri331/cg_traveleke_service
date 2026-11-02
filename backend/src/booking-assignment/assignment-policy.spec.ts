@@ -192,5 +192,61 @@ describe('assignment-policy (Cửa sổ trượt 40/120 & Năng lực M1-M4)', (
 
       expect(decision.chosenCandidate?.staffUserId).toBe('5');
     });
+
+    it('A01 / D1-02: Ở booking đầu tiên hoặc cùng nhóm/tầng, ưu tiên người có năng lực/kinh nghiệm cao nhất (A M1 giỏi nhất được chọn dù B có activeLoad thấp hơn)', () => {
+      const candidateA = makeCandidate('1', 'Lễ tân A (Giỏi nhất - 5 năm KN)', 5, 5, 50, 1, null);
+      const candidateB = makeCandidate('2', 'Lễ tân B (3 năm KN, 0 load)', 4, 4, 40, 0, null);
+
+      const decision = pickReceptionist({
+        bookingId: '107',
+        hotelId: '1',
+        serviceTier: RoomServiceTier.VIP,
+        now: baseTime,
+        candidates: [candidateB, candidateA],
+        managers: [],
+      });
+
+      expect(decision.outcome).toBe('ASSIGNED');
+      expect(decision.chosenCandidate?.staffUserId).toBe('1');
+      expect(decision.competencyLevel).toBe('M1');
+    });
+
+    it('A05 / D1-03: Nhân viên đang bận xử lý tác vụ độc quyền IN_PROGRESS tại thời điểm T (isBusyNow = true) bị loại dù đã qua 120 phút', () => {
+      const candidateA: StaffCandidate = {
+        ...makeCandidate('1', 'Lễ tân A (Đang check-in tại quầy)', 5, 5, 50, 0, 130),
+        isBusyNow: true,
+      };
+      const candidateB = makeCandidate('2', 'Lễ tân B (Rảnh)', 3, 2, 20, 0, 130);
+
+      const decision = pickReceptionist({
+        bookingId: '108',
+        hotelId: '1',
+        serviceTier: RoomServiceTier.VIP,
+        now: baseTime,
+        candidates: [candidateA, candidateB],
+        managers: [],
+      });
+
+      expect(decision.outcome).toBe('ASSIGNED');
+      expect(decision.chosenCandidate?.staffUserId).toBe('2');
+    });
+
+    it('A04: Khi C (FRESH) không đạt chuẩn an toàn VIP, hệ thống chọn lại A ở nhóm SOFT_RECENT (40-119 phút)', () => {
+      const candidateA = makeCandidate('1', 'Lễ tân A (SOFT 50m, VIP M1)', 5, 5, 50, 0, 50);
+      const candidateC = makeCandidate('3', 'Lễ tân C (FRESH nhưng 0 năm KN, dưới ngưỡng VIP)', 1, 0, 2, 0, null);
+
+      const decision = pickReceptionist({
+        bookingId: '109',
+        hotelId: '1',
+        serviceTier: RoomServiceTier.VIP,
+        now: baseTime,
+        candidates: [candidateA, candidateC],
+        managers: [],
+      });
+
+      expect(decision.outcome).toBe('ASSIGNED');
+      expect(decision.chosenCandidate?.staffUserId).toBe('1');
+      expect(decision.freshnessBucket).toBe(FreshnessBucket.SOFT_RECENT);
+    });
   });
 });

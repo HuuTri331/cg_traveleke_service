@@ -45,7 +45,7 @@ export class CompleteTaskDto {
 export class VerifyTaskDto {
   @IsString()
   @IsNotEmpty()
-  decision!: 'VERIFIED' | 'REJECTED';
+  decision!: 'VERIFIED' | 'REJECTED' | 'FAILED';
 
   @IsString()
   @IsOptional()
@@ -54,5 +54,35 @@ export class VerifyTaskDto {
   @IsString()
   @IsOptional()
   evidenceRef?: string;
+}
+
+export class CreateOfflineWorkLogDto {
+  @IsString()
+  @IsNotEmpty()
+  bookingId!: string;
+
+  @IsEnum(WorkTaskType)
+  @IsOptional()
+  type?: WorkTaskType;
+
+  @IsString()
+  @IsNotEmpty()
+  channel!: 'PHONE' | 'FRONT_DESK' | 'OFFLINE_OTHER';
+
+  @IsString()
+  @IsNotEmpty()
+  claimedOccurredAt!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  summary!: string;
+
+  @IsString()
+  @IsOptional()
+  evidenceRef?: string;
+
+  @IsString()
+  @IsOptional()
+  taskId?: string;
 }
 
