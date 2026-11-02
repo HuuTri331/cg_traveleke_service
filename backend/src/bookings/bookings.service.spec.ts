@@ -8,6 +8,7 @@ describe('BookingsService - Scoping, Fallback & Front Desk Direct Booking', () =
   let mockRoomRepo: any;
   let mockDataSource: any;
   let mockIdGen: any;
+  let mockCoverageService: any;
 
   beforeEach(() => {
     mockBookingRepo = {
@@ -38,6 +39,9 @@ describe('BookingsService - Scoping, Fallback & Front Desk Direct Booking', () =
     mockIdGen = {
       generateBookingCode: jest.fn(() => 'BKG-2026-TEST'),
     };
+    mockCoverageService = {
+      transferPermanent: jest.fn(),
+    };
 
     service = new BookingsService(
       mockBookingRepo,
@@ -49,8 +53,14 @@ describe('BookingsService - Scoping, Fallback & Front Desk Direct Booking', () =
       {} as any, // realtimeGateway
       {} as any, // redisClient
       {} as any, // redisLockService
+      undefined, // paymentsService
       {} as any, // bookingAccessService
       {} as any, // inventoryService
+      mockCoverageService,
+      {
+        markNoShowIfEligible: jest.fn().mockRejectedValue(new ConflictException()),
+        confirmDeparture: jest.fn().mockRejectedValue(new ConflictException()),
+      } as any,
     );
   });
 
@@ -62,8 +72,8 @@ describe('BookingsService - Scoping, Fallback & Front Desk Direct Booking', () =
         status: BookingStatus.PENDING,
       });
 
-      // Query returns empty (actor is not manager of hotel 10)
-      mockDataSource.query.mockResolvedValueOnce([]);
+      mockDataSource.query.mockResolvedValueOnce([{ id: '7', name: 'Staff B', email: 'b@test.com' }]);
+      mockCoverageService.transferPermanent.mockRejectedValueOnce(new ForbiddenException());
 
       const actor: any = { id: '5', role: 'EMPLOYEE' };
 
@@ -81,8 +91,8 @@ describe('BookingsService - Scoping, Fallback & Front Desk Direct Booking', () =
 
       const actor: any = { id: '1', role: 'ADMIN' };
 
-      // Query for target staff membership returns empty
       mockDataSource.query.mockResolvedValueOnce([]);
+      mockCoverageService.transferPermanent.mockRejectedValueOnce(new BadRequestException());
 
       await expect(
         service.reassignStaff('1', '99', '1', 'Reassign note', actor),

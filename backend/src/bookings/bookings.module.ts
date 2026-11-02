@@ -12,6 +12,8 @@ import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
 import { BookingAccessService } from './services/booking-access.service';
 import { RoomAvailabilityService } from './room-availability.service';
+import { BookingCoverageModule } from '../booking-coverage/booking-coverage.module';
+import { BookingPresenceModule } from '../booking-presence/booking-presence.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { OutboxModule } from '../outbox/outbox.module';
@@ -28,6 +30,8 @@ import { RedisModule } from '../redis/redis.module';
       BookingPresenceEvent,
     ]),
     InventoryModule,
+    BookingCoverageModule,
+    BookingPresenceModule,
     forwardRef(() => PaymentsModule),
     OutboxModule,
     RedisModule,

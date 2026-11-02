@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS `guest_work_tasks` (
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX `ix_tasks_hotel_assignee_status` (`hotel_id`, `assigned_staff_id`, `status`),
   INDEX `ix_tasks_booking_type` (`booking_id`, `type`),
-  INDEX `ix_tasks_source` (`source_table`, `source_id`)
+  UNIQUE INDEX `ux_tasks_source` (`source_table`, `source_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `guest_work_events` (

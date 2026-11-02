@@ -58,7 +58,18 @@ export class InventoryService {
       );
 
     const result = await qb.getRawOne();
-    return Number(result?.occupied || 0);
+    // Legacy reservations without ANY hold still consume capacity. A released hold must
+    // never be resurrected through this compatibility branch. No max(two totals).
+    const em = manager || this.holdRepo.manager;
+    const [legacy] = await em.query(`SELECT COALESCE(SUM(br.quantity), 0) AS occupied
+      FROM booking_rooms br JOIN bookings b ON b.id = br.booking_id
+      WHERE br.room_id = ? AND b.check_in_at < ? AND b.check_out_at > ?
+        AND b.status IN ('PENDING','CONFIRMED','CHECKED_IN','NO_SHOW','CLOSED_NO_SHOW')
+        AND NOT EXISTS (SELECT 1 FROM booking_holds bh WHERE bh.booking_id = b.id)
+        AND (b.booking_source IN ('WALK_IN','PHONE') OR EXISTS (
+          SELECT 1 FROM payment_transactions pt WHERE pt.booking_id = b.id AND pt.status = 'PAID'))`,
+      [roomId, checkOutAt, checkInAt]);
+    return Number(result?.occupied || 0) + Number(legacy.occupied);
   }
 
   /**

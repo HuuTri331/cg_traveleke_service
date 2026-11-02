@@ -18,6 +18,7 @@ import {
 } from '../payments/entities/payment-transaction.entity';
 import { Booking, BookingStatus } from '../bookings/entities/booking.entity';
 import { BookingStatusLog } from '../bookings/entities/booking-status-log.entity';
+import { GuestWorkService } from '../guest-work/guest-work.service';
 import { BookingAssignmentService } from '../booking-assignment/booking-assignment.service';
 
 @Injectable()
@@ -37,6 +38,7 @@ export class WorkersService {
     private readonly inventoryService: InventoryService,
     private readonly dataSource: DataSource,
     private readonly bookingAssignmentService: BookingAssignmentService,
+    private readonly guestWorkService: GuestWorkService,
   ) {}
 
   /**
@@ -108,6 +110,10 @@ export class WorkersService {
                 userId: payload.userId,
                 hotelId: payload.hotelId,
               });
+              break;
+
+            case 'service_request.created':
+              await this.guestWorkService.createTaskFromServiceRequest(payload, payload.actor);
               break;
 
             case 'booking.assignment.requested':

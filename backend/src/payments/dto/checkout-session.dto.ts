@@ -52,4 +52,13 @@ export class CheckoutSessionDto {
   @IsString()
   @MaxLength(100)
   idempotencyKey?: string;
+
+  @IsOptional()
+  @IsString()
+  quoteId?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  quoteVersion?: number;
 }

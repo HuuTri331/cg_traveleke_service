@@ -12,7 +12,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { KpiCalculationService } from './kpi-calculation.service';
-import { RequestKpiAdjustmentDto, RecalculateKpiDto } from './dto/kpi.dto';
+import { RequestKpiAdjustmentDto, DecideKpiAdjustmentDto, RecalculateKpiDto } from './dto/kpi.dto';
 
 @Controller('staff-kpi')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -96,6 +96,16 @@ export class StaffKpiController {
     @Body() dto: RequestKpiAdjustmentDto,
   ) {
     return await this.kpiService.requestAdjustment(hotelId, user.id, dto);
+  }
+
+  @Post('adjustments/:id/decision')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async decideAdjustment(
+    @Param('id') id: string,
+    @CurrentUser() user: { id: string },
+    @Body() dto: DecideKpiAdjustmentDto,
+  ) {
+    return await this.kpiService.decideAdjustment(id, user.id, dto);
   }
 }
 

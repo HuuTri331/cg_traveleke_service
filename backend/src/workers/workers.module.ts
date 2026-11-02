@@ -6,6 +6,7 @@ import { MailModule } from '../mail/mail.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { InventoryModule } from '../inventory/inventory.module';
+import { GuestWorkModule } from '../guest-work/guest-work.module';
 import { BookingAssignmentModule } from '../booking-assignment/booking-assignment.module';
 
 @Module({
@@ -17,6 +18,7 @@ import { BookingAssignmentModule } from '../booking-assignment/booking-assignmen
     PaymentsModule,
     InventoryModule,
     BookingAssignmentModule,
+    GuestWorkModule,
   ],
   providers: [WorkersService],
   exports: [WorkersService],

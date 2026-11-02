@@ -85,8 +85,8 @@ export class BookingsController {
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  findAll(@Query() query: QueryBookingDto) {
-    return this.bookingsService.findAll(query);
+  findAll(@Query() query: QueryBookingDto, @CurrentUser() user: User) {
+    return this.bookingsService.findAll(query, user);
   }
 
   // ================================
@@ -95,8 +95,8 @@ export class BookingsController {
   @Get('statistics')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  getStatistics() {
-    return this.bookingsService.getStatistics();
+  getStatistics(@CurrentUser() user: User) {
+    return this.bookingsService.getStatistics(user);
   }
 
   // ================================
@@ -105,8 +105,8 @@ export class BookingsController {
   @Get('activity-logs')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  getActivityLogs(@Query('limit') limit?: number) {
-    return this.bookingsService.getActivityLogs(limit ? Number(limit) : 50);
+  getActivityLogs(@Query('limit') limit?: number, @CurrentUser() user?: User) {
+    return this.bookingsService.getActivityLogs(limit ? Number(limit) : 50, user);
   }
 
   // ================================

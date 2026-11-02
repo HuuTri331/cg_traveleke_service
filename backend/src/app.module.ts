@@ -95,6 +95,7 @@ import { GuestWorkModule } from './guest-work/guest-work.module';
 import { GuestConversationsModule } from './guest-conversations/guest-conversations.module';
 import { StaffKpiModule } from './staff-kpi/staff-kpi.module';
 import { HotelAccessModule } from './common/authz/hotel-access.module';
+import { PromotionsModule } from './promotions/promotions.module';
 
 @Module({
   imports: [
@@ -167,6 +168,7 @@ import { HotelAccessModule } from './common/authz/hotel-access.module';
     GuestConversationsModule,
     StaffKpiModule,
     HotelAccessModule,
+    PromotionsModule,
   ],
 
   controllers: [AppController],

@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
+import { assertCommittedEntitlement, assertBookingOperator } from '../bookings/services/booking-operation-policy';
 import { Booking, BookingStatus } from '../bookings/entities/booking.entity';
 import {
   BookingPresenceEvent,
@@ -182,53 +183,9 @@ export class BookingPresenceService {
           );
         }
 
-        // D2-05: Đối với đơn website, kiểm tra đảm bảo giữ phòng chưa bị giải phóng (RELEASED)
-        try {
-          if (typeof (manager as any).query === 'function') {
-            const isWebsite = !booking.bookingSource || booking.bookingSource === 'WEBSITE';
-            if (isWebsite) {
-              const holdRows = await (manager as any).query(
-                `SELECT status FROM booking_holds WHERE booking_id = ?`,
-                [booking.id],
-              );
-              if (Array.isArray(holdRows) && holdRows.length > 0) {
-                const hasValidHold = holdRows.some(
-                  (h: any) => h.status === 'COMMITTED' || h.status === 'HELD',
-                );
-                if (!hasValidHold) {
-                  throw new ConflictException(
-                    'Đơn đặt phòng này đã bị giải phóng giữ chỗ (RELEASED). Không thể nhận phòng.',
-                  );
-                }
-              }
-            }
-          }
-        } catch (err) {
-          if (err instanceof ConflictException) throw err;
-        }
-
-        // D3-05 / A.2: Phân biệt người phụ trách chính (owner=A) và người thực hiện tại quầy (performedBy=B)
-        const isActingForOtherOwner =
-          Boolean(booking.handledBy) && String(booking.handledBy) !== String(actorUserId);
-        let actingPrefix = '';
-        if (isActingForOtherOwner) {
-          let hasCoverage = false;
-          if (this.coverageService) {
-            try {
-              hasCoverage = await this.coverageService.isStaffCoveringTask(
-                String(booking.id),
-                String(actorUserId),
-                'CHECK_IN',
-                now,
-              );
-            } catch {
-              hasCoverage = false;
-            }
-          }
-          actingPrefix = hasCoverage
-            ? `[Ủy quyền hỗ trợ #${actorUserId} thực hiện thay #${booking.handledBy}] `
-            : `[Hỗ trợ trực tiếp tại quầy: #${actorUserId} thực hiện Check-in cho đơn của #${booking.handledBy}] `;
-        }
+        await assertCommittedEntitlement(manager, booking);
+        await assertBookingOperator(manager, booking, { id: actorUserId, role: actorRole }, 'CHECK_IN', now);
+        const actingPrefix = '';
 
         const fromStatus = booking.status;
         const isFromNoShow = fromStatus === BookingStatus.NO_SHOW;
@@ -388,6 +345,10 @@ export class BookingPresenceService {
           );
         }
 
+        if (!booking.actualCheckInAt) {
+          throw new ConflictException('Đơn đặt phòng chưa được làm thủ tục nhận phòng thực tế, không thể xác nhận trả phòng.');
+        }
+        await assertBookingOperator(manager, booking, { id: actorUserId, role: actorRole }, 'CHECK_OUT');
         const now = new Date();
         const fromStatus = booking.status;
 
@@ -527,6 +488,8 @@ export class BookingPresenceService {
           return booking;
         }
 
+        if (![BookingStatus.PENDING, BookingStatus.CONFIRMED].includes(booking.status as BookingStatus)) return null;
+        await assertCommittedEntitlement(manager, booking);
         const fromStatus = booking.status;
         booking.status = BookingStatus.NO_SHOW;
         booking.noShowAt = now;
@@ -606,7 +569,7 @@ export class BookingPresenceService {
    *  - Kỳ đã qua, điều kiện overlap tự loại trừ, không gọi release hold.
    *  - Không tự động hoàn tiền (refund), không gọi CancellationsService.
    */
-  async closeExpiredNoShow(bookingId: string) {
+  async closeExpiredNoShow(bookingId: string, strict = false) {
     const result = await runWithDeadlockRetry(
       this.dataSource,
       async (manager: EntityManager) => {
@@ -628,9 +591,11 @@ export class BookingPresenceService {
 
         const now = new Date();
         if (now.getTime() < new Date(booking.checkOutAt).getTime()) {
-          return booking; // Vẫn còn trong kỳ lưu trú
+          if (strict) throw new ConflictException('Chưa kết thúc kỳ lưu trú. Không thể đóng No-Show trước hạn.');
+          return booking;
         }
 
+        await assertCommittedEntitlement(manager, booking);
         const fromStatus = booking.status;
         booking.status = BookingStatus.CLOSED_NO_SHOW;
         booking.noShowClosedAt = now;
@@ -729,9 +694,10 @@ export class BookingPresenceService {
           return booking;
         }
 
+        await assertCommittedEntitlement(manager, booking);
         const fromStatus = booking.status;
         booking.status = BookingStatus.CLOSED_NO_SHOW;
-        booking.noShowAt = booking.noShowAt || new Date(booking.checkOutAt);
+        // Do not invent a past noShowAt: this transition is observed now.
         booking.noShowClosedAt = now;
         booking.presenceVersion = (booking.presenceVersion || 1) + 1;
 

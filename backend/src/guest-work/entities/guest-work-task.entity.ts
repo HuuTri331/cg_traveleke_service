@@ -61,6 +61,15 @@ export class GuestWorkTask {
   @Column({ name: 'assigned_staff_id', type: 'bigint', unsigned: true, nullable: true })
   assignedStaffId!: string | null;
 
+  @Column({ name: 'active_executor_id', type: 'bigint', unsigned: true, nullable: true })
+  activeExecutorId!: string | null;
+
+  @Column({ name: 'coverage_grant_id', type: 'bigint', unsigned: true, nullable: true })
+  coverageGrantId!: string | null;
+
+  @Column({ name: 'execution_lease_until', type: 'datetime', nullable: true })
+  executionLeaseUntil!: Date | null;
+
   @Column({ name: 'owner_at_create', type: 'bigint', unsigned: true, nullable: true })
   ownerAtCreate!: string | null;
 

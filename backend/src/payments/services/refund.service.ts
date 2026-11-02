@@ -54,8 +54,15 @@ export class RefundService {
 
     if (refundRes?.vnp_ResponseCode === '00') {
       if (payment) {
-        payment.status = PaymentTransactionStatus.REFUNDED;
-        payment.refundAmount = params.amount.toFixed(2);
+        const paidTotal = Number(payment.amount || 0);
+        const prevRefunded = Number(payment.refundAmount || 0);
+        const newTotalRefunded = prevRefunded + Number(params.amount || 0);
+        // IT19 / B28: Partial refund (e.g. 160k or 360k on 5M) keeps status PAID with accumulated refundAmount;
+        // only mark REFUNDED when the entire paid amount has been refunded.
+        if (paidTotal > 0 && newTotalRefunded >= paidTotal) {
+          payment.status = PaymentTransactionStatus.REFUNDED;
+        }
+        payment.refundAmount = newTotalRefunded.toFixed(2);
         payment.refundedAt = new Date();
         payment.refundNote = params.reason || 'VNPay Refund Success';
         await paymentRepo.save(payment);

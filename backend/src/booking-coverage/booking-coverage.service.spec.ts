@@ -28,13 +28,26 @@ describe('BookingCoverageService (Đợt 3 - Temporary Coverage & Permanent Tran
   let mockStaffAvailService: any;
   let mockRealtimeGateway: any;
   let mockDataSource: any;
+  let ownerStillActive = false;
 
   beforeEach(async () => {
+    ownerStillActive = false;
     mockGrantRepo = {
       findOne: jest.fn(),
       find: jest.fn().mockResolvedValue([]),
       create: jest.fn((dto) => ({ ...dto, id: 'grant-1', version: 1 })),
       save: jest.fn((g) => Promise.resolve(g)),
+      createQueryBuilder: jest.fn(() => ({
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn(() => mockGrantRepo.find()),
+      })),
+    };
+    mockGrantRepo.manager = {
+      getRepository: () => mockGrantRepo,
+      query: jest.fn().mockResolvedValue([]),
     };
 
     mockEventRepo = {
@@ -64,6 +77,7 @@ describe('BookingCoverageService (Đợt 3 - Temporary Coverage & Permanent Tran
       checkStaffAvailabilityOnInterval: jest.fn().mockResolvedValue(true),
       isManagerAtHotel: jest.fn().mockResolvedValue(true),
       isStaffAtHotel: jest.fn().mockResolvedValue(true),
+      isStaffAvailableAt: jest.fn().mockResolvedValue({ available: true }),
     };
 
     mockRealtimeGateway = {
@@ -72,10 +86,50 @@ describe('BookingCoverageService (Đợt 3 - Temporary Coverage & Permanent Tran
 
     const createMockManager = () => {
       const mgr: any = {
-        findOne: (entity: any, opts: any) => {
-          if (entity === Booking) return mockBookingRepo.findOne(opts);
+        query: jest.fn(async (sql: string, params?: any[]) => {
+          if (sql.includes('SELECT hs.status AS staffStatus')) {
+            return ownerStillActive ? [{ staffStatus: 'ACTIVE', userStatus: 'ACTIVE', deletedAt: null }] : [];
+          }
+          if (sql.includes('SELECT hs.staff_role AS staffRole FROM hotel_staff')) {
+            const staffId = String(params?.[1] || '');
+            if (staffId === '2') {
+              const ok = await mockStaffAvailService.isStaffAtHotel();
+              return ok ? [{ staffRole: 'EMPLOYEE' }] : [];
+            }
+            const isMgr = await mockStaffAvailService.isManagerAtHotel();
+            return isMgr ? [{ staffRole: 'MANAGER' }] : [{ staffRole: 'EMPLOYEE' }];
+          }
+          if (sql.includes('EXISTS(SELECT 1 FROM staff_availability_blocks')) {
+            return [{ absent: 0, busy: 0, activeLoad: 0, completedCount: 5, lastAssignedAt: null }];
+          }
+          if (sql.includes('FROM staff_availability_blocks')) {
+            const avail = await mockStaffAvailService.checkStaffAvailabilityOnInterval();
+            return avail ? [] : [{ id: 'block-1' }];
+          }
+          if (sql.includes('FROM booking_rooms')) return [{ difficulty: 1 }];
+          if (sql.includes('FROM staff_eligibility_rules')) {
+            return [{ requiredSkillCodes: null, requiredLanguageCodes: null, minSkillLevel: 1, minYearsExperience: 0, minCasesCompleted: 0, excludeShadowMode: 1, requireVerifiedSkills: 0 }];
+          }
+          if (sql.includes('FROM hotel_staff hs JOIN users u')) {
+            return [{ staffUserId: '2', staffRole: 'EMPLOYEE', staffName: 'Staff 2', staffEmail: 's2@test.com' }];
+          }
+          if (sql.includes('FROM staff_skills ss')) {
+            return [{ staffUserId: '2', code: 'FRONT_DESK', department: 'FRONT_DESK', level: 3, yearsExp: 2, verifiedBy: '1', verifiedAt: new Date(), isShadow: 0 }];
+          }
+          if (sql.includes('FROM staff_language_skills')) return [];
+          if (sql.includes('EXISTS(SELECT 1 FROM staff_availability_blocks')) {
+            return [{ absent: 0, busy: 0, activeLoad: 0, completedCount: 5, lastAssignedAt: null }];
+          }
+          return [];
+        }),
+        findOne: async (entity: any, opts: any) => {
+          if (entity === Booking) {
+            const b = await mockBookingRepo.findOne(opts);
+            return b ? { status: BookingStatus.CONFIRMED, checkOutAt: new Date(Date.now() + 7 * 86400000), ...b } : null;
+          }
           if (entity === BookingCoverageGrant) return mockGrantRepo.findOne(opts);
           if (entity === BookingAssignmentState) return mockStateRepo.findOne(opts);
+          if (entity === BookingAssignment) return mockAssignmentRepo.findOne(opts);
           return null;
         },
         find: (entity: any, opts: any) => {
@@ -106,7 +160,12 @@ describe('BookingCoverageService (Đợt 3 - Temporary Coverage & Permanent Tran
           if (entity === BookingCoverageEvent) return mockEventRepo;
           if (entity === BookingAssignment) return mockAssignmentRepo;
           if (entity === BookingAssignmentState) return mockStateRepo;
-          return mgr;
+          return {
+            ...mgr,
+            createQueryBuilder: () => ({
+              setLock: () => ({ where: () => ({ orderBy: () => ({ getMany: () => Promise.resolve([]) }) }) }),
+            }),
+          };
         },
       };
       return mgr;
@@ -253,6 +312,7 @@ describe('BookingCoverageService (Đợt 3 - Temporary Coverage & Permanent Tran
         delegateStaffUserId: '2',
         startAt: new Date(now).toISOString(),
         endAt: new Date(now + 120 * 60 * 1000).toISOString(),
+        allowedTaskTypes: [CoverageTaskType.CHECK_IN],
         reason: 'Hỗ trợ đón khách check-in',
       });
 
@@ -304,13 +364,33 @@ describe('BookingCoverageService (Đợt 3 - Temporary Coverage & Permanent Tran
 
       const res = await service.transferPermanent('10', { id: '1', role: 'EMPLOYEE' }, {
         toStaffUserId: '2',
-        reason: 'Hết ca trực bàn giao ca sau',
+        reasonCode: 'EMPLOYMENT_ENDED',
+        reason: 'Nhân sự 1 đã nghỉ việc hẳn',
       });
 
       expect(res.message).toContain('thành công');
       expect(mockBookingRepo.save).toHaveBeenCalled();
       expect(mockAssignmentRepo.save).toHaveBeenCalled();
       expect(mockEventRepo.save).toHaveBeenCalled();
+    });
+
+    it('2. AB-07: Từ chối Permanent Transfer nếu nhân sự phụ trách chính vẫn đang ACTIVE tại khách sạn (đề nghị dùng TEMPORARY)', async () => {
+      ownerStillActive = true;
+      mockBookingRepo.findOne.mockResolvedValue({
+        id: '10',
+        hotelId: '100',
+        handledBy: '1',
+        status: BookingStatus.CONFIRMED,
+      });
+
+      await expect(
+        service.transferPermanent('10', { id: '1', role: 'EMPLOYEE' }, {
+          toStaffUserId: '2',
+          reasonCode: 'EMPLOYMENT_ENDED',
+          reason: 'A chỉ nghỉ phép 2 ngày',
+        }),
+      ).rejects.toThrow(ConflictException);
+      ownerStillActive = false;
     });
   });
 });

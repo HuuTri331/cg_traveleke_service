@@ -10,6 +10,9 @@ import {
 } from './entities/booking-presence-event.entity';
 import { BookingStatusLog } from '../bookings/entities/booking-status-log.entity';
 import { HotelStaff } from '../hotel-staff/entities/hotel-staff.entity';
+import { BookingHold, BookingHoldStatus } from '../inventory/entities/booking-hold.entity';
+import { BookingRoom } from '../bookings/entities/booking-room.entity';
+import { PaymentTransaction, PaymentTransactionStatus } from '../payments/entities/payment-transaction.entity';
 
 describe('BookingPresenceService (Đợt 2 - No-Show & Late Check-In Recovery)', () => {
   let service: BookingPresenceService;
@@ -18,6 +21,7 @@ describe('BookingPresenceService (Đợt 2 - No-Show & Late Check-In Recovery)',
   let mockStatusLogRepo: any;
   let mockHotelStaffRepo: any;
   let mockDataSource: any;
+  let currentBooking: any;
 
   beforeEach(async () => {
     mockBookingRepo = {
@@ -44,11 +48,32 @@ describe('BookingPresenceService (Đợt 2 - No-Show & Late Check-In Recovery)',
     mockDataSource = {
       transaction: jest.fn(async (cb) => {
         const mockManager = {
+          query: jest.fn(async (sql: string) => {
+            if (sql.includes('FROM users')) return [{ id: '1' }];
+            if (sql.includes('FROM hotel_staff')) {
+              const rel = await mockHotelStaffRepo.findOne();
+              return rel ? [{ staffRole: rel.staffRole || 'MANAGER' }] : [];
+            }
+            return [];
+          }),
           getRepository: (entity: any) => {
             if (entity === Booking) return mockBookingRepo;
             if (entity === BookingPresenceEvent) return mockPresenceRepo;
             if (entity === BookingStatusLog) return mockStatusLogRepo;
             if (entity === HotelStaff) return mockHotelStaffRepo;
+            if (entity === BookingHold) {
+              return { findOne: jest.fn(async () => ({
+                roomId: '1', quantity: Number(currentBooking?.requestedRoomCount || 1),
+                status: BookingHoldStatus.COMMITTED,
+                checkInAt: currentBooking?.checkInAt, checkOutAt: currentBooking?.checkOutAt,
+              })) };
+            }
+            if (entity === BookingRoom) {
+              return { find: jest.fn(async () => [{ roomId: '1', quantity: Number(currentBooking?.requestedRoomCount || 1) }]) };
+            }
+            if (entity === PaymentTransaction) {
+              return { findOne: jest.fn(async () => ({ status: PaymentTransactionStatus.PAID })) };
+            }
             return {};
           },
         };
@@ -86,10 +111,11 @@ describe('BookingPresenceService (Đợt 2 - No-Show & Late Check-In Recovery)',
   });
 
   const setupMockBookingQuery = (bookingData: Partial<Booking> | null) => {
+    currentBooking = bookingData && { requestedRoomCount: 1, checkInAt: new Date(), checkOutAt: new Date(Date.now() + 86400000), ...bookingData };
     mockBookingRepo.createQueryBuilder.mockReturnValue({
       setLock: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
-      getOne: jest.fn().mockResolvedValue(bookingData),
+      getOne: jest.fn().mockResolvedValue(currentBooking),
     });
   };
 
@@ -212,6 +238,7 @@ describe('BookingPresenceService (Đợt 2 - No-Show & Late Check-In Recovery)',
         id: '201',
         hotelId: '10',
         status: BookingStatus.CHECKED_IN,
+        actualCheckInAt: new Date(),
         presenceVersion: 2,
       };
       setupMockBookingQuery(mockBooking);

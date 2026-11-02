@@ -58,6 +58,16 @@ export class BookingCoverageGrant {
   })
   status!: CoverageGrantStatus;
 
+  @Column({ name: 'scope_mode', type: 'varchar', length: 20, default: 'TASK_TYPES' })
+  scopeMode!: 'TASK_TYPES' | 'TASK_IDS' | 'BOOKING_TASKS';
+
+  @Column({ name: 'absence_request_id', type: 'bigint', unsigned: true, nullable: true })
+  absenceRequestId!: string | null;
+
+  // Explicit manager-approved deadline for tasks accepted before grant expiry.
+  @Column({ name: 'completion_deadline', type: 'datetime', nullable: true })
+  completionDeadline!: Date | null;
+
   @Column({ name: 'allowed_task_types', type: 'simple-json' })
   allowedTaskTypes!: string[];
 

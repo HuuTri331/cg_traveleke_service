@@ -11,6 +11,7 @@ export interface StaffCandidate {
   isAbsent: boolean; // Có availability block nào đang hiệu lực tại thời điểm xét duyệt không
   isBusyNow?: boolean; // Đang trực tiếp thực hiện tác vụ độc quyền IN_PROGRESS tại chính thời điểm T
   hasVerifiedSkill?: boolean; // Đáp ứng yêu cầu kỹ năng xác minh (nếu khách sạn cấu hình)
+  eligibleByRule?: boolean; // Bắt buộc đạt quy tắc kỹ năng/ngoại ngữ/kinh nghiệm trước khi xếp hạng
   skillLevel: number; // 1 - 5
   yearsExp: number;
   completedCount: number;
@@ -160,15 +161,19 @@ export function pickReceptionist(ctx: DecisionContext): AssignmentDecision {
 
   // 1. Bộ lọc cơ bản:
   // - Tài khoản user ACTIVE, hotel_staff ACTIVE
-  // - Đúng vai trò lễ tân (EMPLOYEE)
+  // - Đúng vai trò lễ tân (EMPLOYEE / RECEPTIONIST / FRONT_DESK)
   // - Không trong khoảng nghỉ/đi muộn đã duyệt (isAbsent = false)
   // - Không đang bận xử lý tác vụ độc quyền IN_PROGRESS tại thời điểm T (isBusyNow = false)
+  // - Đáp ứng quy tắc kỹ năng/chứng chỉ xác minh bắt buộc của hạng phòng (hasVerifiedSkill !== false)
   // - Không nằm trong cửa sổ loại trừ cứng (< 40 phút)
+  const validReceptionistRoles = new Set(['EMPLOYEE', 'RECEPTIONIST', 'FRONT_DESK']);
   const eligibleCandidates = candidates.filter((c) => {
     if (!c.userActive || !c.hotelStaffActive) return false;
-    if (c.staffRole === 'MANAGER') return false; // Quản lý xét ở nhánh fallback
+    if (!validReceptionistRoles.has(String(c.staffRole || '').toUpperCase())) return false;
     if (c.isAbsent) return false;
     if (c.isBusyNow) return false;
+    if (c.eligibleByRule === false) return false;
+    if (c.hasVerifiedSkill === false) return false;
 
     const freshness = evaluateFreshnessBucket(now, c.lastAssignedAt);
     if (freshness === FreshnessBucket.HARD_COOLDOWN) {

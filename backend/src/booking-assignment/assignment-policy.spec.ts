@@ -248,5 +248,35 @@ describe('assignment-policy (Cửa sổ trượt 40/120 & Năng lực M1-M4)', (
       expect(decision.chosenCandidate?.staffUserId).toBe('1');
       expect(decision.freshnessBucket).toBe(FreshnessBucket.SOFT_RECENT);
     });
+
+    it('D1-04: STANDARD không được vượt qua yêu cầu năng lực dù giỏi nhất và còn FRESH', () => {
+      const a: StaffCandidate = {
+        ...makeCandidate('1', 'A giỏi nhưng thiếu ngoại ngữ bắt buộc', 5, 5, 50, 0, null),
+        eligibleByRule: false,
+      };
+      const b: StaffCandidate = {
+        ...makeCandidate('2', 'B đủ điều kiện', 3, 2, 10, 0, null),
+        eligibleByRule: true,
+      };
+      const d = pickReceptionist({
+        bookingId: '201', hotelId: '1', serviceTier: RoomServiceTier.STANDARD,
+        now: baseTime, candidates: [a, b], managers: [],
+      });
+      expect(d.chosenCandidate?.staffUserId).toBe('2');
+    });
+
+    it('D1-04: VIP thiếu cấu hình năng lực không tự động giao cho lễ tân', () => {
+      const a: StaffCandidate = {
+        ...makeCandidate('1', 'A VIP', 5, 8, 90, 0, null),
+        eligibleByRule: false,
+      };
+      const manager = makeCandidate('99', 'Quản lý', 5, 10, 100, 0, null, false, 'MANAGER');
+      const d = pickReceptionist({
+        bookingId: '202', hotelId: '1', serviceTier: RoomServiceTier.VIP,
+        now: baseTime, candidates: [a], managers: [manager],
+      });
+      expect(d.outcome).toBe('MANAGER_FALLBACK');
+      expect(d.chosenCandidate?.staffUserId).toBe('99');
+    });
   });
 });

@@ -8,7 +8,8 @@ import {
 } from './entities/guest-staff-review.entity';
 import { GuestStaffReviewRevision } from './entities/guest-staff-review-revision.entity';
 import { Booking } from '../bookings/entities/booking.entity';
-import { GuestWorkEvent } from '../guest-work/entities/guest-work-event.entity';
+import { GuestWorkEvent, WorkEventType, WorkEvidenceType } from '../guest-work/entities/guest-work-event.entity';
+import { GuestWorkTask, WorkTaskStatus, WorkTaskType } from '../guest-work/entities/guest-work-task.entity';
 
 describe('GuestStaffReviewsService (Đợt 5 - Eligible Review Targets & Rating Control)', () => {
   let service: GuestStaffReviewsService;
@@ -16,6 +17,7 @@ describe('GuestStaffReviewsService (Đợt 5 - Eligible Review Targets & Rating 
   let mockRevisionRepo: any;
   let mockBookingRepo: any;
   let mockWorkEventRepo: any;
+  let mockTaskRepo: any;
 
   beforeEach(async () => {
     mockReviewRepo = {
@@ -35,7 +37,15 @@ describe('GuestStaffReviewsService (Đợt 5 - Eligible Review Targets & Rating 
     };
 
     mockWorkEventRepo = {
-      find: jest.fn().mockResolvedValue([]),
+      find: jest.fn().mockResolvedValue([{
+        taskId: '1', actorStaffId: '5', eventType: WorkEventType.TASK_COMPLETED,
+        evidenceType: WorkEvidenceType.DOCUMENT, occurredAt: new Date(Date.now() - 3600000),
+      }]),
+    };
+    mockTaskRepo = {
+      find: jest.fn().mockResolvedValue([{
+        id: '1', type: WorkTaskType.PRE_ARRIVAL_CONTACT, status: WorkTaskStatus.COMPLETED,
+      }]),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -56,6 +66,10 @@ describe('GuestStaffReviewsService (Đợt 5 - Eligible Review Targets & Rating 
         {
           provide: getRepositoryToken(GuestWorkEvent),
           useValue: mockWorkEventRepo,
+        },
+        {
+          provide: getRepositoryToken(GuestWorkTask),
+          useValue: mockTaskRepo,
         },
       ],
     }).compile();

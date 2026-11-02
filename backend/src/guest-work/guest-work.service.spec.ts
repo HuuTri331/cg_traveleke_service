@@ -57,10 +57,13 @@ describe('GuestWorkService (Đợt 4 - Task Coordination, Evidence & SLA)', () =
     mockStaffAvailService = {
       checkStaffAvailabilityOnInterval: jest.fn().mockResolvedValue(true),
       isManagerAtHotel: jest.fn().mockResolvedValue(true),
+      isStaffAtHotel: jest.fn().mockResolvedValue(true),
+      isStaffAvailableAt: jest.fn().mockResolvedValue({ available: true }),
     };
 
     mockCoverageService = {
       isStaffCoveringTask: jest.fn().mockResolvedValue(true),
+      getActiveGrantsForHotel: jest.fn().mockResolvedValue([]),
     };
 
     mockRealtimeGateway = {

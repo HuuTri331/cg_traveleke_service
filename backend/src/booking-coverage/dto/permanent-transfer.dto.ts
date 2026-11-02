@@ -1,4 +1,12 @@
-import { IsString, IsNotEmpty, IsOptional, IsNumber } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, IsArray, IsIn, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class TaskHandoverDecisionDto {
+  @IsString() @IsNotEmpty() taskId!: string;
+  @IsIn(['HANDOVER', 'CONTINUE']) action!: 'HANDOVER' | 'CONTINUE';
+  @IsOptional() @IsString() leaseUntil?: string;
+  @IsString() @IsNotEmpty() reason!: string;
+}
 
 export class PermanentTransferDto {
   @IsString()
@@ -20,5 +28,9 @@ export class PermanentTransferDto {
   @IsString()
   @IsOptional()
   commandId?: string;
+
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => TaskHandoverDecisionDto)
+  taskDecisions?: TaskHandoverDecisionDto[];
 }
 

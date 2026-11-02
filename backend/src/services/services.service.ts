@@ -31,6 +31,7 @@ import {
   CreateServiceRecoveryLogDto,
   ApproveRecoveryDto,
 } from './dto/services.dto';
+import { OutboxService } from '../outbox/outbox.service';
 import { GuestWorkService } from '../guest-work/guest-work.service';
 
 @Injectable()
@@ -58,6 +59,8 @@ export class ServicesService {
 
     @Optional()
     private readonly guestWorkService?: GuestWorkService,
+    @Optional()
+    private readonly outboxService?: OutboxService,
   ) {}
 
   // ============================================================
@@ -327,41 +330,26 @@ export class ServicesService {
     const slaMinutes = service.slaMinutes ?? 30;
     const slaDueAt = new Date(scheduledAt.getTime() + slaMinutes * 60 * 1000);
 
-    const req = this.serviceRequestRepo.create({
-      bookingId: dto.bookingId,
-      serviceId: dto.serviceId,
-      serviceName: service.name,
-      unitPrice: service.basePrice,
-      quantity,
-      totalPrice,
-      note: dto.note,
-      scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
-      slaDueAt,
-      isSlaBreahed: false,
-      status: ServiceRequestStatus.PENDING,
-    });
-    const saved = await this.serviceRequestRepo.save(req);
-
-    // D4-03: Đồng bộ tạo nhiệm vụ GuestWorkTask có await và retry an toàn, chống thất lạc tác vụ nhưng không rollback yêu cầu của khách
-    if (this.guestWorkService) {
+    const saved = await this.dataSource.transaction(async (em) => {
+      const created = await em.getRepository(ServiceRequest).save(em.getRepository(ServiceRequest).create({
+        bookingId: dto.bookingId, serviceId: dto.serviceId, serviceName: service.name,
+        unitPrice: service.basePrice, quantity, totalPrice, note: dto.note,
+        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
+        slaDueAt, isSlaBreahed: false, status: ServiceRequestStatus.PENDING,
+      }));
       const taskPayload = {
-        id: String(saved.id),
-        hotelId: String(booking.hotelId),
-        bookingId: String(saved.bookingId),
-        serviceName: saved.serviceName,
-        note: saved.note ?? undefined,
+        id: String(created.id), hotelId: String(booking.hotelId), bookingId: String(created.bookingId),
+        serviceName: created.serviceName, note: created.note ?? undefined,
+        actor: user ? { id: String(user.id), role: user.role } : undefined,
       };
-      const taskActor = user ? { id: String(user.id), role: user.role } : undefined;
-      try {
-        await this.guestWorkService.createTaskFromServiceRequest(taskPayload, taskActor);
-      } catch {
-        try {
-          await this.guestWorkService.createTaskFromServiceRequest(taskPayload, taskActor);
-        } catch {
-          // Đã có unique (source_table, source_id) để đối soát bù nếu DB tạm thời gián đoạn
-        }
+      if (this.guestWorkService) {
+        await this.guestWorkService.createTaskFromServiceRequest(taskPayload, taskPayload.actor, em);
       }
-    }
+      if (this.outboxService) {
+        await this.outboxService.addEvent(em, 'service_request.created', 'ServiceRequest', String(created.id), taskPayload);
+      }
+      return created;
+    });
 
     // Phát realtime notification tới Lễ tân
     try {

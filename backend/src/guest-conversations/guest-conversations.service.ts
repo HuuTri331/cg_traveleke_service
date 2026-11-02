@@ -16,6 +16,7 @@ import {
   GuestMessage,
   MessageSenderRole,
 } from './entities/guest-message.entity';
+import { assertBookingOperator } from '../bookings/services/booking-operation-policy';
 import { Booking } from '../bookings/entities/booking.entity';
 import { GuestWorkService } from '../guest-work/guest-work.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -64,27 +65,8 @@ export class GuestConversationsService {
       throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
     }
 
-    const isCustomerOwner = String(booking.userId) === String(actor.id);
-    const isAdmin = actor.role === 'ADMIN';
-    let isAuthorizedStaff = isAdmin;
-
-    if (!isCustomerOwner && !isAdmin && actor.role === 'EMPLOYEE') {
-      // D4-04: Xác minh nhân sự phải thuộc đúng khách sạn của booking (chống đọc/gửi tin nhắn chéo khách sạn)
-      try {
-        const staffRows = await this.bookingRepo.manager.query(
-          `SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = 'ACTIVE' LIMIT 1`,
-          [actor.id, booking.hotelId],
-        );
-        isAuthorizedStaff = Array.isArray(staffRows) && staffRows.length > 0;
-      } catch {
-        // Fallback trong môi trường unit test không có raw query
-        isAuthorizedStaff = true;
-      }
-    }
-
-    if (!isCustomerOwner && !isAuthorizedStaff) {
-      throw new ForbiddenException('Bạn không có quyền gửi tin nhắn trong đơn đặt phòng này (không thuộc khách sạn hoặc không phải chủ đơn)');
-    }
+    await assertBookingOperator(this.bookingRepo.manager, booking, actor);
+    const isAuthorizedStaff = actor.role !== 'CUSTOMER';
 
     const conv = await this.getOrCreateConversation(bookingId);
     const senderRole = isAuthorizedStaff ? MessageSenderRole.EMPLOYEE : MessageSenderRole.CUSTOMER;
@@ -107,14 +89,14 @@ export class GuestConversationsService {
     const saved = await this.msgRepo.save(msg);
 
     // B4: Nếu người gửi là nhân viên phản hồi, ghi nhận First Response cho SLA (gắn theo taskId nếu có, bọc try/catch không làm hỏng việc gửi tin)
-    if (senderRole === MessageSenderRole.EMPLOYEE) {
+    if (senderRole === MessageSenderRole.EMPLOYEE && dto.taskId) {
       try {
         await this.guestWorkService.recordFirstResponse(
           bookingId,
           actor.id,
           saved.sentAt,
           dto.taskId,
-          dto.clientMsgId || String(saved.id),
+          String(saved.id),
         );
       } catch (err: any) {
         this.logger.warn(`Failed to record first response for booking #${bookingId}: ${err?.message}`);
@@ -150,25 +132,7 @@ export class GuestConversationsService {
       throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
     }
 
-    const isCustomerOwner = String(booking.userId) === String(actor.id);
-    const isAdmin = actor.role === 'ADMIN';
-    let isAuthorizedStaff = isAdmin;
-
-    if (!isCustomerOwner && !isAdmin && actor.role === 'EMPLOYEE') {
-      try {
-        const staffRows = await this.bookingRepo.manager.query(
-          `SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = 'ACTIVE' LIMIT 1`,
-          [actor.id, booking.hotelId],
-        );
-        isAuthorizedStaff = Array.isArray(staffRows) && staffRows.length > 0;
-      } catch {
-        isAuthorizedStaff = true;
-      }
-    }
-
-    if (!isCustomerOwner && !isAuthorizedStaff) {
-      throw new ForbiddenException('Bạn không có quyền xem tin nhắn của đơn đặt phòng này (không thuộc khách sạn hoặc không phải chủ đơn)');
-    }
+    await assertBookingOperator(this.bookingRepo.manager, booking, actor);
 
     const conv = await this.convRepo.findOne({ where: { bookingId } });
     if (!conv) return [];

@@ -7,6 +7,7 @@ import { BookingServiceSnapshot } from './entities/booking-service-snapshot.enti
 import { ServiceRecoveryLog } from './entities/service-recovery-log.entity';
 import { ServicesService } from './services.service';
 import { ServicesController } from './services.controller';
+import { OutboxModule } from '../outbox/outbox.module';
 import { GuestWorkModule } from '../guest-work/guest-work.module';
 
 @Module({
@@ -19,6 +20,7 @@ import { GuestWorkModule } from '../guest-work/guest-work.module';
       ServiceRecoveryLog,
     ]),
     GuestWorkModule,
+    OutboxModule,
   ],
   controllers: [ServicesController],
   providers: [ServicesService],

@@ -112,9 +112,9 @@ describe('KpiCalculationService (Đợt 5 - Staff KPI & Weight Rebalancing)', ()
       mockPeriodScoreRepo.findOne.mockResolvedValue(null);
       // Giả lập có 3 reviews khách 5 sao
       mockReviewRepo.find.mockResolvedValue([
-        { stars: 5 },
-        { stars: 5 },
-        { stars: 5 },
+        { stars: 5, submittedAt: new Date('2026-10-10T10:00:00Z') },
+        { stars: 5, submittedAt: new Date('2026-10-11T10:00:00Z') },
+        { stars: 5, submittedAt: new Date('2026-10-12T10:00:00Z') },
       ]);
 
       const result = await service.calculatePeriodScore('100', '1', '2026-10');
@@ -128,11 +128,13 @@ describe('KpiCalculationService (Đợt 5 - Staff KPI & Weight Rebalancing)', ()
     it('2. Ghi nhận số mẫu sampleCount chính xác', async () => {
       mockPeriodScoreRepo.findOne.mockResolvedValue(null);
       mockReviewRepo.find.mockResolvedValue([
-        { stars: 5 },
+        { stars: 5, submittedAt: new Date('2026-10-10T10:00:00Z') },
       ]);
 
       const result = await service.calculatePeriodScore('100', '1', '2026-10');
       expect(result.sampleCount).toBe(1);
+      // 1 review (<3) is PROVISIONAL and cannot become an official 100/100 score.
+      expect(result.totalScore).toBe(0);
     });
 
     it('3. K01 / D5-01: Khi nhân viên không có bất kỳ task, sự kiện, đánh giá sao hay rubric quản lý nào (sampleCount = 0), điểm tổng = 0 (N/A / Chưa đủ dữ liệu), tuyệt đối KHÔNG trả 100/100 giả', async () => {

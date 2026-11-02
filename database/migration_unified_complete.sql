@@ -310,6 +310,14 @@ BEGIN
         ALTER TABLE `bookings` ADD COLUMN `reassigned_by` BIGINT UNSIGNED NULL AFTER `reassigned_at`;
     END IF;
 
+    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'booking_source';
+    IF col_cnt = 0 THEN
+        ALTER TABLE `bookings`
+            ADD COLUMN `booking_source` VARCHAR(30) NOT NULL DEFAULT 'WEBSITE' AFTER `assignment_note`,
+            ADD COLUMN `created_by_staff_id` BIGINT UNSIGNED NULL AFTER `booking_source`;
+    END IF;
+
     -- 6. BẢNG BOOKINGS: Các cột Hiện diện & No-Show (Đợt 2)
     SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'actual_check_in_at';

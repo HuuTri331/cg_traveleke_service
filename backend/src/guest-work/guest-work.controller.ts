@@ -14,6 +14,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { GuestWorkService } from './guest-work.service';
 import {
   CreateWorkTaskDto,
+  ClaimTaskDto,
   CompleteTaskDto,
   VerifyTaskDto,
   CreateOfflineWorkLogDto,
@@ -75,8 +76,9 @@ export class GuestWorkController {
   async acceptTask(
     @Param('taskId') taskId: string,
     @CurrentUser() user: { id: string; role: string },
+    @Body() dto?: ClaimTaskDto,
   ) {
-    return await this.guestWorkService.acceptTask(taskId, user);
+    return await this.guestWorkService.acceptTask(taskId, user, dto);
   }
 
   @Post(':taskId/start')
@@ -84,8 +86,9 @@ export class GuestWorkController {
   async startTask(
     @Param('taskId') taskId: string,
     @CurrentUser() user: { id: string; role: string },
+    @Body() dto?: ClaimTaskDto,
   ) {
-    return await this.guestWorkService.startTask(taskId, user);
+    return await this.guestWorkService.startTask(taskId, user, dto);
   }
 
   @Post(':taskId/complete')
