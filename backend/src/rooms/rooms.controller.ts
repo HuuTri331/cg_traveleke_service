@@ -82,16 +82,23 @@ export class RoomsController {
     return this.roomsService.getRoomServices(Number(id));
   }
 
-  @Patch(':id')
+  @Patch([':id', 'hotel/:hotelId/:id'])
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
   async update(
     @Param('id') id: string,
+    @Param('hotelId') routeHotelId: string | undefined,
     @Body() dto: UpdateRoomDto,
     @CurrentUser() user: User,
   ) {
+    const room = await this.roomsService.findOne(id);
+    if (routeHotelId !== undefined && String(routeHotelId) !== String(room.hotelId)) {
+      throw new ForbiddenException('Phòng không thuộc khách sạn trên đường dẫn (hotelId mismatch).');
+    }
+    if (dto.hotelId !== undefined && String(dto.hotelId) !== String(room.hotelId)) {
+      throw new ForbiddenException('Không được phép thay đổi khách sạn sở hữu (hotelId) của phòng.');
+    }
     if (user.role === 'EMPLOYEE') {
-      const room = await this.roomsService.findOne(id);
       const isManager = await this.roomsService.isHotelManager(user.id, room.hotelId);
       if (!isManager) {
         throw new ForbiddenException(
@@ -102,10 +109,26 @@ export class RoomsController {
     return this.roomsService.update(id, dto);
   }
 
-  @Delete(':id')
+  @Delete([':id', 'hotel/:hotelId/:id'])
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
-  remove(@Param('id') id: string) {
+  @Roles('ADMIN', 'EMPLOYEE')
+  async remove(
+    @Param('id') id: string,
+    @Param('hotelId') routeHotelId: string | undefined,
+    @CurrentUser() user: User,
+  ) {
+    const room = await this.roomsService.findOne(id);
+    if (routeHotelId !== undefined && String(routeHotelId) !== String(room.hotelId)) {
+      throw new ForbiddenException('Phòng không thuộc khách sạn trên đường dẫn (hotelId mismatch).');
+    }
+    if (user.role === 'EMPLOYEE') {
+      const isManager = await this.roomsService.isHotelManager(user.id, room.hotelId);
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền xóa phòng của khách sạn này.',
+        );
+      }
+    }
     return this.roomsService.remove(id);
   }
 

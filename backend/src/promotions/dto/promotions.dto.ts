@@ -111,3 +111,23 @@ export class SettleRefundDto {
   @IsOptional() @IsString() reason?: string;
 }
 
+export class ConfirmRefundIntentDto {
+  @IsOptional() @IsString() providerRef?: string;
+  @IsOptional() @IsString() payoutReceiptRef?: string;
+  @IsOptional() @IsString() settlementOutcome?:
+    | 'SIMULATED_SUCCEEDED'
+    | 'SANDBOX_ACCEPTED'
+    | 'SANDBOX_SETTLED'
+    | 'MANUAL_TEST_VERIFIED'
+    | 'FAILED'
+    | 'UNKNOWN_RECONCILE';
+}
+
+export class QuoteServiceItemDto {
+  @IsNotEmpty() @IsString() serviceId!: string;
+  @IsOptional() @IsNumber() @Min(1) quantity?: number;
+  @IsOptional() @IsString() usageAt?: string;
+}
+
+
+

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -19,16 +20,29 @@ export class HotelStaffService {
   ) {}
 
   /**
-   * Phân công nhân viên vào khách sạn.
+   * Phân công nhân viên vào khách sạn (ADMIN hoặc MANAGER của chính khách sạn đó).
    */
-  async assignStaff(dto: AssignStaffDto) {
+  async assignStaff(dto: AssignStaffDto, actor?: { id: string | number; role: string }) {
+    if (actor && actor.role !== 'ADMIN') {
+      const [mgr] = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND staff_role = 'MANAGER' AND status = 'ACTIVE' LIMIT 1`,
+        [dto.hotelId, actor.id],
+      );
+      if (!mgr) {
+        throw new ForbiddenException('Chỉ Quản lý khách sạn (MANAGER) tại cơ sở này hoặc Quản trị viên mới được phân công nhân sự.');
+      }
+    }
+
     // Kiểm tra khách sạn tồn tại
     const [hotel] = await this.dataSource.query(
-      'SELECT id, name FROM hotels WHERE id = ? AND deleted_at IS NULL',
+      'SELECT id, name, status FROM hotels WHERE id = ? AND deleted_at IS NULL',
       [dto.hotelId],
     );
     if (!hotel) {
       throw new NotFoundException('Không tìm thấy khách sạn.');
+    }
+    if (hotel.status && String(hotel.status) !== 'ACTIVE') {
+      throw new ForbiddenException('Khách sạn hiện không ở trạng thái hoạt động (ACTIVE).');
     }
 
     // Kiểm tra nhân viên tồn tại và có role phù hợp
@@ -81,7 +95,16 @@ export class HotelStaffService {
   /**
    * Lấy danh sách nhân viên được phân công cho khách sạn.
    */
-  async getStaffByHotel(hotelId: string) {
+  async getStaffByHotel(hotelId: string, actor?: { id: string | number; role: string }) {
+    if (actor && actor.role !== 'ADMIN') {
+      const [membership] = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+        [hotelId, actor.id],
+      );
+      if (!membership) {
+        throw new ForbiddenException('Bạn không có quyền xem danh sách nhân sự của khách sạn khác.');
+      }
+    }
     const data = await this.dataSource.query(
       `
       SELECT
@@ -108,9 +131,35 @@ export class HotelStaffService {
   }
 
   /**
-   * Lấy tất cả phân công nhân viên.
+   * Lấy tất cả phân công nhân viên (lọc theo phạm vi khách sạn nếu là EMPLOYEE).
    */
-  async findAll() {
+  async findAll(actor?: { id: string | number; role: string }) {
+    if (actor && actor.role === 'EMPLOYEE') {
+      const data = await this.dataSource.query(
+        `
+        SELECT
+          hs.id,
+          hs.hotel_id AS hotelId,
+          hs.staff_user_id AS staffUserId,
+          hs.staff_role AS staffRole,
+          hs.status,
+          hs.assigned_at AS assignedAt,
+          u.full_name AS staffName,
+          u.email AS staffEmail,
+          h.name AS hotelName
+        FROM hotel_staff hs
+        LEFT JOIN users u ON u.id = hs.staff_user_id
+        LEFT JOIN hotels h ON h.id = hs.hotel_id
+        WHERE hs.hotel_id IN (
+          SELECT hotel_id FROM hotel_staff WHERE staff_user_id = ? AND status = 'ACTIVE'
+        )
+        ORDER BY hs.assigned_at DESC
+        `,
+        [actor.id],
+      );
+      return { data };
+    }
+
     const data = await this.dataSource.query(`
       SELECT
         hs.id,
@@ -134,13 +183,23 @@ export class HotelStaffService {
   /**
    * Gỡ phân công nhân viên khỏi khách sạn.
    */
-  async removeAssignment(id: string) {
+  async removeAssignment(id: string, actor?: { id: string | number; role: string }) {
     const assignment = await this.hotelStaffRepository.findOne({
       where: { id },
     });
 
     if (!assignment) {
       throw new NotFoundException('Không tìm thấy phân công nhân viên.');
+    }
+
+    if (actor && actor.role !== 'ADMIN') {
+      const [mgr] = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND staff_role = 'MANAGER' AND status = 'ACTIVE' LIMIT 1`,
+        [assignment.hotelId, actor.id],
+      );
+      if (!mgr) {
+        throw new ForbiddenException('Chỉ Quản lý khách sạn sở hữu phân công này hoặc Quản trị viên mới có quyền gỡ nhân sự.');
+      }
     }
 
     await this.hotelStaffRepository.delete(id);

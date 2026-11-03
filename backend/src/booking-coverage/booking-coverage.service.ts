@@ -1,5 +1,5 @@
 import {
-  BadRequestException, ConflictException, Injectable, NotFoundException, Optional,
+  BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -45,7 +45,10 @@ export class BookingCoverageService {
       const booking = await em.findOne(Booking, { where: { id: bookingId }, lock: { mode: 'pessimistic_write' } });
       const grant = await em.findOne(BookingCoverageGrant, { where: { id: grantId, bookingId }, lock: { mode: 'pessimistic_write' } });
       if (!booking || !grant) throw new NotFoundException(`Không tìm thấy quyền hỗ trợ #${grantId}`);
-      await requireManager(em, grant.hotelId, actor);
+      if (String(grant.hotelId) !== String(booking.hotelId) || ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(booking.hotelId))) {
+        throw new ForbiddenException('hotelId không khớp với khách sạn thực tế của đơn đặt phòng.');
+      }
+      await requireManager(em, booking.hotelId, actor);
       if (grant.status !== CoverageGrantStatus.ACTIVE) throw new ConflictException('Quyền hỗ trợ không còn ACTIVE.');
       if (Number(grant.version) !== Number(dto.expectedVersion)) throw new ConflictException('Phiên bản quyền hỗ trợ đã thay đổi.');
       const newEnd = new Date(dto.newEndAt);

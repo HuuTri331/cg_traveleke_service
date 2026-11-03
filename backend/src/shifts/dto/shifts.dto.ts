@@ -39,24 +39,39 @@ export class StartShiftDto {
 }
 
 export class EndShiftDto {
-  @IsNotEmpty({ message: 'Số tiền mặt kiểm đếm cuối ca là bắt buộc.' })
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  closingCashCounted!: number;
+  closingCashCounted?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  closingCashActual?: number;
 
   @IsOptional()
   @IsString()
   handoverNote?: string;
-}
-
-export class CreateHandoverDto {
-  @IsNotEmpty({ message: 'Nhân viên ca sau (toStaffId) là bắt buộc.' })
-  @IsString()
-  toStaffId!: string;
 
   @IsOptional()
   @IsString()
-  pendingTasks?: string;
+  notes?: string;
+}
+
+export class CreateHandoverDto {
+  @IsOptional()
+  @IsString()
+  toStaffId?: string;
+
+  @IsOptional()
+  @IsString()
+  receiverStaffId?: string;
+
+  @IsOptional()
+  pendingTasks?: any;
+
+  @IsOptional()
+  pendingItems?: any;
 
   @IsOptional()
   @IsNumber()
@@ -66,4 +81,11 @@ export class CreateHandoverDto {
   @IsOptional()
   @IsString()
   specialNotes?: string;
+
+  @IsOptional()
+  @IsString()
+  handoverNotes?: string;
+
+  @IsOptional()
+  acknowledgedFinancialAccountIds?: string[];
 }

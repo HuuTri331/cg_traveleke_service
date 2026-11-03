@@ -215,12 +215,21 @@ export class VnpayService {
     }
   }
 
+  private safeCompareHex(expectedHex: string, actualHex: string): boolean {
+    const a = Buffer.from(String(expectedHex || '').trim().toLowerCase(), 'utf-8');
+    const b = Buffer.from(String(actualHex || '').trim().toLowerCase(), 'utf-8');
+    if (a.length === 0 || a.length !== b.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(a, b);
+  }
+
   /**
    * Xác thực chữ ký phản hồi QueryDr từ VNPay 2.1.0
    */
   verifyQueryDrResponse(resData: Record<string, any>): boolean {
-    if (!resData || !resData.vnp_SecureHash) {
-      return true;
+    if (!resData || !resData.vnp_SecureHash || !this.hashSecret) {
+      return false;
     }
     const secureHash = String(resData.vnp_SecureHash).toLowerCase();
     const hashData = [
@@ -243,15 +252,16 @@ export class VnpayService {
 
     const hmac = crypto.createHmac('sha512', this.hashSecret);
     const signed = hmac.update(Buffer.from(hashData, 'utf-8')).digest('hex');
-    return secureHash === signed.toLowerCase();
+    return this.safeCompareHex(signed, secureHash);
   }
 
   /**
    * Xác thực chữ ký phản hồi Refund từ VNPay 2.1.0
+   * S-02: Bắt buộc phải có vnp_SecureHash hợp lệ; thiếu chữ ký bị coi là dữ liệu không đáng tin.
    */
   verifyRefundResponse(resData: Record<string, any>): boolean {
-    if (!resData || !resData.vnp_SecureHash) {
-      return true;
+    if (!resData || !resData.vnp_SecureHash || !this.hashSecret) {
+      return false;
     }
     const secureHash = String(resData.vnp_SecureHash).toLowerCase();
     const hashData = [
@@ -272,7 +282,7 @@ export class VnpayService {
 
     const hmac = crypto.createHmac('sha512', this.hashSecret);
     const signed = hmac.update(Buffer.from(hashData, 'utf-8')).digest('hex');
-    return secureHash === signed.toLowerCase();
+    return this.safeCompareHex(signed, secureHash);
   }
 
   /**
@@ -285,9 +295,22 @@ export class VnpayService {
     transactionDate: Date;
     createBy: string;
     ipAddr?: string;
-    transactionType?: string; // 02: Toan phan, 03: Mot phan
+    transactionType: '02' | '03'; // 02: Toan phan, 03: Mot phan
+    requestId: string;
   }): Promise<any> {
-    const requestId = `REF_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    if (!params.requestId || !String(params.requestId).trim()) {
+      throw new Error('Bắt buộc cung cấp requestId ổn định cho yêu cầu hoàn tiền VNPay.');
+    }
+    if (params.transactionType !== '02' && params.transactionType !== '03') {
+      throw new Error(`Loại giao dịch hoàn tiền VNPay không hợp lệ: ${params.transactionType}`);
+    }
+    const stableSeed = crypto
+      .createHash('sha256')
+      .update(String(params.requestId).trim())
+      .digest('hex')
+      .slice(0, 24)
+      .toUpperCase();
+    const requestId = `REF_${stableSeed}`;
     const vnpVersion = '2.1.0';
     const vnpCommand = 'refund';
     const vnpTmnCode = this.tmnCode;
@@ -297,9 +320,9 @@ export class VnpayService {
     const vnpTransDate = this.formatDateGmt7(params.transactionDate);
     const vnpCreateDate = this.formatDateGmt7(new Date());
     const vnpIpAddr = params.ipAddr || '127.0.0.1';
-    const vnpTransactionType = params.transactionType || '02';
+    const vnpTransactionType = params.transactionType;
     const vnpTransactionNo = params.transactionNo || '';
-    const vnpCreateBy = params.createBy || 'TravelekeAdmin';
+    const vnpCreateBy = params.createBy || 'SYSTEM_REFUND_WORKER';
 
     // Refund hash raw string format:
     // vnp_RequestId|vnp_Version|vnp_Command|vnp_TmnCode|vnp_TransactionType|vnp_TxnRef|vnp_Amount|vnp_TransactionNo|vnp_TransactionDate|vnp_CreateBy|vnp_CreateDate|vnp_IpAddr|vnp_OrderInfo
@@ -345,12 +368,30 @@ export class VnpayService {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
       });
+      if (response && 'ok' in response && !response.ok) {
+        throw new Error(`VNPay Refund HTTP ${response.status}`);
+      }
       const data = await response.json();
-      if (data && data.vnp_SecureHash && !this.verifyRefundResponse(data)) {
+      if (!data || !this.verifyRefundResponse(data)) {
         this.logger.error(
-          `[Refund] Sai lệch chữ ký phản hồi Refund cho txnRef: ${params.txnRef}`,
+          `[Refund] Thiếu chữ ký hoặc sai lệch chữ ký phản hồi Refund cho txnRef: ${params.txnRef}`,
         );
-        throw new Error('Chữ ký phản hồi Refund từ VNPay không hợp lệ.');
+        throw new Error('Chữ ký phản hồi Refund từ VNPay thiếu hoặc không hợp lệ.');
+      }
+      if (data.vnp_TmnCode && vnpTmnCode && String(data.vnp_TmnCode) !== String(vnpTmnCode)) {
+        throw new Error('Mã merchant (vnp_TmnCode) trong phản hồi Refund không khớp.');
+      }
+      if (data.vnp_TxnRef && String(data.vnp_TxnRef) !== String(vnpTxnRef)) {
+        throw new Error('Mã giao dịch (vnp_TxnRef) trong phản hồi Refund không khớp.');
+      }
+      if (data.vnp_TransactionType && String(data.vnp_TransactionType) !== String(vnpTransactionType)) {
+        throw new Error('Loại hoàn tiền (vnp_TransactionType) trong phản hồi không khớp.');
+      }
+      if (data.vnp_Amount !== undefined && Number(data.vnp_Amount) !== vnpAmount) {
+        this.logger.error(
+          `[Refund] Số tiền phản hồi (${data.vnp_Amount}) không khớp yêu cầu (${vnpAmount}) cho txnRef: ${params.txnRef}`,
+        );
+        throw new Error('Số tiền phản hồi Refund từ VNPay không khớp với yêu cầu.');
       }
       return data;
     } catch (err: any) {

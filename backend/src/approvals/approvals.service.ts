@@ -29,10 +29,28 @@ export class ApprovalsService {
    * Tạo đề xuất phê duyệt tài chính / giảm giá / hoàn tiền / bồi thường
    */
   async createRequest(dto: CreateApprovalRequestDto, requester: User) {
+    let authoritativeHotelId = String(dto.hotelId || '').trim();
+    if (dto.bookingId) {
+      const [booking] = await this.dataSource.query(
+        `SELECT id, hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1`,
+        [dto.bookingId],
+      );
+      if (!booking) {
+        throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${dto.bookingId}.`);
+      }
+      if (authoritativeHotelId && String(booking.hotelId) !== authoritativeHotelId) {
+        throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn sở hữu đơn đặt phòng.');
+      }
+      authoritativeHotelId = String(booking.hotelId);
+    }
+    if (!authoritativeHotelId) {
+      throw new BadRequestException('Không xác định được khách sạn của đề xuất phê duyệt.');
+    }
+
     if (requester.role !== 'ADMIN') {
       const isStaff = await this.dataSource.query(
         `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
-        [dto.hotelId, requester.id],
+        [authoritativeHotelId, requester.id],
       );
       if (!isStaff || isStaff.length === 0) {
         throw new ForbiddenException(
@@ -42,7 +60,7 @@ export class ApprovalsService {
     }
 
     const request = this.approvalRepo.create({
-      hotelId: dto.hotelId,
+      hotelId: authoritativeHotelId,
       bookingId: dto.bookingId || null,
       requestType: dto.requestType,
       requestedBy: requester.id,

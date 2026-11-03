@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { Booking, BookingStatus } from '../bookings/entities/booking.entity';
 import { BookingAssignmentState } from '../booking-assignment/entities/booking-assignment-state.entity';
@@ -46,6 +46,9 @@ export async function createCoverage(em: EntityManager, bookingId: string,
   actor: {id: string; role: string}, dto: CreateTemporaryCoverageDto) {
   const booking = await em.findOne(Booking, { where: { id: bookingId }, lock: {mode:'pessimistic_write'} });
   if (!booking) throw new NotFoundException('Không tìm thấy booking.');
+  if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(booking.hotelId)) {
+    throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn thực tế sở hữu đơn đặt phòng.');
+  }
   await requireManager(em, booking.hotelId, actor);
   if (!booking.handledBy || ![BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.NO_SHOW, BookingStatus.CHECKED_IN].includes(booking.status)) {
     throw new ConflictException('Booking phải đang hoạt động và có người phụ trách.');

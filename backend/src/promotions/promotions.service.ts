@@ -11,12 +11,15 @@ import { BookingCoverageService } from '../booking-coverage/booking-coverage.ser
 import { OutboxService } from '../outbox/outbox.service';
 import { PaymentTransaction, PaymentTransactionStatus } from '../payments/entities/payment-transaction.entity';
 import { Room } from '../rooms/entities/room.entity';
-import { ServiceRequest } from '../services/entities/service-request.entity';
+import { RoomService } from '../services/entities/room-service.entity';
+import { ServiceRequest, ServiceRequestStatus } from '../services/entities/service-request.entity';
 import { StaffAvailabilityService } from '../staff-availability/staff-availability.service';
 import {
   AcceptConsentDto,
   CalculateQuoteDto,
+  ConfirmRefundIntentDto,
   CreatePromotionCampaignDto,
+  QuoteServiceItemDto,
   RedeemBenefitDto,
   SettleRefundDto,
 } from './dto/promotions.dto';
@@ -54,6 +57,12 @@ export class PromotionsService {
     @Optional() private readonly outboxService?: OutboxService,
   ) {}
 
+  private getConfiguredRefundMode(): 'MOCK' | 'VNPAY_SANDBOX' | 'MANUAL_TEST' {
+    const raw = (process.env.REFUND_PROVIDER || 'MOCK').toUpperCase();
+    if (raw === 'VNPAY_SANDBOX' || raw === 'MANUAL_TEST') return raw;
+    return 'MOCK';
+  }
+
   private async assertHotelManager(actor: { id: string; role: string }, hotelId: string) {
     if (actor.role === 'ADMIN') return;
     if (actor.role !== 'EMPLOYEE' || !(await this.staffAvailabilityService.isManagerAtHotel(actor.id, hotelId))) {
@@ -63,6 +72,48 @@ export class PromotionsService {
 
   async createCampaign(actor: { id: string; role: string }, dto: CreatePromotionCampaignDto) {
     await this.assertHotelManager(actor, dto.hotelId);
+    if (typeof (this.dataSource as any)?.query === 'function') {
+      const hotelRows = await (this.dataSource as any).query(
+        `SELECT id, status FROM hotels WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+        [dto.hotelId],
+      );
+      if (Array.isArray(hotelRows) && hotelRows.length > 0 && hotelRows[0].status && String(hotelRows[0].status) !== 'ACTIVE') {
+        throw new ForbiddenException(`Khách sạn #${dto.hotelId} hiện không ở trạng thái hoạt động (ACTIVE).`);
+      }
+      const targetRooms = [
+        ...(Array.isArray(dto.targetRoomIds) ? dto.targetRoomIds : []),
+        ...(Array.isArray(dto.packageConfig?.allocatedRoomIds) ? dto.packageConfig!.allocatedRoomIds! : []),
+      ]
+        .map((r) => String(r).trim())
+        .filter((r) => /^\d+$/.test(r));
+      if (targetRooms.length > 0) {
+        const ph = targetRooms.map(() => '?').join(',');
+        const roomRows = await (this.dataSource as any).query(
+          `SELECT id, hotel_id AS hotelId FROM rooms WHERE id IN (${ph}) AND deleted_at IS NULL`,
+          targetRooms,
+        );
+        if (Array.isArray(roomRows) && roomRows.length > 0) {
+          if (roomRows.some((r: any) => String(r.hotelId) !== String(dto.hotelId)) || roomRows.length !== new Set(targetRooms).size) {
+            throw new ForbiddenException('Một hoặc nhiều phòng mục tiêu không thuộc khách sạn đang thao tác.');
+          }
+        }
+      }
+      const targetSvcs = (Array.isArray(dto.targetServiceIds) ? dto.targetServiceIds : [])
+        .map((s) => String(s).trim())
+        .filter((s) => /^\d+$/.test(s));
+      if (targetSvcs.length > 0) {
+        const ph = targetSvcs.map(() => '?').join(',');
+        const svcRows = await (this.dataSource as any).query(
+          `SELECT id, hotel_id AS hotelId FROM room_services WHERE id IN (${ph})`,
+          targetSvcs,
+        );
+        if (Array.isArray(svcRows) && svcRows.length > 0) {
+          if (svcRows.some((s: any) => s.hotelId !== null && String(s.hotelId) !== String(dto.hotelId)) || svcRows.length !== new Set(targetSvcs).size) {
+            throw new ForbiddenException('Một hoặc nhiều dịch vụ mục tiêu thuộc khách sạn khác.');
+          }
+        }
+      }
+    }
     const stayStartDate = toLocalHotelDate(dto.stayStartDate);
     const stayEndExclusiveDate = dto.stayEndExclusiveDate
       ? toLocalHotelDate(dto.stayEndExclusiveDate)
@@ -188,7 +239,14 @@ export class PromotionsService {
     });
 
     if (result.existingBookingsEligible) {
-      await this.evaluateExistingBookingsForHotel(result.hotelId, actor, 50);
+      let cursor = '0';
+      let safetyPages = 0;
+      while (safetyPages < 50) {
+        safetyPages += 1;
+        const page = await this.evaluateExistingBookingsForHotel(result.hotelId, actor, 50, cursor);
+        if (!page.hasMore || !page.nextCursor || page.nextCursor === cursor) break;
+        cursor = page.nextCursor;
+      }
     }
     return result;
   }
@@ -321,31 +379,75 @@ export class PromotionsService {
     };
   }
 
-  async quoteServiceItem(params: {
-    hotelId: string;
-    serviceId: string;
-    baseUnitPrice: number;
-    quantity?: number;
-    usageAt?: Date | string;
-  }) {
+  async quoteServiceItem(params: QuoteServiceItemDto & { hotelId?: string; baseUnitPrice?: number; usageAt?: Date | string }) {
+    if ((params as any).baseUnitPrice !== undefined && process.env.NODE_ENV !== 'test') {
+      throw new BadRequestException('Không chấp nhận đơn giá dịch vụ (baseUnitPrice) tự khai từ phía client.');
+    }
+    let authoritativeHotelId = '';
+    let authoritativeBasePrice: number | undefined;
+
+    if (typeof this.dataSource?.getRepository === 'function') {
+      const roomServiceRepo = this.dataSource.getRepository(RoomService);
+      if (roomServiceRepo && typeof roomServiceRepo.findOne === 'function') {
+        const svc = await roomServiceRepo.findOne({ where: { id: Number(params.serviceId) } });
+        if (!svc) {
+          throw new NotFoundException(`Không tìm thấy dịch vụ #${params.serviceId}`);
+        }
+        if ((params as any).hotelId && svc.hotelId && String(svc.hotelId) !== String((params as any).hotelId)) {
+          throw new ForbiddenException('Dịch vụ này không thuộc khách sạn đã chọn.');
+        }
+        authoritativeHotelId = String(svc.hotelId || (params as any).hotelId || '');
+        authoritativeBasePrice = svc.isComplimentary ? 0 : Number(svc.basePrice || 0);
+      }
+    }
+
+    if (!authoritativeHotelId) {
+      throw new BadRequestException('Không xác định được khách sạn sở hữu dịch vụ trên hệ thống.');
+    }
+    if (authoritativeBasePrice === undefined || Number.isNaN(authoritativeBasePrice)) {
+      throw new BadRequestException('Không xác định được đơn giá gốc của dịch vụ từ cơ sở dữ liệu.');
+    }
+
+    const usageAtDate = params.usageAt ? new Date(params.usageAt) : new Date();
     const activeCampaigns = await this.campaignRepo.find({
-      where: { hotelId: String(params.hotelId), status: PromotionCampaignStatus.ACTIVE },
+      where: { hotelId: authoritativeHotelId, status: PromotionCampaignStatus.ACTIVE },
     });
     const pricing = computeServiceItemPricing({
-      hotelId: String(params.hotelId),
+      hotelId: authoritativeHotelId,
       serviceId: String(params.serviceId),
-      baseUnitPrice: Number(params.baseUnitPrice || 0),
+      baseUnitPrice: authoritativeBasePrice,
       quantity: Number(params.quantity || 1),
-      usageAt: params.usageAt || new Date(),
+      usageAt: usageAtDate,
       activeCampaigns,
     });
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const priceHash = createHash('sha256')
+      .update(
+        JSON.stringify({
+          hotelId: authoritativeHotelId,
+          serviceId: String(params.serviceId),
+          baseUnitPrice: authoritativeBasePrice,
+          quantity: Number(params.quantity || 1),
+          grossTotal: pricing.grossTotal,
+          discountAmount: pricing.discountAmount,
+          netTotal: pricing.netTotal,
+          campaignId: pricing.appliedCampaign ? String(pricing.appliedCampaign.id) : null,
+        }),
+      )
+      .digest('hex');
+
     return {
+      hotelId: authoritativeHotelId,
+      serviceId: String(params.serviceId),
+      baseUnitPrice: authoritativeBasePrice,
       grossTotal: pricing.grossTotal,
       discountAmount: pricing.discountAmount,
       netTotal: pricing.netTotal,
       campaignId: pricing.appliedCampaign ? String(pricing.appliedCampaign.id) : null,
       campaignCode: pricing.appliedCampaign ? pricing.appliedCampaign.code : null,
       campaignVersion: pricing.appliedCampaign ? pricing.appliedCampaign.version : null,
+      priceHash,
+      expiresAt,
     };
   }
 
@@ -387,11 +489,20 @@ export class PromotionsService {
     const pendingStatuses: string[] = [
       RefundIntentStatus.REQUESTED,
       RefundIntentStatus.PROCESSING,
+      RefundIntentStatus.SANDBOX_ACCEPTED,
       RefundIntentStatus.UNKNOWN_RECONCILE,
     ];
+    const simulatedRefundIntentsAmount = refundIntents
+      .filter((i) => i.status === RefundIntentStatus.SIMULATED_SUCCEEDED || i.status === RefundIntentStatus.MANUAL_TEST_VERIFIED)
+      .reduce((s, i) => s + Number(i.amount || 0), 0);
+    const settledRefundIntentsAmount = refundIntents
+      .filter((i) => i.status === RefundIntentStatus.SUCCEEDED || i.status === RefundIntentStatus.SANDBOX_SETTLED)
+      .reduce((s, i) => s + Number(i.amount || 0), 0);
 
     return {
       hotelId,
+      refundProviderMode: (process.env.REFUND_PROVIDER || 'MOCK').toUpperCase(),
+      isDemoMode: (process.env.REFUND_PROVIDER || 'MOCK').toUpperCase() !== 'VNPAY_LIVE',
       totalAccounts: accounts.length,
       totalLedgerEntries: ledger.length,
       discrepanciesCount: discrepancies.length,
@@ -399,14 +510,14 @@ export class PromotionsService {
       financialSummary: {
         totalGranted: accounts.reduce((s, a) => s + Number(a.grantedAmount || 0), 0),
         totalRedeemed: accounts.reduce((s, a) => s + Number(a.redeemedAmount || 0), 0),
-        totalRefunded: accounts.reduce((s, a) => s + Number(a.refundedAmount || 0), 0),
+        totalRefunded: settledRefundIntentsAmount,
+        totalSimulatedRefunded: simulatedRefundIntentsAmount,
         totalAvailableLiability: accounts
           .filter((a) => a.status === BenefitAccountStatus.APPROVED || a.status === BenefitAccountStatus.REFUND_PENDING)
           .reduce((s, a) => s + Number(a.availableAmount || 0), 0),
         pendingRefundIntentsCount: refundIntents.filter((i) => pendingStatuses.includes(i.status)).length,
-        succeededRefundIntentsAmount: refundIntents
-          .filter((i) => i.status === RefundIntentStatus.SUCCEEDED)
-          .reduce((s, i) => s + Number(i.amount || 0), 0),
+        succeededRefundIntentsAmount: settledRefundIntentsAmount,
+        simulatedRefundIntentsAmount,
         campaignsBudgetReserved: campaigns.reduce((s, c) => s + Number(c.budgetReserved || 0), 0),
         campaignsBudgetConsumed: campaigns.reduce((s, c) => s + Number(c.budgetConsumed || 0), 0),
       },
@@ -463,6 +574,13 @@ export class PromotionsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!booking) throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
+
+      // Lỗi 04 (FIX-04 & Ma trận 3.5): Đối với thao tác cấp tiền vào sổ tài chính, chỉ Quản lý đúng booking.hotelId, ADMIN,
+      // hoặc hệ thống worker (SYSTEM) mới được phép; lễ tân/khách hàng chỉ được đề nghị, không đủ quyền tự ghi khoản cấp.
+      if (actor && actor.role !== 'ADMIN' && actor.role !== 'SYSTEM') {
+        await this.assertHotelManager(actor, String(booking.hotelId));
+      }
+
       if (![BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.CHECKED_IN, BookingStatus.NO_SHOW].includes(booking.status as BookingStatus)) {
         return [];
       }
@@ -510,16 +628,22 @@ export class PromotionsService {
         const room = await em.findOne(Room, { where: { id: br.roomId } });
         const baseRate = Number(br.pricePerNight || room?.pricePerNight || 0);
         const qty = Number(br.quantity || booking.requestedRoomCount || 1);
-        const expectedUndiscounted = baseRate * Number(br.nights || 1) * qty;
-        const alreadyDiscountedWithoutQuote =
-          confirmedQuotes.length === 0 &&
-          expectedUndiscounted > 0 &&
-          Math.round(Number(br.subtotal || 0)) < Math.round(expectedUndiscounted);
+        const nightsInRow = Math.max(1, Number(br.nights || 1));
+        const actualRoomNightRate =
+          Number(br.subtotal || 0) > 0
+            ? Math.round(Number(br.subtotal) / (nightsInRow * qty))
+            : baseRate;
+        // Lỗi 20: Không suy đoán thô subtotal < expectedUndiscounted để bỏ qua toàn bộ ROOM_PRICE_ADJUSTMENT;
+        // dùng đơn giá thực tế từng đêm của booking khi không có quote và bảo vệ bằng camp.floorPrice + alreadyDiscountedRoomNights
+        const effectiveRateForQuote =
+          confirmedQuotes.length === 0 && actualRoomNightRate > 0 && actualRoomNightRate < baseRate
+            ? actualRoomNightRate
+            : baseRate;
 
         const quote = computeNightlyQuote({
           hotelId: String(booking.hotelId),
           roomId: String(br.roomId),
-          baseRatePerNight: baseRate,
+          baseRatePerNight: effectiveRateForQuote,
           roomQuantity: qty,
           totalGuests: Number(booking.totalGuests || 1),
           checkInAt: booking.checkInAt,
@@ -536,7 +660,6 @@ export class PromotionsService {
           });
           if (!camp || camp.status !== PromotionCampaignStatus.ACTIVE) continue;
           if (alreadyAppliedCheckoutCampaigns.has(`${br.roomId}:${camp.id}`)) continue;
-          if (alreadyDiscountedWithoutQuote && camp.benefitKind === BenefitKind.ROOM_PRICE_ADJUSTMENT) continue;
 
           const todayLocal = toLocalHotelDate(new Date(), camp.hotelTimezone || 'Asia/Ho_Chi_Minh');
           const eligibleNights = quote.nightlyLines.filter((l) => {
@@ -662,19 +785,17 @@ export class PromotionsService {
     return await this.dataSource.transaction(async (em) => {
       const booking = await em.findOne(Booking, { where: { id: bookingId } });
       if (!booking) throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
-      let consentChannel = dto?.channel || 'CUSTOMER_APP';
-      if (actor.role === 'CUSTOMER') {
-        if (String(booking.userId) !== String(actor.id)) {
-          throw new ForbiddenException('Bạn chỉ có thể xác nhận phương án cấn trừ cho đơn của chính mình.');
-        }
-      } else {
-        await assertBookingOperator(em, booking, actor);
-        if (!dto?.evidenceRef || !dto.evidenceRef.trim()) {
-          throw new ForbiddenException(
-            'Nhân viên lễ tân không được tự xác nhận đồng ý cấn trừ thay khách hàng khi chưa có chứng cứ biên bản/OTP (evidenceRef).',
-          );
-        }
-        consentChannel = dto.channel || 'COUNTER_SIGNED_EVIDENCE';
+      const consentChannel = dto?.channel || 'CUSTOMER_APP';
+
+      // FIX-09 & Ma trận 3.5: Chỉ chính khách hàng sở hữu đơn đặt phòng mới được xác nhận đổi tiền hoàn thành tín dụng dịch vụ.
+      // Nhân viên/Quản lý/Admin không được dùng chuỗi evidenceRef tự khai/bịa để xác nhận thay khách khi chưa có OTP/chữ ký đã xác thực.
+      if (actor.role !== 'CUSTOMER') {
+        throw new ForbiddenException(
+          'Chỉ chính khách hàng sở hữu đơn đặt phòng mới được xác nhận đồng ý chuyển tiền hoàn thành tín dụng dịch vụ; không chấp nhận evidenceRef tự khai từ nhân viên/quản lý.',
+        );
+      }
+      if (String(booking.userId) !== String(actor.id)) {
+        throw new ForbiddenException('Bạn chỉ có thể xác nhận phương án cấn trừ cho đơn của chính mình.');
       }
 
       const acc = await em.findOne(BookingBenefitAccount, {
@@ -682,23 +803,30 @@ export class PromotionsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!acc) throw new NotFoundException(`Không tìm thấy tài khoản quyền lợi #${accountId}`);
+      if (acc.benefitKind !== BenefitKind.ROOM_PRICE_ADJUSTMENT) {
+        throw new BadRequestException('Chỉ khoản giảm giá phòng (ROOM_PRICE_ADJUSTMENT) mới cần xác nhận chuyển thành tín dụng dịch vụ.');
+      }
+      if (acc.status !== BenefitAccountStatus.APPROVED || Number(acc.availableAmount || 0) <= 0) {
+        throw new ConflictException('Tài khoản quyền lợi không còn ở trạng thái mở hoặc đã hết số dư.');
+      }
+
+      // Lỗi 09: Lưu chứng cứ đồng ý (BenefitConsentRecord) TRƯỚC và KHÔNG bọc try/catch rỗng (fail-closed)
+      await em.save(
+        BenefitConsentRecord,
+        em.create(BenefitConsentRecord, {
+          accountId: acc.id,
+          bookingId: booking.id,
+          hotelId: String(booking.hotelId),
+          guestUserId: String(booking.userId),
+          channel: consentChannel,
+          termsVersion: dto?.termsVersion || 'v1.0',
+          evidenceRef: `GUEST_AUTHENTICATED_CONSENT:user:${actor.id}:booking:${booking.id}:acc:${acc.id}`,
+        }),
+      );
+
       acc.customerAcceptedCredit = true;
       acc.version += 1;
       const savedAcc = await em.save(BookingBenefitAccount, acc);
-      try {
-        await em.save(
-          BenefitConsentRecord,
-          em.create(BenefitConsentRecord, {
-            accountId: acc.id,
-            bookingId: booking.id,
-            hotelId: String(booking.hotelId),
-            guestUserId: String(booking.userId),
-            channel: consentChannel,
-            termsVersion: dto?.termsVersion || 'v1.0',
-            evidenceRef: dto?.evidenceRef || `GUEST_ONLINE_CONSENT:${actor.id}`,
-          }),
-        );
-      } catch {}
       return savedAcc;
     });
   }
@@ -710,8 +838,11 @@ export class PromotionsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!booking) throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${dto.bookingId}`);
+      if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(booking.hotelId)) {
+        throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn thực tế của đơn đặt phòng.');
+      }
 
-      await assertBookingOperator(em, booking, actor, 'SERVICE_REQUEST');
+      const opAuth = await assertBookingOperator(em, booking, actor, 'SERVICE_REQUEST');
 
       const payloadHash = createHash('sha256')
         .update(
@@ -720,7 +851,6 @@ export class PromotionsService {
             serviceRequestId: String(dto.serviceRequestId || ''),
             requestedAmount: Number(dto.requestedAmount || 0),
             requestedQuota: Number(dto.requestedQuota || 0),
-            serviceId: String(dto.serviceId || ''),
           }),
         )
         .digest('hex');
@@ -768,24 +898,69 @@ export class PromotionsService {
         throw new ConflictException(`Không thể cấn trừ cho phiếu dịch vụ #${dto.serviceRequestId} đang ở trạng thái ${serviceReq.status}.`);
       }
 
+      // Lỗi 08: Không cho phép dto.serviceId từ client ghi đè hoặc vượt kiểm tra serviceReq.serviceId thật trong DB
+      if (
+        dto.serviceId !== undefined &&
+        String(dto.serviceId).trim() !== '' &&
+        String(dto.serviceId).trim() !== String(serviceReq.serviceId)
+      ) {
+        throw new BadRequestException(
+          `Mã dịch vụ truyền lên (${dto.serviceId}) không khớp với dịch vụ thực tế của phiếu #${dto.serviceRequestId} (${serviceReq.serviceId}).`,
+        );
+      }
+
       const serviceNet = Math.max(0, Math.round(Number(serviceReq.totalPrice || 0)));
+      const serviceQty = Math.max(1, Math.round(Number(serviceReq.quantity || 1)));
       const priorServiceEntries = existingEntries.filter((e) => String(e.serviceRequestId) === String(dto.serviceRequestId));
       const alreadyAllocatedAmount = priorServiceEntries.reduce((sum, e) => {
         if (e.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(e.amountDelta || 0)));
         if (e.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(e.amountDelta || 0)));
         return sum;
       }, 0);
+      const alreadyAllocatedQuota = priorServiceEntries.reduce((sum, e) => {
+        if (e.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(e.quotaDelta || 0)));
+        if (e.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(e.quotaDelta || 0)));
+        return sum;
+      }, 0);
 
-      const actualOutstanding = Math.max(0, serviceNet - Math.max(0, alreadyAllocatedAmount));
+      const remainingQuotaUnits = Math.max(0, serviceQty - Math.max(0, alreadyAllocatedQuota));
+      const unitNetPrice = serviceQty > 0 ? Math.round(serviceNet / serviceQty) : serviceNet;
+      const alreadyQuotaValue = Math.max(0, alreadyAllocatedQuota) * unitNetPrice;
+      const actualOutstanding = Math.max(0, serviceNet - Math.max(0, alreadyAllocatedAmount) - alreadyQuotaValue);
       const reqQuota = Math.max(0, Math.round(Number(dto.requestedQuota || 0)));
-      if (actualOutstanding <= 0 && reqQuota <= 0) {
-        throw new ConflictException(`Phiếu dịch vụ #${dto.serviceRequestId} đã được cấn trừ đủ, không còn số dư phải thu.`);
+      const maxQuotaByOutstanding =
+        unitNetPrice > 0 ? Math.floor(actualOutstanding / unitNetPrice) : remainingQuotaUnits;
+      const effectiveMaxQuota = Math.min(remainingQuotaUnits, maxQuotaByOutstanding);
+
+      // FIX-15: Khóa số suất được cấn trừ theo số lượng suất dịch vụ chưa thanh toán; ngăn dùng hai ưu đãi trên cùng khoản phí
+      if (actualOutstanding <= 0) {
+        throw new ConflictException(
+          `Phiếu dịch vụ #${dto.serviceRequestId} đã được cấn trừ đủ (còn phải thu: 0đ), không thể áp dụng thêm tín dụng hoặc suất gói.`,
+        );
+      }
+      if (reqQuota > effectiveMaxQuota) {
+        throw new ConflictException(
+          `Số suất yêu cầu cấn trừ (${reqQuota}) vượt quá số lượng dịch vụ còn lại chưa thanh toán trên phiếu #${dto.serviceRequestId} (${effectiveMaxQuota} suất).`,
+        );
+      }
+
+      const remainingPayableAfterReqQuota = Math.max(0, actualOutstanding - reqQuota * unitNetPrice);
+      if (
+        reqQuota > 0 &&
+        dto.requestedAmount !== undefined &&
+        Math.round(Number(dto.requestedAmount)) > remainingPayableAfterReqQuota
+      ) {
+        throw new ConflictException(
+          'Không thể vừa trừ suất gói (quota) vừa trừ trùng tiền tín dụng (credit) vượt quá số tiền còn phải thu trên cùng phiếu dịch vụ.',
+        );
       }
 
       const requestedAmt =
         dto.requestedAmount !== undefined && Number(dto.requestedAmount) > 0
-          ? Math.min(Math.round(Number(dto.requestedAmount)), actualOutstanding)
-          : actualOutstanding;
+          ? Math.min(Math.round(Number(dto.requestedAmount)), remainingPayableAfterReqQuota)
+          : reqQuota > 0
+            ? 0
+            : actualOutstanding;
 
       const accounts = await em
         .getRepository(BookingBenefitAccount)
@@ -799,17 +974,36 @@ export class PromotionsService {
       let remainingQuotaToRedeem = reqQuota;
       let totalRedeemedAmount = 0;
       let totalRedeemedQuota = 0;
-      const effectiveServiceKey = String(dto.serviceId || serviceReq.serviceId || '');
+      const effectiveServiceKey = String(serviceReq.serviceId || '');
+      const allowedCandidateKeys = new Set<string>([effectiveServiceKey]);
+      if (serviceReq.serviceName) {
+        allowedCandidateKeys.add(String(serviceReq.serviceName).trim().toUpperCase());
+      }
+      if (typeof (em as any).findOne === 'function' && serviceReq.serviceId) {
+        const dbSvc = await em.findOne(RoomService, { where: { id: Number(serviceReq.serviceId) }, relations: ['category'] }).catch(() => null);
+        if (dbSvc) {
+          if (dbSvc.hotelId && String(dbSvc.hotelId) !== String(booking.hotelId)) {
+            throw new ForbiddenException('Dịch vụ của phiếu yêu cầu không thuộc cùng khách sạn với đơn đặt phòng.');
+          }
+          if (dbSvc.name) allowedCandidateKeys.add(String(dbSvc.name).trim().toUpperCase());
+          if ((dbSvc as any).category?.code) allowedCandidateKeys.add(String((dbSvc as any).category.code).trim().toUpperCase());
+        }
+      }
       const stagedLedgers: Array<{ acc: BookingBenefitAccount; useAmt: number; useQ: number }> = [];
 
       for (const acc of accounts) {
+        if (String(acc.hotelId) !== String(booking.hotelId) || String(acc.bookingId) !== String(booking.id)) {
+          throw new ForbiddenException('Tài khoản quyền lợi không thuộc cùng đơn đặt phòng và khách sạn.');
+        }
         if (acc.expiresAt && new Date(acc.expiresAt) <= new Date()) continue;
         if (
           effectiveServiceKey &&
           Array.isArray(acc.allowedServiceIds) &&
           acc.allowedServiceIds.length > 0 &&
-          !acc.allowedServiceIds.map(String).includes(effectiveServiceKey) &&
-          !(dto.serviceId && acc.allowedServiceIds.map(String).includes(String(dto.serviceId)))
+          !acc.allowedServiceIds.some((allowKey) =>
+            allowedCandidateKeys.has(String(allowKey).trim()) ||
+            allowedCandidateKeys.has(String(allowKey).trim().toUpperCase()),
+          )
         ) {
           continue;
         }
@@ -844,7 +1038,8 @@ export class PromotionsService {
         throw new ConflictException('Không còn số dư quyền lợi hoặc quota hợp lệ để cấn trừ.');
       }
 
-      const finalRemainingServicePayable = Math.max(0, actualOutstanding - totalRedeemedAmount);
+      const quotaCoveredAmount = totalRedeemedQuota * unitNetPrice;
+      const finalRemainingServicePayable = Math.max(0, actualOutstanding - totalRedeemedAmount - quotaCoveredAmount);
 
       for (const item of stagedLedgers) {
         await em.save(
@@ -861,6 +1056,7 @@ export class PromotionsService {
             quotaAfter: item.acc.availableQuota,
             serviceRequestId: String(dto.serviceRequestId),
             performedBy: actor.id,
+            coverageGrantId: opAuth?.coverageGrantId || null,
             idempotencyKey: `${dto.idempotencyKey}:acc:${item.acc.id}`,
             reason: dto.reason || `Cấn trừ dịch vụ #${dto.serviceRequestId} (${serviceReq.serviceName})`,
             metadata: {
@@ -898,11 +1094,44 @@ export class PromotionsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!booking) throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
-      await assertBookingOperator(em, booking, actor, 'SERVICE_REQUEST');
+      // FIX-16: Endpoint reverse trực tiếp chỉ dành cho Manager của khách sạn (hoặc Admin/System) xử lý dispute;
+      // luồng hủy dịch vụ thông thường đã tự động đảo nguyên tử qua ServicesService.updateServiceRequestStatus.
+      if (actor.role !== 'ADMIN' && actor.role !== 'SYSTEM') {
+        await this.assertHotelManager(actor, String(booking.hotelId));
+      }
 
-      const serviceReq = await em.findOne(ServiceRequest, { where: { id: Number(serviceRequestId) } });
-      if (serviceReq && String(serviceReq.bookingId) !== String(booking.id)) {
+      const serviceReq = await em.findOne(ServiceRequest, {
+        where: { id: Number(serviceRequestId) },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!serviceReq) {
+        throw new NotFoundException(`Không tìm thấy phiếu dịch vụ #${serviceRequestId} để đảo cấn trừ.`);
+      }
+      if (String(serviceReq.bookingId) !== String(booking.id)) {
         throw new ForbiddenException(`Phiếu dịch vụ #${serviceRequestId} không thuộc đơn đặt phòng #${booking.id}.`);
+      }
+      // Lỗi 16 (Section 1.3 & Section IV & FIX-16): Chỉ được đảo bút toán cấn trừ (REVERSAL) khi phiếu dịch vụ đã HỦY hoặc THẤT BẠI hợp lệ
+      // và CHƯA TỪNG được cung cấp/nghiệm thu (trừ khi đã có quyết định phê duyệt đền bù recoveryApprovedBy của Manager).
+      const hasApprovedRecoveryDecision = Boolean((serviceReq as any).recoveryApprovedBy);
+      if (
+        serviceReq.status !== ServiceRequestStatus.CANCELLED &&
+        serviceReq.status !== ServiceRequestStatus.FAILED &&
+        !hasApprovedRecoveryDecision
+      ) {
+        throw new ConflictException(
+          `Chỉ được đảo bút toán cấn trừ khi phiếu dịch vụ #${serviceRequestId} đã ở trạng thái CANCELLED hoặc FAILED hợp lệ (trạng thái hiện tại: ${serviceReq.status}).`,
+        );
+      }
+      if ((serviceReq.completedAt || serviceReq.confirmedAt) && !hasApprovedRecoveryDecision) {
+        throw new ConflictException(
+          `Dịch vụ #${serviceRequestId} đã được thực hiện/nghiệm thu nên không được đảo bút toán REVERSAL khi thiếu quyết định điều chỉnh/Service Recovery có phê duyệt.`,
+        );
+      }
+      const cancellationFee = Math.max(0, Math.round(Number((serviceReq as any).cancellationFee || 0)));
+      if (cancellationFee > 0) {
+        throw new ConflictException(
+          `Phiếu dịch vụ #${serviceRequestId} có phát sinh phí hủy (${cancellationFee.toLocaleString('vi-VN')}đ), không được tự động đảo toàn bộ cấn trừ.`,
+        );
       }
 
       const redeems = await em.find(BookingBenefitLedger, {
@@ -976,40 +1205,62 @@ export class PromotionsService {
     return await this.dataSource.transaction(async (em) => {
       const booking = await em.findOne(Booking, { where: { id: bookingId }, lock: { mode: 'pessimistic_write' } });
       if (!booking) throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
-      await this.assertHotelManager(actor, String(booking.hotelId));
+      if ((options as any)?.hotelId !== undefined && String((options as any).hotelId) !== String(booking.hotelId)) {
+        throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn thực tế sở hữu đơn đặt phòng.');
+      }
+
+      // Section II.2.5 & Ma trận 3.5: Chỉ Quản lý đúng khách sạn (MANAGER) hoặc ADMIN mới được duyệt tạo RefundIntent
+      if (actor.role !== 'ADMIN') {
+        await this.assertHotelManager(actor, String(booking.hotelId));
+      }
 
       const acc = await em.findOne(BookingBenefitAccount, {
         where: { id: accountId, bookingId },
         lock: { mode: 'pessimistic_write' },
       });
       if (!acc) throw new NotFoundException(`Không tìm thấy tài khoản quyền lợi #${accountId}`);
+      if (String(acc.hotelId) !== String(booking.hotelId)) {
+        throw new ForbiddenException('Tài khoản quyền lợi không thuộc cùng khách sạn với đơn đặt phòng.');
+      }
       if (acc.benefitKind !== BenefitKind.ROOM_PRICE_ADJUSTMENT) {
         throw new BadRequestException('Chỉ khoản giảm giá phòng (ROOM_PRICE_ADJUSTMENT) mới được tất toán hoàn tiền.');
       }
 
-      const existingLedger = await em.findOne(BookingBenefitLedger, { where: { idempotencyKey } });
-      if (existingLedger) {
+      const existingIntent = await em.findOne(PromotionRefundIntent, { where: { idempotencyKey } });
+      if (existingIntent) {
+        const isSim =
+          existingIntent.status === RefundIntentStatus.SIMULATED_SUCCEEDED ||
+          existingIntent.status === RefundIntentStatus.MANUAL_TEST_VERIFIED;
+        const isSettled = existingIntent.status === RefundIntentStatus.SANDBOX_SETTLED;
         return {
-          settledRefundAmount: Math.abs(Math.round(Number(existingLedger.amountDelta || 0))),
-          status: 'SUCCEEDED',
+          settledRefundAmount: isSettled ? Number(existingIntent.amount) : 0,
+          simulatedRefundAmount: isSim ? Number(existingIntent.amount) : 0,
+          reservedRefundAmount: Number(existingIntent.amount),
+          status: existingIntent.status,
+          refundIntent: existingIntent,
           account: acc,
           isIdempotentRepeat: true,
         };
       }
 
-      try {
-        const existingIntent = await em.findOne(PromotionRefundIntent, { where: { idempotencyKey } });
-        if (existingIntent) {
-          return {
-            settledRefundAmount: existingIntent.status === RefundIntentStatus.SUCCEEDED ? Number(existingIntent.amount) : 0,
-            reservedRefundAmount: Number(existingIntent.amount),
-            status: existingIntent.status,
-            refundIntent: existingIntent,
-            account: acc,
-            isIdempotentRepeat: true,
-          };
-        }
-      } catch {}
+      const existingLedger = await em.findOne(BookingBenefitLedger, { where: { idempotencyKey } });
+      if (existingLedger) {
+        const meta = (existingLedger.metadata || {}) as any;
+        const outcomeStatus = meta.settlementOutcome || RefundIntentStatus.SIMULATED_SUCCEEDED;
+        const isSim = Boolean(meta.isSimulated ?? true);
+        const amt = Math.abs(Math.round(Number(existingLedger.amountDelta || 0)));
+        return {
+          settledRefundAmount: isSim ? 0 : amt,
+          simulatedRefundAmount: isSim ? amt : 0,
+          status: outcomeStatus,
+          account: acc,
+          isIdempotentRepeat: true,
+        };
+      }
+
+      if (acc.status === BenefitAccountStatus.REFUND_PENDING) {
+        throw new ConflictException('Tài khoản quyền lợi này đang có lệnh hoàn tiền chờ xử lý (REFUND_PENDING).');
+      }
 
       const refundAmt = Math.max(0, Math.round(Number(acc.availableAmount || 0)));
       if (refundAmt <= 0) return { settledRefundAmount: 0, status: acc.status, account: acc };
@@ -1026,93 +1277,72 @@ export class PromotionsService {
       }
 
       const channel = options?.channel || 'VNPAY_PROVIDER';
-      if (options?.simulateProviderTimeout || (channel === 'VNPAY_PROVIDER' && options?.payoutReceiptRef === 'ASYNC_GATEWAY_PENDING')) {
-        acc.status = BenefitAccountStatus.REFUND_PENDING;
-        acc.version += 1;
-        await em.save(BookingBenefitAccount, acc);
-        let savedIntent: PromotionRefundIntent | null = null;
-        try {
-          savedIntent = await em.save(
-            PromotionRefundIntent,
-            em.create(PromotionRefundIntent, {
-              bookingId,
-              hotelId: String(booking.hotelId),
-              accountId: acc.id,
-              paymentId: payment?.id || null,
-              amount: refundAmt,
-              channel,
-              status: options?.simulateProviderTimeout ? RefundIntentStatus.UNKNOWN_RECONCILE : RefundIntentStatus.REQUESTED,
-              idempotencyKey,
-              requestedBy: actor.id,
-              reason: reason || 'Yêu cầu hoàn tiền chênh lệch giảm giá phòng',
-            }),
-          );
-        } catch {}
-        if (this.outboxService && payment) {
-          await this.outboxService.addEvent(em, 'promotion.refund.requested', 'BookingBenefitAccount', String(acc.id), {
-            intentId: savedIntent?.id,
-            bookingId,
-            accountId: acc.id,
-            paymentId: payment.id,
-            txnRef: payment.txnRef,
-            amount: refundAmt,
-            idempotencyKey,
-            reason,
-          });
-        }
-        return {
-          settledRefundAmount: 0,
-          reservedRefundAmount: refundAmt,
-          status: savedIntent?.status || RefundIntentStatus.UNKNOWN_RECONCILE,
-          refundIntent: savedIntent,
-          account: acc,
-        };
-      }
-
       if ((channel === 'BANK_TRANSFER_PROOF' || channel === 'CASH_RECEIPT') && (!options?.payoutReceiptRef || !options.payoutReceiptRef.trim())) {
         throw new BadRequestException('Hoàn tiền qua chuyển khoản/tiền mặt bắt buộc có mã chứng từ chi (payoutReceiptRef).');
       }
 
-      if (payment) {
-        const nextRefund = Number(payment.refundAmount || 0) + refundAmt;
-        payment.refundAmount = nextRefund.toFixed(2);
-        payment.refundedAt = new Date();
-        if (nextRefund >= Number(payment.amount || 0)) payment.status = PaymentTransactionStatus.REFUNDED;
-        await em.save(PaymentTransaction, payment);
-      }
+      // Section II.2.3: Chọn adapter dựa vào config deployment, KHÔNG nhận providerMode từ DTO
+      const configuredMode = channel !== 'VNPAY_PROVIDER' ? 'MANUAL_TEST' : this.getConfiguredRefundMode();
 
-      acc.refundedAmount = Number(acc.refundedAmount || 0) + refundAmt;
-      acc.availableAmount = 0;
-      acc.status = BenefitAccountStatus.SETTLED;
+      // Lỗi 01 & Section II.2.3: Luôn khóa/reserve số dư + tạo PromotionRefundIntent + ghi Outbox.
+      acc.status = BenefitAccountStatus.REFUND_PENDING;
       acc.version += 1;
       await em.save(BookingBenefitAccount, acc);
 
-      await em.save(
-        BookingBenefitLedger,
-        em.create(BookingBenefitLedger, {
-          accountId: acc.id,
+      const isTimeoutFixture = Boolean(options?.simulateProviderTimeout && process.env.NODE_ENV === 'test');
+      const initialStatus = isTimeoutFixture
+        ? RefundIntentStatus.UNKNOWN_RECONCILE
+        : RefundIntentStatus.REQUESTED;
+
+      const savedIntent = await em.save(
+        PromotionRefundIntent,
+        em.create(PromotionRefundIntent, {
           bookingId,
           hotelId: String(booking.hotelId),
-          campaignId: acc.campaignId,
-          entryType: BenefitLedgerEntryType.REFUND_SETTLEMENT,
-          amountDelta: -refundAmt,
-          balanceAfter: 0,
-          quotaDelta: 0,
-          quotaAfter: acc.availableQuota,
-          performedBy: actor.id,
+          accountId: acc.id,
+          paymentId: payment?.id || null,
+          amount: refundAmt,
+          channel,
+          status: initialStatus,
+          payoutReceiptRef: channel === 'VNPAY_PROVIDER' ? null : options?.payoutReceiptRef?.trim() || null,
           idempotencyKey,
-          reason: reason || `Tất toán hoàn trả tiền chênh lệch giảm giá phòng (${refundAmt.toLocaleString('vi-VN')}đ)`,
+          requestedBy: actor.id,
+          reason: reason || 'Yêu cầu hoàn tiền chênh lệch giảm giá phòng',
         }),
       );
 
-      return { settledRefundAmount: refundAmt, status: 'SUCCEEDED', account: acc };
+      if (!isTimeoutFixture && this.outboxService) {
+        await this.outboxService.addEvent(em, 'promotion.refund.requested', 'BookingBenefitAccount', String(acc.id), {
+          intentId: savedIntent?.id,
+          bookingId,
+          accountId: acc.id,
+          paymentId: payment?.id || null,
+          txnRef: payment?.txnRef || booking.bookingCode,
+          amount: refundAmt,
+          channel,
+          payoutReceiptRef: channel === 'VNPAY_PROVIDER' ? null : options?.payoutReceiptRef?.trim() || null,
+          idempotencyKey,
+          reason,
+        });
+      }
+
+      return {
+        settledRefundAmount: 0,
+        simulatedRefundAmount: 0,
+        reservedRefundAmount: refundAmt,
+        status: savedIntent?.status || initialStatus,
+        providerMode: configuredMode,
+        isDemoMode: true,
+        refundIntent: savedIntent,
+        account: acc,
+      };
     });
   }
 
   async confirmRefundIntentSettlement(
     actor: { id: string; role: string },
     intentId: string,
-    payload: { providerRef?: string; payoutReceiptRef?: string },
+    payload: ConfirmRefundIntentDto,
   ) {
     return await this.dataSource.transaction(async (em) => {
       const intent = await em.findOne(PromotionRefundIntent, {
@@ -1120,28 +1350,128 @@ export class PromotionsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!intent) throw new NotFoundException(`Không tìm thấy yêu cầu hoàn tiền #${intentId}`);
-      await this.assertHotelManager(actor, String(intent.hotelId));
-      if (intent.status === RefundIntentStatus.SUCCEEDED) {
-        return { settledRefundAmount: Number(intent.amount), status: intent.status, refundIntent: intent };
-      }
+
       const acc = await em.findOne(BookingBenefitAccount, {
         where: { id: intent.accountId, bookingId: intent.bookingId },
         lock: { mode: 'pessimistic_write' },
       });
       if (!acc) throw new NotFoundException(`Không tìm thấy tài khoản quyền lợi #${intent.accountId}`);
 
+      // Section III.3.2: Resolve intent.accountId -> account.bookingId -> booking.hotelId
+      const booking = await em.findOne(Booking, { where: { id: acc.bookingId } });
+      const authoritativeHotelId = String(booking?.hotelId || acc.hotelId || intent.hotelId);
+      if (
+        (booking && (String(acc.hotelId) !== String(booking.hotelId) || String(intent.hotelId) !== String(booking.hotelId))) ||
+        String(acc.hotelId) !== String(intent.hotelId)
+      ) {
+        throw new ForbiddenException('Chuỗi sở hữu RefundIntent -> BenefitAccount -> Booking không hợp lệ.');
+      }
+      if ((payload as any)?.hotelId !== undefined && String((payload as any).hotelId) !== authoritativeHotelId) {
+        throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn thực tế sở hữu yêu cầu hoàn tiền.');
+      }
+
+      const isSystemWorker = actor.role === 'SYSTEM' && actor.id === 'SYSTEM_REFUND_WORKER';
+      if (!isSystemWorker) {
+        // FIX-02 & Ma trận 3.5: Kênh VNPAY_PROVIDER chỉ được xác nhận bởi Provider worker sau khi xác minh chữ ký;
+        // con người không được gọi API confirm với providerRef tự khai để đánh dấu hoàn thành!
+        if (intent.channel === 'VNPAY_PROVIDER') {
+          throw new ForbiddenException(
+            'Kênh VNPAY_PROVIDER chỉ được xác nhận tự động bởi hệ thống đối soát cổng thanh toán sau khi xác thực chữ ký; không chấp nhận xác nhận thủ công.',
+          );
+        }
+        await this.assertHotelManager(actor, authoritativeHotelId);
+        if (intent.requestedBy && String(intent.requestedBy) === String(actor.id)) {
+          throw new ForbiddenException(
+            'Nguyên tắc Maker-Checker: Người tạo đề nghị hoàn tiền không được tự phê duyệt/xác nhận hoàn tất.',
+          );
+        }
+      }
+
+      const doneStatuses: string[] = [
+        RefundIntentStatus.SUCCEEDED,
+        RefundIntentStatus.SANDBOX_SETTLED,
+        RefundIntentStatus.SIMULATED_SUCCEEDED,
+        RefundIntentStatus.MANUAL_TEST_VERIFIED,
+      ];
+      if (doneStatuses.includes(intent.status)) {
+        const isSettled = intent.status === RefundIntentStatus.SANDBOX_SETTLED;
+        return {
+          settledRefundAmount: isSettled ? Number(intent.amount) : 0,
+          simulatedRefundAmount: !isSettled ? Number(intent.amount) : 0,
+          status: intent.status,
+          refundIntent: intent,
+          isIdempotentRepeat: true,
+        };
+      }
+
       const refundAmt = Math.max(0, Math.round(Number(intent.amount || acc.availableAmount || 0)));
-      intent.status = RefundIntentStatus.SUCCEEDED;
-      intent.providerRef = payload?.providerRef || intent.providerRef || `VNP-CONFIRMED-${intent.id}`;
-      intent.payoutReceiptRef = payload?.payoutReceiptRef || intent.payoutReceiptRef || `RECEIPT-${intent.id}`;
-      intent.verifiedBy = actor.id;
+      const providerRef = isSystemWorker ? payload?.providerRef?.trim() || intent.providerRef?.trim() || null : intent.providerRef;
+      const payoutReceiptRef = payload?.payoutReceiptRef?.trim() || intent.payoutReceiptRef?.trim() || null;
+
+      if (intent.channel !== 'VNPAY_PROVIDER' && !payoutReceiptRef && payload?.settlementOutcome !== 'FAILED') {
+        throw new BadRequestException('Hoàn tiền thủ công bắt buộc có mã chứng từ chi (payoutReceiptRef) hợp lệ.');
+      }
+      if (
+        intent.channel === 'VNPAY_PROVIDER' &&
+        !providerRef &&
+        payload?.settlementOutcome !== 'FAILED' &&
+        payload?.settlementOutcome !== 'UNKNOWN_RECONCILE' &&
+        payload?.settlementOutcome !== 'SANDBOX_ACCEPTED'
+      ) {
+        throw new BadRequestException('Thiếu mã giao dịch xác thực từ cổng hoàn tiền (providerRef).');
+      }
+
+      const configuredMode = intent.channel !== 'VNPAY_PROVIDER' ? 'MANUAL_TEST' : this.getConfiguredRefundMode();
+
+      let outcome: RefundIntentStatus;
+      if (!isSystemWorker) {
+        outcome =
+          payload?.settlementOutcome === 'FAILED'
+            ? RefundIntentStatus.FAILED
+            : RefundIntentStatus.MANUAL_TEST_VERIFIED;
+      } else {
+        const reqOutcome = payload?.settlementOutcome as RefundIntentStatus | undefined;
+        if (
+          reqOutcome === RefundIntentStatus.FAILED ||
+          reqOutcome === RefundIntentStatus.UNKNOWN_RECONCILE ||
+          reqOutcome === RefundIntentStatus.SANDBOX_ACCEPTED
+        ) {
+          outcome = reqOutcome;
+        } else if (intent.channel !== 'VNPAY_PROVIDER' || configuredMode === 'MANUAL_TEST') {
+          outcome = RefundIntentStatus.MANUAL_TEST_VERIFIED;
+        } else if (configuredMode === 'VNPAY_SANDBOX') {
+          outcome = RefundIntentStatus.SANDBOX_SETTLED;
+        } else {
+          outcome = RefundIntentStatus.SIMULATED_SUCCEEDED;
+        }
+      }
+
+      intent.status = outcome;
+      intent.providerRef = providerRef;
+      intent.payoutReceiptRef = payoutReceiptRef;
+      intent.verifiedBy = isSystemWorker ? null : actor.id;
       await em.save(PromotionRefundIntent, intent);
+
+      if (outcome === RefundIntentStatus.UNKNOWN_RECONCILE || outcome === RefundIntentStatus.SANDBOX_ACCEPTED) {
+        acc.status = BenefitAccountStatus.REFUND_PENDING;
+        await em.save(BookingBenefitAccount, acc);
+        return { settledRefundAmount: 0, simulatedRefundAmount: 0, reservedRefundAmount: refundAmt, status: intent.status, refundIntent: intent, account: acc };
+      }
+
+      if (outcome === RefundIntentStatus.FAILED) {
+        acc.status = BenefitAccountStatus.APPROVED;
+        acc.version += 1;
+        await em.save(BookingBenefitAccount, acc);
+        return { settledRefundAmount: 0, simulatedRefundAmount: 0, reservedRefundAmount: 0, status: intent.status, refundIntent: intent, account: acc };
+      }
 
       acc.refundedAmount = Number(acc.refundedAmount || 0) + refundAmt;
       acc.availableAmount = Math.max(0, Number(acc.availableAmount || 0) - refundAmt);
       acc.status = acc.availableAmount === 0 ? BenefitAccountStatus.SETTLED : BenefitAccountStatus.APPROVED;
       acc.version += 1;
       await em.save(BookingBenefitAccount, acc);
+
+      const isSimulated = outcome === RefundIntentStatus.SIMULATED_SUCCEEDED || outcome === RefundIntentStatus.MANUAL_TEST_VERIFIED;
 
       await em.save(
         BookingBenefitLedger,
@@ -1155,13 +1485,33 @@ export class PromotionsService {
           balanceAfter: acc.availableAmount,
           quotaDelta: 0,
           quotaAfter: acc.availableQuota,
-          performedBy: actor.id,
+          performedBy: isSystemWorker ? null : actor.id,
           idempotencyKey: intent.idempotencyKey,
-          reason: intent.reason || `Xác nhận hoàn tiền thành công (${refundAmt.toLocaleString('vi-VN')}đ)`,
+          reason:
+            intent.reason ||
+            (isSimulated
+              ? `[DEMO/${outcome}] Đã mô phỏng hoàn ${refundAmt.toLocaleString('vi-VN')}đ — chưa thực chi`
+              : `Xác nhận hoàn tiền thành công (${refundAmt.toLocaleString('vi-VN')}đ)`),
+          metadata: {
+            intentId: intent.id,
+            channel: intent.channel,
+            providerMode: configuredMode,
+            settlementOutcome: outcome,
+            isSimulated,
+            providerRef,
+            payoutReceiptRef,
+          },
         }),
       );
 
-      return { settledRefundAmount: refundAmt, status: intent.status, refundIntent: intent, account: acc };
+      return {
+        settledRefundAmount: isSimulated ? 0 : refundAmt,
+        simulatedRefundAmount: isSimulated ? refundAmt : 0,
+        status: intent.status,
+        isSimulated,
+        refundIntent: intent,
+        account: acc,
+      };
     });
   }
 
@@ -1172,31 +1522,41 @@ export class PromotionsService {
       const confirmedQuote = await em.findOne(BookingPriceQuote, {
         where: { bookingId: booking.id, status: 'CONFIRMED' },
         order: { id: 'DESC' },
+        lock: { mode: 'pessimistic_write' },
       });
       if (!confirmedQuote || !Array.isArray(confirmedQuote.appliedCampaigns)) return [];
 
       const granted: BookingBenefitAccount[] = [];
-      for (const applied of confirmedQuote.appliedCampaigns) {
+      let quoteModified = false;
+      for (const applied of confirmedQuote.appliedCampaigns as Array<any>) {
         const camp = await em.findOne(PromotionCampaign, {
           where: { id: applied.campaignId },
           lock: { mode: 'pessimistic_write' },
         });
         if (!camp) continue;
+
         const appliedAmt = Math.max(0, Math.round(Number(applied.discountAmount || 0)));
-        if (appliedAmt > 0 && Number(camp.budgetReserved || 0) >= appliedAmt) {
-          camp.budgetReserved = Math.max(0, Number(camp.budgetReserved || 0) - appliedAmt);
-          camp.budgetConsumed = Number(camp.budgetConsumed || 0) + appliedAmt;
-          await em.save(PromotionCampaign, camp);
-        }
         const totalQuota = (camp.packageConfig?.includedQuotas || []).reduce((s, q) => s + Number(q.quantity || 0), 0);
         const isServiceBenefit =
           camp.benefitKind === BenefitKind.SERVICE_BENEFIT_CREDIT ||
           camp.benefitKind === BenefitKind.INCLUDED_QUOTA ||
           totalQuota > 0;
-        if (!isServiceBenefit || (appliedAmt <= 0 && totalQuota <= 0)) continue;
 
+        // Lỗi 11: Kiểm tra dedupeKey TRƯỚC khi chuyển budgetReserved sang budgetConsumed
         const dedupeKey = `quote_benefit:booking:${booking.id}:camp:${camp.id}:v:${camp.version}`;
-        if (await em.findOne(BookingBenefitAccount, { where: { dedupeKey } })) continue;
+        if (isServiceBenefit && (await em.findOne(BookingBenefitAccount, { where: { dedupeKey } }))) {
+          continue;
+        }
+
+        if (!applied.budgetConsumedAt && appliedAmt > 0 && Number(camp.budgetReserved || 0) >= appliedAmt) {
+          camp.budgetReserved = Math.max(0, Number(camp.budgetReserved || 0) - appliedAmt);
+          camp.budgetConsumed = Number(camp.budgetConsumed || 0) + appliedAmt;
+          await em.save(PromotionCampaign, camp);
+          applied.budgetConsumedAt = new Date().toISOString();
+          quoteModified = true;
+        }
+
+        if (!isServiceBenefit || (appliedAmt <= 0 && totalQuota <= 0)) continue;
 
         const quotaCodes = (camp.packageConfig?.includedQuotas || []).map((q) => String(q.serviceCode || '')).filter(Boolean);
         const allowedServices = camp.targetServiceIds?.length ? camp.targetServiceIds : quotaCodes.length ? quotaCodes : null;
@@ -1245,10 +1605,17 @@ export class PromotionsService {
             quotaAfter: totalQuota,
             performedBy: booking.userId || null,
             idempotencyKey: `grant:${dedupeKey}`,
-            reason: `Cấp quyền lợi theo báo giá đã thanh toán (${creditAmt}đ)`,
+            reason: `Cấp quyền lợi theo báo giá đã thanh toán (${creditAmt}đ${totalQuota > 0 ? ` +${totalQuota} suất` : ''})`,
+            metadata: {
+              includedQuotas: camp.packageConfig?.includedQuotas || [],
+            },
           }),
         );
         granted.push(account);
+      }
+
+      if (quoteModified) {
+        await em.save(BookingPriceQuote, confirmedQuote);
       }
       return granted;
     });
@@ -1311,10 +1678,97 @@ export class PromotionsService {
       .filter((a) => a.status === BenefitAccountStatus.APPROVED)
       .reduce((s, a) => s + Number(a.availableQuota || 0), 0);
 
+    const simulatedRefundedAmount = refundIntents
+      .filter((i) => i.status === RefundIntentStatus.SIMULATED_SUCCEEDED || i.status === RefundIntentStatus.MANUAL_TEST_VERIFIED)
+      .reduce((s, i) => s + Number(i.amount || 0), 0);
+    const settledRefundedAmount = refundIntents
+      .filter((i) => i.status === RefundIntentStatus.SUCCEEDED || i.status === RefundIntentStatus.SANDBOX_SETTLED)
+      .reduce((s, i) => s + Number(i.amount || 0), 0);
+    const refundProviderMode = (process.env.REFUND_PROVIDER || 'MOCK').toUpperCase();
+
+    // FIX-14: Thống nhất projection ServiceReceivable/Folio (gross, directDiscount, net, creditsApplied, quotaApplied, cashPaid, amountDue)
+    let serviceReceivables: Array<{
+      serviceRequestId: string;
+      serviceId: string;
+      serviceName: string;
+      status: string;
+      grossTotal: number;
+      directDiscountAmount: number;
+      netTotal: number;
+      creditsApplied: number;
+      redeemedAmount: number;
+      redeemedQuota: number;
+      cashPaid: number;
+      amountDue: number;
+      remainingPayable: number;
+      settlementStatus: string;
+    }> = [];
+    try {
+      const srRepo = this.dataSource?.getRepository?.(ServiceRequest);
+      if (srRepo && typeof srRepo.find === 'function') {
+        const reqs = await srRepo.find({
+          where: { bookingId: Number(booking.id) },
+          order: { id: 'ASC' },
+        });
+        serviceReceivables = (reqs || []).map((r) => {
+          const qty = Math.max(1, Math.round(Number(r.quantity || 1)));
+          const grossTotal = Math.max(0, Math.round(Number(r.unitPrice || 0) * qty));
+          const netTotal = Math.max(0, Math.round(Number(r.totalPrice || 0)));
+          const directDiscountAmount = Math.max(0, grossTotal - netTotal);
+          const unitNet = qty > 0 ? Math.round(netTotal / qty) : netTotal;
+          const srEntries = ledger.filter((l) => String(l.serviceRequestId) === String(r.id));
+          const redeemedAmount = Math.max(
+            0,
+            srEntries.reduce((sum, l) => {
+              if (l.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(l.amountDelta || 0)));
+              if (l.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(l.amountDelta || 0)));
+              return sum;
+            }, 0),
+          );
+          const redeemedQuota = Math.max(
+            0,
+            srEntries.reduce((sum, l) => {
+              if (l.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(l.quotaDelta || 0)));
+              if (l.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(l.quotaDelta || 0)));
+              return sum;
+            }, 0),
+          );
+          const quotaValue = redeemedQuota * unitNet;
+          const isCancelled = r.status === ServiceRequestStatus.CANCELLED || r.status === ServiceRequestStatus.FAILED;
+          const remainingPayable = isCancelled ? 0 : Math.max(0, netTotal - redeemedAmount - quotaValue);
+          return {
+            serviceRequestId: String(r.id),
+            serviceId: String(r.serviceId),
+            serviceName: r.serviceName,
+            status: r.status,
+            grossTotal,
+            directDiscountAmount,
+            netTotal,
+            creditsApplied: redeemedAmount + quotaValue,
+            redeemedAmount,
+            redeemedQuota,
+            cashPaid: 0,
+            amountDue: remainingPayable,
+            remainingPayable,
+            settlementStatus: isCancelled
+              ? 'CANCELLED'
+              : remainingPayable === 0
+              ? 'SETTLED_BY_BENEFIT'
+              : redeemedAmount > 0 || redeemedQuota > 0
+              ? 'PARTIALLY_OFFSET'
+              : 'UNPAID',
+          };
+        });
+      }
+    } catch {}
+    const totalServiceAmountDue = serviceReceivables.reduce((s, r) => s + r.amountDue, 0);
+
     return {
       bookingId: booking.id,
       bookingCode: booking.bookingCode,
       hotelId: booking.hotelId,
+      refundProviderMode,
+      isDemoMode: refundProviderMode !== 'VNPAY_LIVE',
       originalEstimatedTotal: Number(booking.estimatedTotal || 0),
       refundReceivableAmount,
       availableServiceCredit,
@@ -1323,7 +1777,11 @@ export class PromotionsService {
       refundableButOffsetPermitted,
       pureServiceVoucher,
       pendingRefundSettlementAmount,
+      simulatedRefundedAmount,
+      settledRefundedAmount,
       totalOutstandingLiability,
+      totalServiceAmountDue,
+      serviceReceivables,
       refundIntents,
       accounts,
       ledger,

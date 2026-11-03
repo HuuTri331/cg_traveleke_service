@@ -31,7 +31,13 @@ export class ShiftsController {
     return this.shiftsService.getMyShifts(String(user.id));
   }
 
-  @Get('hotel/:hotelId')
+  @Get('active')
+  @Roles('ADMIN', 'EMPLOYEE')
+  getActiveShift(@CurrentUser() user: User) {
+    return this.shiftsService.getActiveShift(String(user.id));
+  }
+
+  @Get(['hotel/:hotelId', 'hotels/:hotelId'])
   @Roles('ADMIN', 'EMPLOYEE')
   getHotelShifts(
     @Param('hotelId') hotelId: string,
@@ -39,6 +45,15 @@ export class ShiftsController {
     @Query('date') date?: string,
   ) {
     return this.shiftsService.getHotelShifts(hotelId, user, date);
+  }
+
+  @Get(['hotel/:hotelId/handovers', 'hotels/:hotelId/handovers'])
+  @Roles('ADMIN', 'EMPLOYEE')
+  getHotelHandovers(
+    @Param('hotelId') hotelId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.shiftsService.getHotelHandovers(hotelId, user);
   }
 
   @Post()

@@ -13,6 +13,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 
 import { DataSource, Repository } from 'typeorm';
 import Redis from 'ioredis';
+import * as bcrypt from 'bcrypt';
+import { randomBytes, randomUUID } from 'crypto';
 
 import { Room } from '../rooms/entities/room.entity';
 
@@ -38,8 +40,21 @@ import { BookingCoverageService } from '../booking-coverage/booking-coverage.ser
 import { BookingPresenceService } from '../booking-presence/booking-presence.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { User } from '../users/entities/user.entity';
-import { PromotionCampaign, PromotionCampaignStatus } from '../promotions/entities/promotion-campaign.entity';
+import {
+  BenefitKind,
+  PromotionCampaign,
+  PromotionCampaignStatus,
+} from '../promotions/entities/promotion-campaign.entity';
 import { BookingPriceQuote } from '../promotions/entities/booking-price-quote.entity';
+import {
+  BenefitAccountStatus,
+  BookingBenefitAccount,
+} from '../promotions/entities/booking-benefit-account.entity';
+import {
+  BenefitLedgerEntryType,
+  BookingBenefitLedger,
+} from '../promotions/entities/booking-benefit-ledger.entity';
+import { OutboxEvent, OutboxEventStatus } from '../outbox/entities/outbox-event.entity';
 import { computeNightlyQuote, hasRemainingCampaignBudget } from '../promotions/promotion-engine';
 
 import {
@@ -199,6 +214,15 @@ export class BookingsService {
       .orderBy('b.created_at', 'DESC');
 
     if (actor && actor.role === 'EMPLOYEE') {
+      if (query.hotelId && typeof this.dataSource?.query === 'function') {
+        const [membership] = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [query.hotelId, actor.id],
+        );
+        if (!membership) {
+          throw new ForbiddenException('Bạn không thuộc nhân sự đang hoạt động tại khách sạn này.');
+        }
+      }
       qb.andWhere(
         `b.hotel_id IN (SELECT hs.hotel_id FROM hotel_staff hs WHERE hs.staff_user_id = :actorId AND hs.status = 'ACTIVE')`,
         { actorId: actor.id },
@@ -862,19 +886,54 @@ export class BookingsService {
    * Section 18 & 21: Báo cáo hiệu suất & KPI Lễ tân
    * Tách rõ: Doanh số trực tiếp (Walk-in/Phone) vs Booking phục vụ (Web/OTA) vs Dịch vụ bán thêm (Upsell)
    */
-  async getStaffPerformance(staffUserId: string, actorUser?: User) {
+  async getStaffPerformance(staffUserId: string, actorUser?: User, hotelId?: string) {
     if (actorUser && actorUser.role !== 'ADMIN') {
+      if (hotelId) {
+        const [targetInHotel] = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [hotelId, staffUserId],
+        );
+        if (!targetInHotel) {
+          throw new ForbiddenException('Nhân sự được tra cứu không thuộc biên chế đang hoạt động tại khách sạn này.');
+        }
+      }
       if (String(actorUser.id) !== String(staffUserId)) {
-        const isMgr = await this.isManagerOfUser(actorUser.id, staffUserId);
-        if (!isMgr) {
-          throw new ForbiddenException(
-            'Bạn chỉ có thể xem báo cáo hiệu suất của chính mình hoặc của nhân viên dưới quyền.',
+        if (hotelId) {
+          const [mgrInHotel] = await this.dataSource.query(
+            `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND staff_role = 'MANAGER' AND status = 'ACTIVE' LIMIT 1`,
+            [hotelId, actorUser.id],
           );
+          if (!mgrInHotel) {
+            throw new ForbiddenException('Chỉ Quản lý của khách sạn này mới có quyền xem báo cáo hiệu suất nhân viên.');
+          }
+        } else {
+          const isMgr = await this.isManagerOfUser(actorUser.id, staffUserId);
+          if (!isMgr) {
+            throw new ForbiddenException(
+              'Bạn chỉ có thể xem báo cáo hiệu suất của chính mình hoặc của nhân viên dưới quyền.',
+            );
+          }
+        }
+      } else if (hotelId) {
+        const [selfInHotel] = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [hotelId, actorUser.id],
+        );
+        if (!selfInHotel) {
+          throw new ForbiddenException('Bạn không thuộc nhân sự đang hoạt động tại khách sạn này.');
         }
       }
     }
 
-    // 1. Direct Sales (Walk-in / Phone tạo bởi lễ tân này)
+    const isScopedEmployee = Boolean(actorUser && actorUser.role === 'EMPLOYEE');
+    const bookingHotelScopeSql = hotelId
+      ? ' AND hotel_id = ?'
+      : isScopedEmployee
+      ? ` AND hotel_id IN (SELECT hotel_id FROM hotel_staff WHERE staff_user_id = ? AND status = 'ACTIVE')`
+      : '';
+    const bookingHotelScopeParams = hotelId ? [hotelId] : isScopedEmployee ? [actorUser!.id] : [];
+
+    // 1. Direct Sales (Walk-in / Phone tạo bởi lễ tân này trong phạm vi khách sạn được phép)
     const [directSales] = await this.dataSource.query(
       `
       SELECT
@@ -882,12 +941,12 @@ export class BookingsService {
         COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS directSalesNet,
         COALESCE(SUM(CASE WHEN status = 'CANCELLED' THEN estimated_total ELSE 0 END), 0) AS directCancelledAmount
       FROM bookings
-      WHERE created_by_staff_id = ?
+      WHERE created_by_staff_id = ?${bookingHotelScopeSql}
       `,
-      [staffUserId],
+      [staffUserId, ...bookingHotelScopeParams],
     );
 
-    // 2. Operational Volume (Số lượng booking lễ tân tiếp nhận & phục vụ check-in/out)
+    // 2. Operational Volume (Số lượng booking lễ tân tiếp nhận & phục vụ check-in/out trong phạm vi khách sạn)
     const [operationalVolume] = await this.dataSource.query(
       `
       SELECT
@@ -896,26 +955,33 @@ export class BookingsService {
         SUM(CASE WHEN status = 'CHECKED_IN' THEN 1 ELSE 0 END) AS checkedInCount,
         SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completedCount
       FROM bookings
-      WHERE handled_by = ?
+      WHERE handled_by = ?${bookingHotelScopeSql}
       `,
-      [staffUserId],
+      [staffUserId, ...bookingHotelScopeParams],
     );
 
-    // 3. Service Upsells (Yêu cầu dịch vụ giao cho lễ tân xử lý / bán thêm)
+    // 3. Service Upsells (Yêu cầu dịch vụ giao cho lễ tân xử lý / bán thêm trong phạm vi khách sạn)
     const [serviceUpsell] = await this.dataSource.query(
       `
       SELECT
         COUNT(*) AS totalServiceRequests,
-        SUM(CASE WHEN status IN ('COMPLETED', 'CONFIRMED') THEN 1 ELSE 0 END) AS completedServicesCount,
-        COALESCE(SUM(CASE WHEN status IN ('COMPLETED', 'CONFIRMED') THEN total_price ELSE 0 END), 0) AS completedServiceAmount,
-        SUM(CASE WHEN is_sla_breached = 1 THEN 1 ELSE 0 END) AS slaBreachedCount
-      FROM service_requests
-      WHERE assigned_to = ?
+        SUM(CASE WHEN sr.status IN ('COMPLETED', 'CONFIRMED') THEN 1 ELSE 0 END) AS completedServicesCount,
+        COALESCE(SUM(CASE WHEN sr.status IN ('COMPLETED', 'CONFIRMED') THEN sr.total_price ELSE 0 END), 0) AS completedServiceAmount,
+        SUM(CASE WHEN sr.is_sla_breached = 1 THEN 1 ELSE 0 END) AS slaBreachedCount
+      FROM service_requests sr
+      INNER JOIN bookings b ON b.id = sr.booking_id
+      WHERE sr.assigned_to = ?${
+        hotelId
+          ? ' AND b.hotel_id = ?'
+          : isScopedEmployee
+          ? ` AND b.hotel_id IN (SELECT hotel_id FROM hotel_staff WHERE staff_user_id = ? AND status = 'ACTIVE')`
+          : ''
+      }
       `,
-      [staffUserId],
+      [staffUserId, ...bookingHotelScopeParams],
     );
 
-    // 4. Shift & Attendance (Ca trực và chênh lệch tiền mặt)
+    // 4. Shift & Attendance (Ca trực và chênh lệch tiền mặt trong phạm vi khách sạn)
     const [shiftStats] = await this.dataSource.query(
       `
       SELECT
@@ -924,9 +990,9 @@ export class BookingsService {
         SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END) AS openShifts,
         COALESCE(SUM(cash_variance), 0) AS totalCashVariance
       FROM staff_shifts
-      WHERE staff_user_id = ?
+      WHERE staff_user_id = ?${bookingHotelScopeSql}
       `,
-      [staffUserId],
+      [staffUserId, ...bookingHotelScopeParams],
     );
 
     // 5. Thông tin nhân viên
@@ -1065,19 +1131,15 @@ export class BookingsService {
 
     if (!this.inventoryService) throw new BadRequestException('Dịch vụ tồn phòng chưa sẵn sàng.');
 
-    // PP-P1-01: Dùng chung động cơ tính giá theo đêm & khuyến mãi (computeNightlyQuote) cho cả đặt phòng tại quầy
+    // PP-P1-01 & Lỗi 10: Dùng chung động cơ tính giá theo đêm & khuyến mãi (computeNightlyQuote), fail-closed nếu query lỗi
     const pricePerNight = Number(room.pricePerNight);
     let activeCampaigns: PromotionCampaign[] = [];
     if (typeof this.dataSource.getRepository === 'function') {
       const promoRepo = this.dataSource.getRepository(PromotionCampaign);
       if (promoRepo && typeof promoRepo.find === 'function') {
-        try {
-          activeCampaigns = await promoRepo.find({
-            where: { hotelId: String(room.hotelId), status: PromotionCampaignStatus.ACTIVE },
-          });
-        } catch {
-          activeCampaigns = [];
-        }
+        activeCampaigns = await promoRepo.find({
+          where: { hotelId: String(room.hotelId), status: PromotionCampaignStatus.ACTIVE },
+        });
       }
     }
 
@@ -1094,21 +1156,23 @@ export class BookingsService {
     const nights = quoteCalc.nightsCount;
     const subtotal = quoteCalc.payableTotal;
 
-    // 6. Tìm hoặc tạo khách hàng theo email
+    // 6. Tìm hoặc tạo khách hàng theo email (Lỗi 29: Dùng mật khẩu ngẫu nhiên băm bcrypt, không lưu hằng số FRONT_DESK_NO_LOGIN)
     let customerUserId: string = staffUser.id;
+    const normalizedEmail = dto.contactEmail.trim().toLowerCase();
     const [existingCustomer] = await this.dataSource.query(
       `SELECT id FROM users WHERE email = ? AND deleted_at IS NULL LIMIT 1`,
-      [dto.contactEmail.trim().toLowerCase()],
+      [normalizedEmail],
     );
 
     if (existingCustomer) {
       customerUserId = String(existingCustomer.id);
     } else {
-      // Tạo tài khoản khách hàng mới cho khách walk-in / điện thoại
+      const randomWalkInSecret = `WALKIN_${randomUUID()}_${randomBytes(16).toString('hex')}`;
+      const hashedWalkInPassword = await bcrypt.hash(randomWalkInSecret, 10);
       const insertUser = await this.dataSource.query(
-        `INSERT INTO users (full_name, email, phone, password, role, status, created_at, updated_at)
-         VALUES (?, ?, ?, 'FRONT_DESK_NO_LOGIN', 'CUSTOMER', 'ACTIVE', NOW(), NOW())`,
-        [dto.contactName.trim(), dto.contactEmail.trim().toLowerCase(), dto.contactPhone.trim()],
+        `INSERT INTO users (full_name, email, phone, password, role, status, email_verified_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'CUSTOMER', 'INACTIVE', NULL, NOW(), NOW())`,
+        [dto.contactName.trim(), normalizedEmail, dto.contactPhone.trim(), hashedWalkInPassword],
       );
       customerUserId = String(insertUser.insertId);
     }
@@ -1168,55 +1232,138 @@ export class BookingsService {
         });
         await manager.getRepository(BookingRoom).save(bookingRoom);
 
-        // PP-P1-01 & PP-P1-12: Lưu snapshot báo giá theo đêm & trừ ngân sách khuyến mãi cho đơn tại quầy
+        // PP-P1-01, FIX-10 & FIX-22: Khóa ngân sách campaign, lưu snapshot báo giá và cấp quyền lợi gói/quota trong CÙNG transaction, fail-closed (KHÔNG bọc try/catch rỗng)
         if (typeof manager.getRepository === 'function') {
-          try {
-            const quoteRepo = manager.getRepository(BookingPriceQuote);
-            if (quoteRepo && typeof quoteRepo.save === 'function') {
-              await quoteRepo.save(
-                quoteRepo.create({
-                  quoteCode: `QT-${savedBooking.bookingCode}`,
-                  hotelId: String(room.hotelId),
-                  bookingId: savedBooking.id,
-                  userId: customerUserId,
-                  roomId: String(room.id),
-                  roomQuantity: dto.roomCount,
-                  totalGuests: dto.totalGuests || 1,
-                  checkInLocalDate: quoteCalc.checkInLocalDate,
-                  checkOutLocalDate: quoteCalc.checkOutLocalDate,
-                  nightsCount: quoteCalc.nightsCount,
-                  baseTotal: quoteCalc.baseTotal,
-                  discountTotal: quoteCalc.discountTotal,
-                  payableTotal: quoteCalc.payableTotal,
-                  currency: 'VND',
-                  hotelTimezone: 'Asia/Ho_Chi_Minh',
-                  priceHash: quoteCalc.priceHash,
-                  nightlyLines: quoteCalc.nightlyLines,
-                  appliedCampaigns: quoteCalc.appliedCampaigns,
-                  status: 'CONFIRMED',
-                  expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-                  confirmedAt: new Date(),
-                  version: 1,
-                }),
-              );
-            }
-            if (quoteCalc.appliedCampaigns?.length) {
-              const campRepo = manager.getRepository(PromotionCampaign);
-              if (campRepo && typeof campRepo.findOne === 'function') {
-                for (const applied of quoteCalc.appliedCampaigns) {
-                  const lockedCamp = await campRepo.findOne({
-                    where: { id: applied.campaignId },
-                    lock: { mode: 'pessimistic_write' },
-                  });
-                  if (lockedCamp && hasRemainingCampaignBudget(lockedCamp, Number(applied.discountAmount || 0))) {
-                    lockedCamp.budgetConsumed = Number(lockedCamp.budgetConsumed || 0) + Number(applied.discountAmount || 0);
-                    lockedCamp.redemptionsCount = Number(lockedCamp.redemptionsCount || 0) + 1;
-                    await campRepo.save(lockedCamp);
+          const consumedAtIso = new Date().toISOString();
+          const committedCampaigns = (quoteCalc.appliedCampaigns || []).map((ac: any) => ({
+            ...ac,
+            budgetConsumedAt: consumedAtIso,
+          }));
+          const quoteRepo = manager.getRepository(BookingPriceQuote);
+          if (quoteRepo && typeof quoteRepo.save === 'function') {
+            await quoteRepo.save(
+              quoteRepo.create({
+                quoteCode: `QT-${savedBooking.bookingCode}`,
+                hotelId: String(room.hotelId),
+                bookingId: savedBooking.id,
+                userId: customerUserId,
+                roomId: String(room.id),
+                roomQuantity: dto.roomCount,
+                totalGuests: dto.totalGuests || 1,
+                checkInLocalDate: quoteCalc.checkInLocalDate,
+                checkOutLocalDate: quoteCalc.checkOutLocalDate,
+                nightsCount: quoteCalc.nightsCount,
+                baseTotal: quoteCalc.baseTotal,
+                discountTotal: quoteCalc.discountTotal,
+                payableTotal: quoteCalc.payableTotal,
+                currency: 'VND',
+                hotelTimezone: 'Asia/Ho_Chi_Minh',
+                priceHash: quoteCalc.priceHash,
+                nightlyLines: quoteCalc.nightlyLines,
+                appliedCampaigns: committedCampaigns,
+                status: 'CONFIRMED',
+                expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+                confirmedAt: new Date(),
+                version: 1,
+              }),
+            );
+          }
+          if (quoteCalc.appliedCampaigns?.length) {
+            const campRepo = manager.getRepository(PromotionCampaign);
+            if (campRepo && typeof campRepo.findOne === 'function') {
+              for (const applied of quoteCalc.appliedCampaigns) {
+                const lockedCamp = await campRepo.findOne({
+                  where: { id: applied.campaignId },
+                  lock: { mode: 'pessimistic_write' },
+                });
+                if (!lockedCamp || lockedCamp.status !== PromotionCampaignStatus.ACTIVE) {
+                  throw new ConflictException(
+                    'PRICE_CHANGED: Chương trình khuyến mãi vừa tạm dừng hoặc kết thúc, vui lòng tính lại giá tại quầy.',
+                  );
+                }
+                const discAmt = Math.max(0, Math.round(Number(applied.discountAmount || 0)));
+                if (!hasRemainingCampaignBudget(lockedCamp, discAmt)) {
+                  throw new ConflictException(
+                    'PROMO_BUDGET_EXHAUSTED: Ngân sách hoặc số lượt áp dụng chương trình khuyến mãi đã hết.',
+                  );
+                }
+                lockedCamp.budgetConsumed = Number(lockedCamp.budgetConsumed || 0) + discAmt;
+                lockedCamp.redemptionsCount = Number(lockedCamp.redemptionsCount || 0) + 1;
+                await campRepo.save(lockedCamp);
+
+                // FIX-22: Cấp ngay quyền lợi gói/tín dụng dịch vụ (SERVICE_BENEFIT_CREDIT / INCLUDED_QUOTA) cho đơn tại quầy
+                const totalQuota = (lockedCamp.packageConfig?.includedQuotas || []).reduce(
+                  (s, q) => s + Number(q.quantity || 0),
+                  0,
+                );
+                const isServiceBenefit =
+                  lockedCamp.benefitKind === BenefitKind.SERVICE_BENEFIT_CREDIT ||
+                  lockedCamp.benefitKind === BenefitKind.INCLUDED_QUOTA ||
+                  totalQuota > 0;
+                const creditAmt = lockedCamp.benefitKind === BenefitKind.SERVICE_BENEFIT_CREDIT ? discAmt : 0;
+                const accRepo = manager.getRepository(BookingBenefitAccount);
+                const ledgerRepo = manager.getRepository(BookingBenefitLedger);
+
+                if (isServiceBenefit && (creditAmt > 0 || totalQuota > 0) && accRepo && typeof accRepo.save === 'function') {
+                  const dedupeKey = `quote_benefit:booking:${savedBooking.id}:camp:${lockedCamp.id}:v:${lockedCamp.version}`;
+                  const quotaCodes = (lockedCamp.packageConfig?.includedQuotas || [])
+                    .map((q) => String(q.serviceCode || ''))
+                    .filter(Boolean);
+                  const allowedServices = lockedCamp.targetServiceIds?.length
+                    ? lockedCamp.targetServiceIds
+                    : quotaCodes.length
+                      ? quotaCodes
+                      : null;
+                  const createdAcc = await accRepo.save(
+                    accRepo.create({
+                      bookingId: savedBooking.id,
+                      hotelId: String(room.hotelId),
+                      campaignId: lockedCamp.id,
+                      benefitKind: lockedCamp.benefitKind,
+                      sourceType: 'QUOTE_BENEFIT',
+                      status: BenefitAccountStatus.APPROVED,
+                      currency: 'VND',
+                      grantedAmount: creditAmt,
+                      redeemedAmount: 0,
+                      reversedAmount: 0,
+                      refundedAmount: 0,
+                      availableAmount: creditAmt,
+                      grantedQuota: totalQuota,
+                      usedQuota: 0,
+                      availableQuota: totalQuota,
+                      allowedServiceIds: allowedServices,
+                      customerAcceptedCredit: true,
+                      expiresAt: new Date(checkOut),
+                      dedupeKey,
+                      approvedBy: staffUser.id,
+                      approvedAt: new Date(),
+                      note: `Quyền lợi gói/khuyến mãi đơn tại quầy (${lockedCamp.code})`,
+                      version: 1,
+                    }),
+                  );
+                  if (ledgerRepo && typeof ledgerRepo.save === 'function') {
+                    await ledgerRepo.save(
+                      ledgerRepo.create({
+                        accountId: createdAcc.id,
+                        bookingId: savedBooking.id,
+                        hotelId: String(room.hotelId),
+                        campaignId: lockedCamp.id,
+                        entryType: BenefitLedgerEntryType.GRANT,
+                        amountDelta: creditAmt,
+                        balanceAfter: creditAmt,
+                        quotaDelta: totalQuota,
+                        quotaAfter: totalQuota,
+                        performedBy: staffUser.id,
+                        idempotencyKey: `grant:${dedupeKey}`,
+                        reason: `Cấp quyền lợi gói tại quầy (${creditAmt}đ${totalQuota > 0 ? ` +${totalQuota} suất` : ''})`,
+                        metadata: { includedQuotas: lockedCamp.packageConfig?.includedQuotas || [] },
+                      }),
+                    );
                   }
                 }
               }
             }
-          } catch {}
+          }
         }
 
         await manager.getRepository(BookingStatusLog).save(

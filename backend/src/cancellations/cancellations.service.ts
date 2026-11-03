@@ -26,6 +26,15 @@ import { BookingAccessService } from '../bookings/services/booking-access.servic
 import { CreateCancellationRequestDto } from './dto/create-cancellation-request.dto';
 import { ReviewCancellationRequestDto } from './dto/review-cancellation-request.dto';
 import { runWithDeadlockRetry } from '../common/database/transaction-retry.helper';
+import {
+  BenefitAccountStatus,
+  BookingBenefitAccount,
+} from '../promotions/entities/booking-benefit-account.entity';
+import {
+  BenefitLedgerEntryType,
+  BookingBenefitLedger,
+} from '../promotions/entities/booking-benefit-ledger.entity';
+import { PromotionCampaign } from '../promotions/entities/promotion-campaign.entity';
 
 @Injectable()
 export class CancellationsService {
@@ -206,19 +215,85 @@ export class CancellationsService {
           order: { attemptNo: 'DESC' },
         });
 
-        // PP-P0-08 / PIT-19: Tính số tiền hoàn ròng = số đã thu trừ các khoản hoàn một phần đã tất toán trước đó,
-        // đồng thời khóa/hủy các tài khoản quyền lợi khuyến mãi đang mở của đơn bị hủy.
+        // Lỗi 18 (Section 1.3): Khi hủy booking, khóa các tài khoản quyền lợi mở, ghi bút toán thu hồi (BENEFIT_REVOCATION)
+        // vào BookingBenefitLedger để bảo toàn đối soát (ledgerSum == availableAmount == 0) và giải phóng ngân sách campaign.
         const paidAmt = payment ? Number(payment.amount || 0) : Number(booking.estimatedTotal || 0);
         const priorRefundedAmt = payment ? Number(payment.refundAmount || 0) : 0;
         const netRefundableAmt = Math.max(0, paidAmt - priorRefundedAmt);
 
-        if (typeof manager.query === 'function') {
-          try {
-            await manager.query(
-              `UPDATE booking_benefit_accounts SET status = 'CANCELLED', available_amount = 0, available_quota = 0, version = version + 1 WHERE booking_id = ? AND status IN ('APPROVED', 'PENDING_REVIEW', 'REFUND_PENDING')`,
-              [booking.id],
-            );
-          } catch {}
+        if (typeof manager.getRepository === 'function') {
+          const accRepo = manager.getRepository(BookingBenefitAccount);
+          const ledgerRepo = manager.getRepository(BookingBenefitLedger);
+          const campRepo = manager.getRepository(PromotionCampaign);
+
+          if (accRepo && typeof accRepo.find === 'function') {
+            const openAccounts = await accRepo.find({
+              where: { bookingId: String(booking.id) },
+              lock: { mode: 'pessimistic_write' },
+            });
+            for (const acc of openAccounts) {
+              // Section IV: Chỉ thu hồi (BENEFIT_REVOCATION) các quyền lợi chưa phát sinh quyền hưởng (APPROVED / PENDING_REVIEW);
+              // tuyệt đối KHÔNG xóa nghĩa vụ của tài khoản đang ở trạng thái REFUND_PENDING!
+              if (
+                ![
+                  BenefitAccountStatus.APPROVED,
+                  BenefitAccountStatus.PENDING_REVIEW,
+                ].includes(acc.status)
+              ) {
+                continue;
+              }
+              const revokeAmt = Math.max(0, Math.round(Number(acc.availableAmount || 0)));
+              const revokeQuota = Math.max(0, Math.round(Number(acc.availableQuota || 0)));
+              const revKey = `revoke:cancel_booking:${booking.id}:acc:${acc.id}`;
+
+              acc.reversedAmount = Number(acc.reversedAmount || 0) + revokeAmt;
+              acc.availableAmount = 0;
+              acc.availableQuota = 0;
+              acc.status = BenefitAccountStatus.CANCELLED;
+              acc.version = Number(acc.version || 1) + 1;
+              await accRepo.save(acc);
+
+              if ((revokeAmt > 0 || revokeQuota > 0) && ledgerRepo && typeof ledgerRepo.save === 'function') {
+                const existingRev =
+                  typeof ledgerRepo.findOne === 'function'
+                    ? await ledgerRepo.findOne({ where: { idempotencyKey: revKey } })
+                    : null;
+                if (!existingRev) {
+                  await ledgerRepo.save(
+                    ledgerRepo.create({
+                      accountId: acc.id,
+                      bookingId: String(booking.id),
+                      hotelId: String(acc.hotelId || booking.hotelId),
+                      campaignId: acc.campaignId,
+                      entryType: BenefitLedgerEntryType.BENEFIT_REVOCATION,
+                      amountDelta: -revokeAmt,
+                      balanceAfter: 0,
+                      quotaDelta: -revokeQuota,
+                      quotaAfter: 0,
+                      performedBy: String(user.id),
+                      idempotencyKey: revKey,
+                      reason: `Thu hồi quyền lợi chưa sử dụng do hủy đơn đặt phòng #${booking.bookingCode || booking.id}`,
+                    }),
+                  );
+                }
+              }
+
+              if (acc.campaignId && revokeAmt > 0 && campRepo && typeof campRepo.findOne === 'function') {
+                const lockedCamp = await campRepo.findOne({
+                  where: { id: acc.campaignId },
+                  lock: { mode: 'pessimistic_write' },
+                });
+                if (lockedCamp) {
+                  if (Number(lockedCamp.budgetReserved || 0) >= revokeAmt) {
+                    lockedCamp.budgetReserved = Math.max(0, Number(lockedCamp.budgetReserved || 0) - revokeAmt);
+                  } else {
+                    lockedCamp.budgetReversed = Number(lockedCamp.budgetReversed || 0) + revokeAmt;
+                  }
+                  await campRepo.save(lockedCamp);
+                }
+              }
+            }
+          }
         }
 
         if (payment && netRefundableAmt > 0) {

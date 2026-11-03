@@ -22,6 +22,16 @@ import { User } from '../users/entities/user.entity';
 import { ConfirmArrivalDto } from './dto/confirm-arrival.dto';
 import { ConfirmDepartureDto } from './dto/confirm-departure.dto';
 import { LateArrivalNoticeDto } from './dto/late-arrival-notice.dto';
+import {
+  BenefitAccountStatus,
+  BookingBenefitAccount,
+} from '../promotions/entities/booking-benefit-account.entity';
+import {
+  BenefitLedgerEntryType,
+  BookingBenefitLedger,
+} from '../promotions/entities/booking-benefit-ledger.entity';
+import { BenefitKind } from '../promotions/entities/promotion-campaign.entity';
+import { ServiceRequest, ServiceRequestStatus } from '../services/entities/service-request.entity';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { runWithDeadlockRetry } from '../common/database/transaction-retry.helper';
 import { BookingCoverageService } from '../booking-coverage/booking-coverage.service';
@@ -349,6 +359,176 @@ export class BookingPresenceService {
           throw new ConflictException('Đơn đặt phòng chưa được làm thủ tục nhận phòng thực tế, không thể xác nhận trả phòng.');
         }
         await assertBookingOperator(manager, booking, { id: actorUserId, role: actorRole }, 'CHECK_OUT');
+
+        // Lỗi 23 & Kịch bản LIFE-01: Trước khi đóng kỳ lưu trú (COMPLETED), kiểm tra các phiếu dịch vụ đang mở/chưa hoàn tất,
+        // các khoản hoàn tiền giảm giá phòng chưa lập phương án xử lý, giữ nguyên các khoản REFUND_PENDING với owner & SLA,
+        // và đóng (EXPIRE) các tín dụng dịch vụ/quota hết hạn lúc check-out.
+        const openRefundLiabilities: Array<{
+          accountId: string;
+          bookingId: string;
+          availableAmount: number;
+          status: string;
+          followUpOwnerId: string;
+          slaDueAt: string;
+        }> = [];
+        const serviceReceivables: Array<{
+          serviceRequestId: string;
+          serviceName: string;
+          netTotal: number;
+          redeemedAmount: number;
+          redeemedQuota: number;
+          remainingPayable: number;
+          status: string;
+        }> = [];
+        if (typeof manager.getRepository === 'function') {
+          const srRepo = manager.getRepository(ServiceRequest);
+          const ledgerRepo = manager.getRepository(BookingBenefitLedger);
+          if (srRepo && typeof srRepo.find === 'function') {
+            const activeServiceRequests = await srRepo.find({
+              where: { bookingId: Number(booking.id) },
+            });
+            const unfinishedServices = (activeServiceRequests || []).filter((sr) =>
+              [
+                ServiceRequestStatus.PENDING,
+                ServiceRequestStatus.ACCEPTED,
+                ServiceRequestStatus.ASSIGNED,
+                ServiceRequestStatus.IN_PROGRESS,
+              ].includes(sr.status),
+            );
+            if (unfinishedServices.length > 0) {
+              throw new ConflictException(
+                `Chưa thể hoàn tất trả phòng: Còn ${unfinishedServices.length} phiếu dịch vụ đang xử lý (${unfinishedServices.map((s) => `#${s.id} ${s.serviceName}`).join(', ')}). Vui lòng hoàn tất hoặc hủy phiếu trước khi check-out.`,
+              );
+            }
+
+            // Lỗi 23: Kiểm tra công nợ các phiếu dịch vụ đã hoàn tất (COMPLETED/CONFIRMED) so với sổ cấn trừ (BookingBenefitLedger)
+            const completedServices = (activeServiceRequests || []).filter((sr) =>
+              [ServiceRequestStatus.COMPLETED, ServiceRequestStatus.CONFIRMED].includes(sr.status),
+            );
+            if (completedServices.length > 0) {
+              let bookingLedgers: BookingBenefitLedger[] = [];
+              if (ledgerRepo && typeof ledgerRepo.find === 'function') {
+                bookingLedgers =
+                  (await ledgerRepo.find({
+                    where: { bookingId: String(booking.id) },
+                  })) || [];
+              }
+              for (const sr of completedServices) {
+                const netTotal = Math.max(0, Math.round(Number(sr.totalPrice || 0)));
+                const qty = Math.max(1, Math.round(Number(sr.quantity || 1)));
+                const unitNet = qty > 0 ? Math.round(netTotal / qty) : netTotal;
+                const srEntries = bookingLedgers.filter((l) => String(l.serviceRequestId) === String(sr.id));
+                const redeemedAmt = srEntries.reduce((sum, l) => {
+                  if (l.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(l.amountDelta || 0)));
+                  if (l.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(l.amountDelta || 0)));
+                  return sum;
+                }, 0);
+                const redeemedQuota = srEntries.reduce((sum, l) => {
+                  if (l.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(l.quotaDelta || 0)));
+                  if (l.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(l.quotaDelta || 0)));
+                  return sum;
+                }, 0);
+                const quotaCovered = Math.max(0, redeemedQuota) * unitNet;
+                const remainingPayable = Math.max(0, netTotal - Math.max(0, redeemedAmt) - quotaCovered);
+                serviceReceivables.push({
+                  serviceRequestId: String(sr.id),
+                  serviceName: sr.serviceName,
+                  netTotal,
+                  redeemedAmount: Math.max(0, redeemedAmt),
+                  redeemedQuota: Math.max(0, redeemedQuota),
+                  remainingPayable,
+                  status: remainingPayable === 0 ? 'SETTLED' : dto.servicePaymentReceiptRef || dto.acknowledgeServiceReceivables ? 'SETTLED_AT_CHECKOUT' : 'UNPAID',
+                });
+              }
+
+              const unpaidServices = serviceReceivables.filter((s) => s.remainingPayable > 0);
+              const totalUnpaidServiceAmount = unpaidServices.reduce((s, i) => s + i.remainingPayable, 0);
+              if (
+                totalUnpaidServiceAmount > 0 &&
+                !dto.acknowledgeServiceReceivables &&
+                (!dto.servicePaymentReceiptRef || !dto.servicePaymentReceiptRef.trim())
+              ) {
+                throw new ConflictException(
+                  `Chưa thể hoàn tất trả phòng: Đơn còn ${unpaidServices.length} phiếu dịch vụ đã thực hiện nhưng chưa tất toán/cấn trừ hết (${totalUnpaidServiceAmount.toLocaleString('vi-VN')}đ). Vui lòng cấn trừ quyền lợi hoặc xác nhận thu tiền dịch vụ trước khi check-out.`,
+                );
+              }
+            }
+          }
+
+          const accRepo = manager.getRepository(BookingBenefitAccount);
+          if (accRepo && typeof accRepo.find === 'function') {
+            const openBenefitAccounts = await accRepo.find({
+              where: { bookingId: String(booking.id) },
+            });
+            for (const acc of openBenefitAccounts || []) {
+              const availAmt = Math.max(0, Math.round(Number(acc.availableAmount || 0)));
+              const availQuota = Math.max(0, Math.round(Number(acc.availableQuota || 0)));
+
+              // Nếu còn khoản giảm giá phòng phải hoàn khách (ROOM_PRICE_ADJUSTMENT) đang mở (APPROVED) chưa chọn phương án hoàn -> chặn check-out
+              if (
+                acc.benefitKind === BenefitKind.ROOM_PRICE_ADJUSTMENT &&
+                acc.status === BenefitAccountStatus.APPROVED &&
+                availAmt > 0
+              ) {
+                throw new ConflictException(
+                  `Chưa thể hoàn tất trả phòng: Đơn còn khoản giảm giá phòng phải hoàn ${availAmt.toLocaleString('vi-VN')}đ (trạng thái: APPROVED) chưa lập lệnh hoàn hoặc cấn trừ trong Sổ quyền lợi (Folio).`,
+                );
+              }
+
+              // LIFE-01: Nếu khoản ROOM_PRICE_ADJUSTMENT đã lập lệnh hoàn và đang REFUND_PENDING -> cho phép check-out nhưng giữ nguyên open liability, gán owner & SLA 24h
+              if (
+                acc.benefitKind === BenefitKind.ROOM_PRICE_ADJUSTMENT &&
+                acc.status === BenefitAccountStatus.REFUND_PENDING &&
+                availAmt > 0
+              ) {
+                openRefundLiabilities.push({
+                  accountId: String(acc.id),
+                  bookingId: String(booking.id),
+                  availableAmount: availAmt,
+                  status: String(acc.status),
+                  followUpOwnerId: String(booking.handledBy || actorUserId),
+                  slaDueAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+                });
+              }
+
+              // Đóng các tài khoản SERVICE_BENEFIT_CREDIT / INCLUDED_QUOTA hết hạn tại thời điểm trả phòng
+              if (acc.status === BenefitAccountStatus.APPROVED && acc.benefitKind !== BenefitKind.ROOM_PRICE_ADJUSTMENT) {
+                acc.availableAmount = 0;
+                acc.availableQuota = 0;
+                acc.status = BenefitAccountStatus.EXPIRED;
+                acc.version = Number(acc.version || 1) + 1;
+                await accRepo.save(acc);
+
+                if ((availAmt > 0 || availQuota > 0) && ledgerRepo && typeof ledgerRepo.save === 'function') {
+                  const expKey = `expire:checkout:${booking.id}:acc:${acc.id}`;
+                  const existingExp =
+                    typeof ledgerRepo.findOne === 'function'
+                      ? await ledgerRepo.findOne({ where: { idempotencyKey: expKey } })
+                      : null;
+                  if (!existingExp) {
+                    await ledgerRepo.save(
+                      ledgerRepo.create({
+                        accountId: acc.id,
+                        bookingId: String(booking.id),
+                        hotelId: String(booking.hotelId),
+                        campaignId: acc.campaignId,
+                        entryType: BenefitLedgerEntryType.EXPIRE,
+                        amountDelta: -availAmt,
+                        balanceAfter: 0,
+                        quotaDelta: -availQuota,
+                        quotaAfter: 0,
+                        performedBy: actorUserId,
+                        idempotencyKey: expKey,
+                        reason: 'Đóng quyền lợi dịch vụ/suất gói còn dư khi khách hoàn tất trả phòng (Check-out)',
+                      }),
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+
         const now = new Date();
         const fromStatus = booking.status;
 
@@ -386,6 +566,8 @@ export class BookingPresenceService {
         return {
           booking: savedBooking,
           presenceEvent,
+          openRefundLiabilities,
+          serviceReceivables,
           alreadyCompleted: false,
           message: 'Thủ tục trả phòng đã được xác nhận thành công!',
         };

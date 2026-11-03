@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Booking } from '../bookings/entities/booking.entity';
+import { assertBookingOperator } from '../bookings/services/booking-operation-policy';
 import { BookingCoverageGrant, CoverageGrantStatus } from '../booking-coverage/entities/booking-coverage-grant.entity';
 import { coverageAllows, findCoverage } from '../booking-coverage/coverage-policy';
 import { BookingCoverageService } from '../booking-coverage/booking-coverage.service';
@@ -93,12 +94,23 @@ export class GuestWorkService {
   async createTask(dto: CreateWorkTaskDto, actor?: { id: string; role: string }): Promise<GuestWorkTask> {
     const booking = await this.bookingRepo.findOne({ where: { id: dto.bookingId } });
     if (!booking) throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${dto.bookingId}`);
+    if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(booking.hotelId)) {
+      throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn thực tế của đơn đặt phòng.');
+    }
     if (actor && actor.role !== 'ADMIN') {
       if (!(await this.staffAvailabilityService.isStaffAtHotel(actor.id, booking.hotelId))) {
         throw new ForbiddenException('Nhân viên không thuộc khách sạn.');
       }
-      if (dto.assignedStaffId && String(dto.assignedStaffId) !== String(actor.id) &&
-          !(await this.staffAvailabilityService.isManagerAtHotel(actor.id, booking.hotelId))) {
+      const isMgr = await this.staffAvailabilityService.isManagerAtHotel(actor.id, booking.hotelId);
+      if (!isMgr && String(booking.handledBy) !== String(actor.id)) {
+        const hasCov = this.coverageService
+          ? await this.coverageService.isStaffCoveringTask(booking.id, actor.id, dto.type || WorkTaskType.SERVICE_REQUEST, new Date())
+          : Boolean(await findCoverage(this.dataSource.manager, booking.id, actor.id, dto.type || WorkTaskType.SERVICE_REQUEST, new Date()));
+        if (!hasCov) {
+          throw new ForbiddenException('Cần là người phụ trách, quản lý hoặc có ủy quyền đúng loại công việc để tạo nhiệm vụ.');
+        }
+      }
+      if (dto.assignedStaffId && String(dto.assignedStaffId) !== String(actor.id) && !isMgr) {
         throw new ForbiddenException('Chỉ Quản lý mới được phân công nhiệm vụ cho nhân sự khác.');
       }
     }
@@ -346,8 +358,23 @@ export class GuestWorkService {
   async createOfflineWorkLog(actor: { id: string; role: string }, dto: CreateOfflineWorkLogDto): Promise<GuestWorkTask> {
     const booking = await this.bookingRepo.findOne({ where: { id: dto.bookingId } });
     if (!booking) throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${dto.bookingId}`);
+    if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(booking.hotelId)) {
+      throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn thực tế của đơn đặt phòng.');
+    }
     if (actor.role !== 'ADMIN' && !(await this.staffAvailabilityService.isStaffAtHotel(actor.id, booking.hotelId))) {
       throw new ForbiddenException('Bạn không thuộc khách sạn của đơn đặt phòng này.');
+    }
+    if (actor.role === 'EMPLOYEE') {
+      const isMgr = await this.staffAvailabilityService.isManagerAtHotel(actor.id, booking.hotelId);
+      if (!isMgr && String(booking.handledBy) !== String(actor.id)) {
+        const taskType = dto.type || WorkTaskType.SERVICE_REQUEST;
+        const hasCov = this.coverageService
+          ? await this.coverageService.isStaffCoveringTask(booking.id, actor.id, taskType, new Date(), dto.taskId)
+          : Boolean(await findCoverage(this.dataSource.manager, booking.id, actor.id, taskType, new Date(), dto.taskId));
+        if (!hasCov) {
+          throw new ForbiddenException('Cần là người phụ trách, quản lý hoặc có ủy quyền đúng loại công việc để ghi nhận công việc.');
+        }
+      }
     }
     const now = new Date();
     const claimedTime = new Date(dto.claimedOccurredAt);
@@ -356,16 +383,22 @@ export class GuestWorkService {
     }
     return this.dataSource.transaction(async (em) => {
       // Self-reported work stays COMPLETED awaiting 4-eyes verification; it is never auto-VERIFIED.
-      const task = dto.taskId
-        ? await this.lockTask(em, dto.taskId)
-        : await em.save(GuestWorkTask, em.create(GuestWorkTask, {
-            hotelId: booking.hotelId, bookingId: booking.id,
-            type: dto.type || WorkTaskType.SERVICE_REQUEST,
-            assignedStaffId: actor.id, ownerAtCreate: booking.handledBy || null,
-            status: WorkTaskStatus.COMPLETED, priority: WorkTaskPriority.NORMAL,
-            title: `[Nhật ký ${dto.channel}] ${dto.summary.slice(0, 80)}`,
-            description: dto.summary, completedAt: now, version: 1,
-          }));
+      let task: GuestWorkTask;
+      if (dto.taskId) {
+        task = await this.lockTask(em, dto.taskId);
+        if (String(task.bookingId) !== String(booking.id) || String(task.hotelId) !== String(booking.hotelId)) {
+          throw new ForbiddenException('Nhiệm vụ (taskId) không thuộc đơn đặt phòng và khách sạn đang khai báo.');
+        }
+      } else {
+        task = await em.save(GuestWorkTask, em.create(GuestWorkTask, {
+          hotelId: booking.hotelId, bookingId: booking.id,
+          type: dto.type || WorkTaskType.SERVICE_REQUEST,
+          assignedStaffId: actor.id, ownerAtCreate: booking.handledBy || null,
+          status: WorkTaskStatus.COMPLETED, priority: WorkTaskPriority.NORMAL,
+          title: `[Nhật ký ${dto.channel}] ${dto.summary.slice(0, 80)}`,
+          description: dto.summary, completedAt: now, version: 1,
+        }));
+      }
       await em.save(GuestWorkEvidence, em.create(GuestWorkEvidence, {
         taskId: task.id, submittedBy: actor.id,
         type: dto.channel === 'PHONE' ? WorkEvidenceType.CALL_LOG : WorkEvidenceType.SELF_REPORTED,

@@ -1,11 +1,12 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { In, QueryFailedError, Repository } from 'typeorm';
 
 import { HotelsService } from '../hotels/hotels.service';
 import { deletePhysicalFile } from '../hotels/upload-image.config';
@@ -89,14 +90,25 @@ export class RoomsService {
         );
       }
 
-      // Gán dịch vụ cho phòng: nếu dto.serviceIds có thì gán theo danh sách đó,
-      // nếu không có thì mặc định tự động gán toàn bộ dịch vụ MIỄN PHÍ đang hoạt động!
+      // Gán dịch vụ cho phòng: nếu dto.serviceIds có thì xác minh cùng khách sạn,
+      // nếu không có thì mặc định chỉ gán dịch vụ MIỄN PHÍ thuộc cùng khách sạn hoặc toàn hệ thống (hotelId IS NULL)
       let serviceIdsToAssign = dto.serviceIds;
-      if (!serviceIdsToAssign || serviceIdsToAssign.length === 0) {
+      if (serviceIdsToAssign && serviceIdsToAssign.length > 0) {
+        const cleanIds = Array.from(new Set(serviceIdsToAssign.map((s) => Number(s))));
+        const foundSvcs = await this.roomServicesRepository.find({
+          where: { id: In(cleanIds) },
+        });
+        if (foundSvcs.length !== cleanIds.length || foundSvcs.some((s) => s.hotelId !== null && String(s.hotelId) !== String(savedRoom.hotelId))) {
+          throw new ForbiddenException('Một hoặc nhiều dịch vụ gán cho phòng không tồn tại hoặc thuộc khách sạn khác.');
+        }
+        serviceIdsToAssign = cleanIds;
+      } else {
         const defaultFreeServices = await this.roomServicesRepository.find({
           where: { isComplimentary: true, status: 'ACTIVE' },
         });
-        serviceIdsToAssign = defaultFreeServices.map((s) => Number(s.id));
+        serviceIdsToAssign = defaultFreeServices
+          .filter((s) => s.hotelId === null || String(s.hotelId) === String(savedRoom.hotelId))
+          .map((s) => Number(s.id));
       }
 
       if (serviceIdsToAssign && serviceIdsToAssign.length > 0) {
@@ -403,9 +415,9 @@ export class RoomsService {
   async update(id: string, dto: UpdateRoomDto): Promise<Room> {
     const room = await this.findOne(id);
 
-    if (dto.hotelId !== undefined) {
-      await this.hotelsService.findOne(String(dto.hotelId));
-      room.hotelId = String(dto.hotelId);
+    // Section III.3.2 (Hotel-first): room.hotelId lấy từ DB, tuyệt đối không cho DTO đổi khách sạn sở hữu của phòng
+    if (dto.hotelId !== undefined && String(dto.hotelId) !== String(room.hotelId)) {
+      throw new ForbiddenException('Không được phép thay đổi khách sạn sở hữu (hotelId) của phòng.');
     }
 
     if (dto.name !== undefined) {
@@ -487,6 +499,15 @@ export class RoomsService {
     }
 
     if (dto.serviceIds !== undefined) {
+      if (dto.serviceIds.length > 0) {
+        const cleanIds = Array.from(new Set(dto.serviceIds.map((s) => Number(s))));
+        const foundSvcs = await this.roomServicesRepository.find({
+          where: { id: In(cleanIds) },
+        });
+        if (foundSvcs.length !== cleanIds.length || foundSvcs.some((s) => s.hotelId !== null && String(s.hotelId) !== String(room.hotelId))) {
+          throw new ForbiddenException('Một hoặc nhiều dịch vụ gán cho phòng không tồn tại hoặc thuộc khách sạn khác.');
+        }
+      }
       await this.rsaRepository.delete({ roomId: Number(room.id) });
       if (dto.serviceIds.length > 0) {
         const assignments = dto.serviceIds.map((sId) =>

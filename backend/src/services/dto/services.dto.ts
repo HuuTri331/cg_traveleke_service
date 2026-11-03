@@ -247,6 +247,9 @@ export class UpdateServiceRequestDto {
   note?: string;
 
   @IsOptional()
+  scheduledAt?: string;
+
+  @IsOptional()
   completedAt?: string;
 
   @IsOptional()
@@ -326,8 +329,9 @@ export class CreateServiceRecoveryLogDto {
   @IsInt()
   bookingId: number;
 
+  @IsOptional()
   @IsInt()
-  reportedBy: number;
+  reportedBy?: number;
 
   @IsEnum(RecoveryType)
   recoveryType: RecoveryType;
@@ -344,8 +348,9 @@ export class CreateServiceRecoveryLogDto {
 }
 
 export class ApproveRecoveryDto {
+  @IsOptional()
   @IsInt()
-  approvedBy: number;
+  approvedBy?: number;
 
   @IsEnum(['APPROVED', 'REJECTED'])
   decision: 'APPROVED' | 'REJECTED';

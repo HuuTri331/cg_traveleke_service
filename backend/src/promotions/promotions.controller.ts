@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Post,
@@ -15,7 +16,9 @@ import { PromotionsService } from './promotions.service';
 import {
   AcceptConsentDto,
   CalculateQuoteDto,
+  ConfirmRefundIntentDto,
   CreatePromotionCampaignDto,
+  QuoteServiceItemDto,
   RedeemBenefitDto,
   SettleRefundDto,
 } from './dto/promotions.dto';
@@ -31,18 +34,21 @@ export class PromotionsController {
     return await this.promotionsService.getPublicActiveCampaigns(hotelId);
   }
 
-  @Post('hotels/:hotelId/campaigns')
+  @Post(['hotels/:hotelId/campaigns', 'hotels/:hotelId/promotions'])
   @Roles('ADMIN', 'EMPLOYEE')
   async createHotelCampaign(
     @Param('hotelId') hotelId: string,
     @CurrentUser() user: { id: string; role: string },
     @Body() dto: CreatePromotionCampaignDto,
   ) {
+    if (dto.hotelId && String(dto.hotelId) !== String(hotelId)) {
+      throw new ForbiddenException('hotelId trong body không khớp với khách sạn trên đường dẫn.');
+    }
     dto.hotelId = hotelId;
     return await this.promotionsService.createCampaign(user, dto);
   }
 
-  @Get('hotels/:hotelId/campaigns')
+  @Get(['hotels/:hotelId/campaigns', 'hotels/:hotelId/promotions'])
   @Roles('ADMIN', 'EMPLOYEE')
   async listHotelCampaigns(
     @Param('hotelId') hotelId: string,
@@ -155,14 +161,7 @@ export class PromotionsController {
   @Post('service-quotes')
   @Roles('ADMIN', 'EMPLOYEE', 'CUSTOMER')
   async calculateServiceQuote(
-    @Body()
-    dto: {
-      hotelId: string;
-      serviceId: string;
-      baseUnitPrice: number;
-      quantity?: number;
-      usageAt?: string;
-    },
+    @Body() dto: QuoteServiceItemDto,
   ) {
     return await this.promotionsService.quoteServiceItem(dto);
   }
@@ -255,7 +254,7 @@ export class PromotionsController {
   async confirmRefundIntent(
     @Param('intentId') intentId: string,
     @CurrentUser() user: { id: string; role: string },
-    @Body() body: { providerRef?: string; payoutReceiptRef?: string },
+    @Body() body: ConfirmRefundIntentDto,
   ) {
     return await this.promotionsService.confirmRefundIntentSettlement(user, intentId, body);
   }

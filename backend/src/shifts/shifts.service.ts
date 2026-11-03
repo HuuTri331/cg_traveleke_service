@@ -63,6 +63,43 @@ export class ShiftsService {
   }
 
   /**
+   * Lấy ca trực đang ACTIVE của nhân viên hiện tại
+   */
+  async getActiveShift(staffUserId: string) {
+    const activeShift = await this.shiftRepo.findOne({
+      where: { staffUserId, status: ShiftStatus.ACTIVE },
+      order: { id: 'DESC' },
+    });
+    return {
+      success: true,
+      data: activeShift || null,
+    };
+  }
+
+  /**
+   * Lấy danh sách biên bản bàn giao ca của khách sạn (kiểm tra quyền nhân sự khách sạn)
+   */
+  async getHotelHandovers(hotelId: string, actor: User) {
+    if (actor.role !== 'ADMIN') {
+      const isStaff = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+        [hotelId, actor.id],
+      );
+      if (!isStaff || isStaff.length === 0) {
+        throw new ForbiddenException('Bạn không có quyền xem danh sách bàn giao ca tại khách sạn này.');
+      }
+    }
+    const list = await this.handoverRepo.find({
+      where: { hotelId },
+      order: { createdAt: 'DESC' },
+    });
+    return {
+      success: true,
+      data: list,
+    };
+  }
+
+  /**
    * Lấy danh sách ca làm việc của khách sạn (Dành cho Quản lý / Supervisor)
    */
   async getHotelShifts(hotelId: string, actor: User, date?: string) {
@@ -169,8 +206,22 @@ export class ShiftsService {
       throw new NotFoundException('Không tìm thấy ca làm việc.');
     }
 
+    if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(shift.hotelId)) {
+      throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn của ca trực.');
+    }
+
     if (String(shift.staffUserId) !== String(staffUserId)) {
       throw new ForbiddenException('Bạn không phải là người trực của ca làm việc này.');
+    }
+
+    if (typeof this.dataSource?.query === 'function') {
+      const activeMembership = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+        [shift.hotelId, staffUserId],
+      );
+      if (Array.isArray(activeMembership) && activeMembership.length === 0) {
+        throw new ForbiddenException('Bạn không còn thuộc nhân sự đang hoạt động (ACTIVE) tại khách sạn của ca trực này.');
+      }
     }
 
     if (shift.status === ShiftStatus.ACTIVE) {
@@ -204,15 +255,33 @@ export class ShiftsService {
       throw new NotFoundException('Không tìm thấy ca làm việc.');
     }
 
+    if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(shift.hotelId)) {
+      throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn của ca trực.');
+    }
+
     if (String(shift.staffUserId) !== String(staffUserId)) {
       throw new ForbiddenException('Bạn không phải là người trực của ca làm việc này.');
+    }
+
+    if (typeof this.dataSource?.query === 'function') {
+      const activeMembership = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+        [shift.hotelId, staffUserId],
+      );
+      if (Array.isArray(activeMembership) && activeMembership.length === 0) {
+        throw new ForbiddenException('Bạn không còn thuộc nhân sự đang hoạt động (ACTIVE) tại khách sạn của ca trực này.');
+      }
     }
 
     if (shift.status !== ShiftStatus.ACTIVE) {
       throw new BadRequestException('Chỉ có thể kết thúc ca đang ở trạng thái ACTIVE.');
     }
 
-    const counted = Number(dto.closingCashCounted);
+    const rawCounted = dto.closingCashCounted ?? dto.closingCashActual;
+    if (rawCounted === undefined || rawCounted === null || Number.isNaN(Number(rawCounted))) {
+      throw new BadRequestException('Số tiền mặt kiểm đếm cuối ca là bắt buộc.');
+    }
+    const counted = Number(rawCounted);
     const opening = Number(shift.openingCashFloat || 0);
 
     // Tính tổng tiền mặt thu từ walk-in / lễ tân trong ca này
@@ -266,8 +335,23 @@ export class ShiftsService {
       throw new NotFoundException('Không tìm thấy ca làm việc để bàn giao.');
     }
 
+    if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(shift.hotelId)) {
+      throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn của ca trực.');
+    }
+
     if (String(shift.staffUserId) !== String(fromStaffId)) {
       throw new ForbiddenException('Bạn không phải là người trực của ca này.');
+    }
+
+    // Kiểm tra nhân viên giao ca vẫn ACTIVE tại khách sạn của ca trực
+    const isSenderActive = await this.dataSource.query(
+      `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+      [shift.hotelId, fromStaffId],
+    );
+    if (!isSenderActive || isSenderActive.length === 0) {
+      throw new ForbiddenException(
+        'Nhân viên bàn giao không còn thuộc biên chế đang hoạt động (ACTIVE) tại khách sạn này.',
+      );
     }
 
     // Kiểm tra nhân viên nhận bàn giao
@@ -277,14 +361,15 @@ export class ShiftsService {
     );
 
     if (!isReceiverStaff || isReceiverStaff.length === 0) {
-      throw new BadRequestException(
+      throw new ForbiddenException(
         'Nhân viên nhận bàn giao không thuộc biên chế đang công tác tại khách sạn này.',
       );
     }
 
-    // PP-P1-22: Tổng hợp danh sách công nợ / quyền lợi khuyến mãi đang mở tại khách sạn khi bàn giao ca A -> B
-    // (Chỉ đọc projection để ca sau theo dõi, KHÔNG cấp lại tiền 360k và KHÔNG đổi chủ sở hữu booking A)
+    // PP-P1-22 & FIX-25: Tổng hợp danh sách công nợ / quyền lợi khuyến mãi đang mở tại khách sạn khi bàn giao ca A -> B
+    // Fail-closed: KHÔNG bọc try/catch rỗng; lưu structured checklist items có trạng thái acknowledged, follow-up actor và SLA deadline.
     let openFinancialItems: Array<{
+      accountId: string;
       bookingId: string;
       bookingCode: string;
       handledBy: string | null;
@@ -293,34 +378,41 @@ export class ShiftsService {
       availableQuota: number;
       customerAcceptedCredit: boolean;
       status: string;
+      acknowledged: boolean;
+      assignedFollowUpActor: string;
+      slaDeadline: string;
     }> = [];
     if (typeof this.dataSource.query === 'function') {
-      try {
-        const rows = await this.dataSource.query(
-          `SELECT a.booking_id AS bookingId, b.booking_code AS bookingCode, b.handled_by AS handledBy,
-                  a.benefit_kind AS benefitKind, a.available_amount AS availableAmount,
-                  a.available_quota AS availableQuota, a.customer_accepted_credit AS customerAcceptedCredit,
-                  a.status AS status
-           FROM booking_benefit_accounts a
-           INNER JOIN bookings b ON b.id = a.booking_id
-           WHERE a.hotel_id = ? AND a.status IN ('APPROVED', 'REFUND_PENDING')
-             AND (a.available_amount > 0 OR a.available_quota > 0)
-           ORDER BY a.id ASC`,
-          [shift.hotelId],
-        );
-        if (Array.isArray(rows)) {
-          openFinancialItems = rows.map((r: any) => ({
-            bookingId: String(r.bookingId),
-            bookingCode: String(r.bookingCode || ''),
-            handledBy: r.handledBy ? String(r.handledBy) : null,
-            benefitKind: String(r.benefitKind),
-            availableAmount: Number(r.availableAmount || 0),
-            availableQuota: Number(r.availableQuota || 0),
-            customerAcceptedCredit: Boolean(r.customerAcceptedCredit),
-            status: String(r.status),
-          }));
-        }
-      } catch {}
+      const rows = await this.dataSource.query(
+        `SELECT a.id AS accountId, a.booking_id AS bookingId, b.booking_code AS bookingCode, b.handled_by AS handledBy,
+                a.benefit_kind AS benefitKind, a.available_amount AS availableAmount,
+                a.available_quota AS availableQuota, a.customer_accepted_credit AS customerAcceptedCredit,
+                a.status AS status
+         FROM booking_benefit_accounts a
+         INNER JOIN bookings b ON b.id = a.booking_id
+         WHERE a.hotel_id = ? AND a.status IN ('APPROVED', 'REFUND_PENDING')
+           AND (a.available_amount > 0 OR a.available_quota > 0)
+         ORDER BY a.id ASC`,
+        [shift.hotelId],
+      );
+      if (Array.isArray(rows)) {
+        const defaultDeadline = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+        const ackSet = new Set((dto.acknowledgedFinancialAccountIds || []).map(String));
+        openFinancialItems = rows.map((r: any) => ({
+          accountId: String(r.accountId || r.bookingId),
+          bookingId: String(r.bookingId),
+          bookingCode: String(r.bookingCode || ''),
+          handledBy: r.handledBy ? String(r.handledBy) : null,
+          benefitKind: String(r.benefitKind),
+          availableAmount: Number(r.availableAmount || 0),
+          availableQuota: Number(r.availableQuota || 0),
+          customerAcceptedCredit: Boolean(r.customerAcceptedCredit),
+          status: String(r.status),
+          acknowledged: ackSet.has(String(r.accountId || r.bookingId)),
+          assignedFollowUpActor: String(dto.toStaffId),
+          slaDeadline: defaultDeadline,
+        }));
+      }
     }
 
     const financialSummaryNote =
@@ -330,12 +422,20 @@ export class ShiftsService {
             .join('; ')}]`
         : '';
 
+    const structuredPendingTasks =
+      openFinancialItems.length > 0
+        ? JSON.stringify({
+            notes: dto.pendingTasks || null,
+            openFinancialItems,
+          })
+        : dto.pendingTasks || null;
+
     const handover = this.handoverRepo.create({
       shiftId,
       hotelId: shift.hotelId,
       fromStaffId,
       toStaffId: dto.toStaffId,
-      pendingTasks: dto.pendingTasks || null,
+      pendingTasks: structuredPendingTasks,
       cashAmount: dto.cashAmount !== undefined ? String(dto.cashAmount) : '0.00',
       specialNotes: `${dto.specialNotes || ''}${financialSummaryNote}`.trim() || null,
       status: HandoverStatus.PENDING,
@@ -367,8 +467,33 @@ export class ShiftsService {
       );
     }
 
+    if (typeof this.dataSource?.query === 'function') {
+      const isReceiverActive = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+        [handover.hotelId, toStaffId],
+      );
+      if (!isReceiverActive || isReceiverActive.length === 0) {
+        throw new ForbiddenException('Bạn không còn thuộc biên chế đang hoạt động (ACTIVE) tại khách sạn của biên bản bàn giao này.');
+      }
+    }
+
     if (handover.status === HandoverStatus.ACCEPTED) {
       return { success: true, message: 'Biên bản bàn giao đã được tiếp nhận trước đó.', data: handover };
+    }
+
+    if (typeof handover.pendingTasks === 'string' && handover.pendingTasks.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(handover.pendingTasks);
+        if (Array.isArray(parsed?.openFinancialItems)) {
+          parsed.openFinancialItems = parsed.openFinancialItems.map((item: any) => ({
+            ...item,
+            acknowledged: true,
+            acknowledgedBy: String(toStaffId),
+            acknowledgedAt: new Date().toISOString(),
+          }));
+          handover.pendingTasks = JSON.stringify(parsed);
+        }
+      } catch {}
     }
 
     handover.status = HandoverStatus.ACCEPTED;

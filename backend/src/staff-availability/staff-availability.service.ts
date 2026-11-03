@@ -163,6 +163,10 @@ export class StaffAvailabilityService {
         throw new NotFoundException(`Không tìm thấy đơn yêu cầu #${requestId}.`);
       }
 
+      if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(request.hotelId)) {
+        throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn của đơn xin nghỉ.');
+      }
+
       // Kiểm tra optimistic lock version
       if (
         dto.expectedVersion !== undefined &&

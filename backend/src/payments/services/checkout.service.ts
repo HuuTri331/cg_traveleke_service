@@ -250,6 +250,33 @@ export class CheckoutService {
         const bookingRepo = manager.getRepository(Booking);
         const bookingRoomRepo = manager.getRepository(BookingRoom);
         const paymentRepo = manager.getRepository(PaymentTransaction);
+        const quoteRepo =
+          typeof manager.getRepository === 'function' ? manager.getRepository(BookingPriceQuote) : null;
+
+        // FIX-21: Khóa BookingPriceQuote NGAY ĐẦU transaction trước khi tạo Booking, giữ phòng hoặc trừ ngân sách
+        let lockedQuoteToConfirm: BookingPriceQuote | null = existingQuote;
+        if (existingQuote && quoteRepo && typeof quoteRepo.findOne === 'function') {
+          const lockedQuote = await quoteRepo.findOne({
+            where: { id: existingQuote.id },
+            lock: { mode: 'pessimistic_write' },
+          });
+          if (!lockedQuote) {
+            throw new NotFoundException(`Không tìm thấy báo giá #${dto.quoteId}`);
+          }
+          if (lockedQuote.userId && String(lockedQuote.userId) !== String(userId)) {
+            throw new ForbiddenException('QUOTE_OWNER_MISMATCH: Bạn không được dùng báo giá của khách hàng khác.');
+          }
+          if (
+            lockedQuote.status !== 'ACTIVE' ||
+            new Date(lockedQuote.expiresAt) <= new Date() ||
+            (dto.quoteVersion !== undefined && Number(lockedQuote.version) !== Number(dto.quoteVersion))
+          ) {
+            throw new ConflictException(
+              'PRICE_QUOTE_EXPIRED: Báo giá đã hết hạn hoặc vừa được sử dụng bởi giao dịch khác, vui lòng xác nhận lại báo giá mới.',
+            );
+          }
+          lockedQuoteToConfirm = lockedQuote;
+        }
 
         // Tạo Booking ở trạng thái PAYMENT_PENDING
         const booking = bookingRepo.create({
@@ -314,16 +341,15 @@ export class CheckoutService {
           }
         }
 
-        // INV-P11 & PP-P0-09 / PIT-11: Lưu snapshot báo giá theo đêm tại thời điểm checkout (fail-closed if DB insert fails)
-        const quoteRepo =
-          typeof manager.getRepository === 'function' ? manager.getRepository(BookingPriceQuote) : null;
+        // Chốt trạng thái BookingPriceQuote đã được khóa ở đầu transaction
         if (quoteRepo && typeof quoteRepo.save === 'function') {
-          if (existingQuote) {
-            existingQuote.bookingId = savedBooking.id;
-            existingQuote.userId = userId;
-            existingQuote.status = 'CONFIRMED';
-            existingQuote.confirmedAt = new Date();
-            await quoteRepo.save(existingQuote);
+          if (lockedQuoteToConfirm) {
+            lockedQuoteToConfirm.bookingId = savedBooking.id;
+            lockedQuoteToConfirm.userId = userId;
+            lockedQuoteToConfirm.status = 'CONFIRMED';
+            lockedQuoteToConfirm.confirmedAt = new Date();
+            lockedQuoteToConfirm.version = Number(lockedQuoteToConfirm.version || 1) + 1;
+            await quoteRepo.save(lockedQuoteToConfirm);
           } else if (typeof quoteRepo.create === 'function') {
             await quoteRepo.save(
               quoteRepo.create({

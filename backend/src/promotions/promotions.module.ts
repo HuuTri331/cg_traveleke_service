@@ -4,6 +4,7 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { BookingRoom } from '../bookings/entities/booking-room.entity';
 import { Room } from '../rooms/entities/room.entity';
 import { ServiceRequest } from '../services/entities/service-request.entity';
+import { RoomService } from '../services/entities/room-service.entity';
 import { PaymentTransaction } from '../payments/entities/payment-transaction.entity';
 import { OutboxModule } from '../outbox/outbox.module';
 import { StaffAvailabilityModule } from '../staff-availability/staff-availability.module';
@@ -30,6 +31,7 @@ import { PromotionsController } from './promotions.controller';
       BookingRoom,
       Room,
       ServiceRequest,
+      RoomService,
       PaymentTransaction,
     ]),
     StaffAvailabilityModule,

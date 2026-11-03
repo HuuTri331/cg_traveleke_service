@@ -70,8 +70,14 @@ export class ServicesController {
   @Get('stats')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  getStats() {
-    return this.servicesService.getServiceStats();
+  getStats(
+    @CurrentUser() user?: User,
+    @Query('hotelId') hotelId?: string,
+  ) {
+    return this.servicesService.getServiceStats(
+      user,
+      hotelId ? Number(hotelId) : undefined,
+    );
   }
 
   // ============================================================
@@ -139,13 +145,19 @@ export class ServicesController {
   ) {
     if (user.role === 'EMPLOYEE') {
       const svc = await this.servicesService.getRoomServiceById(id);
-      if (svc.hotelId) {
-        const isManager = await this.servicesService.isHotelManager(user.id, svc.hotelId);
-        if (!isManager) {
-          throw new ForbiddenException(
-            'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền cập nhật dịch vụ phòng của khách sạn này.',
-          );
-        }
+      if (!svc.hotelId) {
+        throw new ForbiddenException(
+          'Chỉ Quản trị viên hệ thống (ADMIN) mới có quyền sửa dịch vụ dùng chung toàn hệ thống.',
+        );
+      }
+      const isManager = await this.servicesService.isHotelManager(user.id, svc.hotelId);
+      if (!isManager) {
+        throw new ForbiddenException(
+          'Chỉ Quản lý khách sạn (MANAGER) hoặc Quản trị viên mới có quyền cập nhật dịch vụ phòng của khách sạn này.',
+        );
+      }
+      if ((dto as any).hotelId !== undefined && Number((dto as any).hotelId) !== Number(svc.hotelId)) {
+        throw new ForbiddenException('Không được phép chuyển dịch vụ sang khách sạn khác.');
       }
     }
     return this.servicesService.updateRoomService(id, dto);
@@ -206,8 +218,9 @@ export class ServicesController {
   updateServiceRequest(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateServiceRequestDto,
+    @CurrentUser() user: User,
   ) {
-    return this.servicesService.updateServiceRequest(id, dto);
+    return this.servicesService.updateServiceRequest(id, dto, user);
   }
 
   @Put('requests/:id/status')
@@ -222,12 +235,18 @@ export class ServicesController {
       failureReason?: string;
       note?: string;
     },
+    @CurrentUser() user: User,
   ) {
-    return this.servicesService.updateServiceRequestStatus(id, body.status, {
-      assignedTo: body.assignedTo,
-      failureReason: body.failureReason,
-      note: body.note,
-    });
+    return this.servicesService.updateServiceRequestStatus(
+      id,
+      body.status,
+      {
+        assignedTo: body.assignedTo,
+        failureReason: body.failureReason,
+        note: body.note,
+      },
+      user,
+    );
   }
 
   // ============================================================
@@ -269,10 +288,10 @@ export class ServicesController {
   @HttpCode(HttpStatus.CREATED)
   createRecoveryLog(
     @Body() dto: CreateServiceRecoveryLogDto,
-    @Request() req: { user: { id: number } },
+    @CurrentUser() user: User,
   ) {
-    if (!dto.reportedBy) dto.reportedBy = req.user.id;
-    return this.servicesService.createRecoveryLog(dto);
+    dto.reportedBy = Number(user.id);
+    return this.servicesService.createRecoveryLog(dto, user);
   }
 
   @Put('recovery/:id/approve')
@@ -283,16 +302,22 @@ export class ServicesController {
     @Body() dto: ApproveRecoveryDto,
     @CurrentUser() user: User,
   ) {
-    if (!dto.approvedBy) dto.approvedBy = Number(user.id);
+    dto.approvedBy = Number(user.id);
     return this.servicesService.approveRecoveryLog(id, dto, user);
   }
 
   @Get('recovery')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  getRecoveryLogs(@Query('bookingId') bookingId?: string) {
+  getRecoveryLogs(
+    @Query('bookingId') bookingId?: string,
+    @CurrentUser() user?: User,
+    @Query('hotelId') hotelId?: string,
+  ) {
     return this.servicesService.getRecoveryLogs(
       bookingId ? Number(bookingId) : undefined,
+      user,
+      hotelId ? Number(hotelId) : undefined,
     );
   }
 }

@@ -115,8 +115,11 @@ export class BookingsController {
   @Get('performance/me')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'EMPLOYEE')
-  getMyPerformance(@CurrentUser() user: User) {
-    return this.bookingsService.getStaffPerformance(user.id, user);
+  getMyPerformance(
+    @CurrentUser() user: User,
+    @Query('hotelId') hotelId?: string,
+  ) {
+    return this.bookingsService.getStaffPerformance(user.id, user, hotelId);
   }
 
   @Get('performance/staff/:staffId')
@@ -125,8 +128,9 @@ export class BookingsController {
   getStaffPerformance(
     @Param('staffId') staffId: string,
     @CurrentUser() user: User,
+    @Query('hotelId') hotelId?: string,
   ) {
-    return this.bookingsService.getStaffPerformance(staffId, user);
+    return this.bookingsService.getStaffPerformance(staffId, user, hotelId);
   }
 
   // ================================

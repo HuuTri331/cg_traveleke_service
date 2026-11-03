@@ -81,10 +81,10 @@ export class StaffKpiController {
   async approvePeriod(
     @Param('period') period: string,
     @Query('hotelId') hotelId: string,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: string },
     @Body('reviewNote') reviewNote?: string,
   ) {
-    const count = await this.kpiService.approvePeriod(hotelId, period, user.id, reviewNote);
+    const count = await this.kpiService.approvePeriod(hotelId, period, user.id, reviewNote, user.role);
     return { message: `Đã phê duyệt ${count} bản ghi điểm KPI cho kỳ ${period}` };
   }
 
@@ -92,20 +92,20 @@ export class StaffKpiController {
   @Roles('ADMIN', 'EMPLOYEE')
   async requestAdjustment(
     @Query('hotelId') hotelId: string,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: string },
     @Body() dto: RequestKpiAdjustmentDto,
   ) {
-    return await this.kpiService.requestAdjustment(hotelId, user.id, dto);
+    return await this.kpiService.requestAdjustment(hotelId, user.id, dto, user.role);
   }
 
   @Post('adjustments/:id/decision')
   @Roles('ADMIN', 'EMPLOYEE')
   async decideAdjustment(
     @Param('id') id: string,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: string },
     @Body() dto: DecideKpiAdjustmentDto,
   ) {
-    return await this.kpiService.decideAdjustment(id, user.id, dto);
+    return await this.kpiService.decideAdjustment(id, user.id, dto, user.role);
   }
 }
 

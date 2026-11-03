@@ -244,11 +244,14 @@ export class KpiCalculationService {
   }
 
   async validateStaffAccess(actor: { id: string; role: string }, hotelId: string, targetStaffId?: string) {
+    if (targetStaffId && typeof this.staffAvailabilityService?.isStaffAtHotel === 'function') {
+      const targetBelongsToHotel = await this.staffAvailabilityService.isStaffAtHotel(targetStaffId, hotelId);
+      if (!targetBelongsToHotel) {
+        throw new ForbiddenException('Nhân sự mục tiêu không thuộc biên chế đang hoạt động tại khách sạn này.');
+      }
+    }
     if (actor.role === 'ADMIN') return;
     if (targetStaffId && String(actor.id) === String(targetStaffId)) {
-      if (!(await this.staffAvailabilityService.isStaffAtHotel(actor.id, hotelId))) {
-        throw new ForbiddenException('Bạn không thuộc nhân sự của khách sạn này.');
-      }
       return;
     }
     if (!(await this.staffAvailabilityService.isManagerAtHotel(actor.id, hotelId))) {
@@ -256,8 +259,14 @@ export class KpiCalculationService {
     }
   }
 
-  async approvePeriod(hotelId: string, periodKey: string, managerUserId: string, reviewNote?: string): Promise<number> {
-    if (!(await this.staffAvailabilityService.isManagerAtHotel(managerUserId, hotelId))) {
+  async approvePeriod(
+    hotelId: string,
+    periodKey: string,
+    managerUserId: string,
+    reviewNote?: string,
+    actorRole?: string,
+  ): Promise<number> {
+    if (actorRole !== 'ADMIN' && !(await this.staffAvailabilityService.isManagerAtHotel(managerUserId, hotelId))) {
       throw new ForbiddenException('Chỉ Quản lý khách sạn mới có quyền phê duyệt kỳ KPI');
     }
     const scores = await this.getHotelPeriodScores(hotelId, periodKey);
@@ -277,9 +286,23 @@ export class KpiCalculationService {
     return approvedCount;
   }
 
-  async requestAdjustment(hotelId: string, requestedBy: string, dto: RequestKpiAdjustmentDto): Promise<StaffKpiAdjustment> {
-    if (!(await this.staffAvailabilityService.isManagerAtHotel(requestedBy, hotelId))) {
+  async requestAdjustment(
+    hotelId: string,
+    requestedBy: string,
+    dto: RequestKpiAdjustmentDto,
+    actorRole?: string,
+  ): Promise<StaffKpiAdjustment> {
+    if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(hotelId)) {
+      throw new ForbiddenException('hotelId trong body không khớp với khách sạn đang thao tác.');
+    }
+    if (actorRole !== 'ADMIN' && !(await this.staffAvailabilityService.isManagerAtHotel(requestedBy, hotelId))) {
       throw new ForbiddenException('Chỉ Quản lý khách sạn mới có quyền nhập rubric hoặc đề xuất hiệu chỉnh KPI');
+    }
+    if (
+      typeof this.staffAvailabilityService?.isStaffAtHotel === 'function' &&
+      !(await this.staffAvailabilityService.isStaffAtHotel(dto.staffUserId, hotelId))
+    ) {
+      throw new ForbiddenException('Nhân sự được đánh giá không thuộc biên chế đang hoạt động tại khách sạn này.');
     }
     if (String(requestedBy) === String(dto.staffUserId)) {
       throw new ForbiddenException('Quản lý không được tự chấm rubric hoặc tự điều chỉnh KPI của chính mình');
@@ -303,14 +326,28 @@ export class KpiCalculationService {
     return saved;
   }
 
-  async decideAdjustment(adjustmentId: string, reviewerUserId: string, dto: DecideKpiAdjustmentDto) {
+  async decideAdjustment(
+    adjustmentId: string,
+    reviewerUserId: string,
+    dto: DecideKpiAdjustmentDto,
+    actorRole?: string,
+  ) {
     const adj = await this.adjustmentRepo.findOne({ where: { id: adjustmentId } });
     if (!adj) throw new NotFoundException(`Không tìm thấy đề xuất điều chỉnh #${adjustmentId}`);
+    if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(adj.hotelId)) {
+      throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn thực tế của đề xuất KPI.');
+    }
     if (String(adj.requestedBy) === String(reviewerUserId)) {
       throw new ForbiddenException('Nguyên tắc 4-Eyes: Người đề xuất không được tự phê duyệt điều chỉnh KPI.');
     }
-    if (!(await this.staffAvailabilityService.isManagerAtHotel(reviewerUserId, adj.hotelId))) {
+    if (actorRole !== 'ADMIN' && !(await this.staffAvailabilityService.isManagerAtHotel(reviewerUserId, adj.hotelId))) {
       throw new ForbiddenException('Chỉ Quản lý khách sạn mới có quyền duyệt điều chỉnh KPI.');
+    }
+    if (
+      typeof this.staffAvailabilityService?.isStaffAtHotel === 'function' &&
+      !(await this.staffAvailabilityService.isStaffAtHotel(adj.staffUserId, adj.hotelId))
+    ) {
+      throw new ForbiddenException('Nhân sự của đề xuất KPI không thuộc biên chế khách sạn này.');
     }
     adj.status = dto.decision === 'APPROVE' ? AdjustmentStatus.APPROVED : AdjustmentStatus.REJECTED;
     adj.reviewedBy = reviewerUserId;

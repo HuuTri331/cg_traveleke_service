@@ -23,6 +23,10 @@ import { BookingAssignmentService } from '../booking-assignment/booking-assignme
 import { PromotionsService } from '../promotions/promotions.service';
 import { BookingPriceQuote } from '../promotions/entities/booking-price-quote.entity';
 import { PromotionCampaign } from '../promotions/entities/promotion-campaign.entity';
+import {
+  PromotionRefundIntent,
+  RefundIntentStatus,
+} from '../promotions/entities/promotion-refund-intent.entity';
 
 @Injectable()
 export class WorkersService {
@@ -131,31 +135,144 @@ export class WorkersService {
               await this.promotionsService.grantQuoteBenefitsForPaidBooking(String(payload.bookingId));
               break;
 
-            case 'promotion.retroactive_scan_requested':
-              await this.promotionsService.evaluateExistingBookingsForHotel(
-                String(payload.hotelId),
-                payload.actorId ? { id: String(payload.actorId), role: 'ADMIN' } : undefined,
-                50,
-                payload.afterBookingId || '0',
-              );
+            case 'promotion.retroactive_scan_requested': {
+              // Lỗi 19: Quét hết toàn bộ các trang bằng nextCursor thay vì dừng ở 50 booking đầu tiên
+              let cursor = String(payload.afterBookingId || '0');
+              let pages = 0;
+              while (pages < 50) {
+                pages += 1;
+                const scanRes = await this.promotionsService.evaluateExistingBookingsForHotel(
+                  String(payload.hotelId),
+                  { id: String(payload.actorId || 'SYSTEM_RETRO_WORKER'), role: 'SYSTEM' },
+                  50,
+                  cursor,
+                );
+                if (!scanRes.hasMore || !scanRes.nextCursor || scanRes.nextCursor === cursor) {
+                  break;
+                }
+                cursor = scanRes.nextCursor;
+              }
               break;
+            }
 
             case 'promotion.refund.requested': {
+              // Lỗi 03 & Section II.2.3/2.5: Kiểm tra khóa & trạng thái PromotionRefundIntent trước khi gọi provider
+              // để không gửi lệnh hoàn lần 2 khi retry; dùng SYSTEM_REFUND_WORKER thay vì giả lập user ID '1'.
+              const intentId = payload.intentId ? String(payload.intentId) : null;
+              if (intentId) {
+                const preCheck = await this.dataSource.transaction(async (em) => {
+                  const intent = await em.findOne(PromotionRefundIntent, {
+                    where: { id: intentId },
+                    lock: { mode: 'pessimistic_write' },
+                  });
+                  if (!intent) return { skip: true };
+                  if (
+                    [
+                      RefundIntentStatus.SUCCEEDED,
+                      RefundIntentStatus.SANDBOX_SETTLED,
+                      RefundIntentStatus.SIMULATED_SUCCEEDED,
+                      RefundIntentStatus.MANUAL_TEST_VERIFIED,
+                      RefundIntentStatus.SANDBOX_ACCEPTED,
+                      RefundIntentStatus.UNKNOWN_RECONCILE,
+                    ].includes(intent.status)
+                  ) {
+                    return { skip: true, intent };
+                  }
+                  // Nếu đã có providerRef từ lần gọi cổng thành công trước nhưng bước confirm lỗi -> chỉ chạy lại confirm, KHÔNG gọi cổng lần 2!
+                  if (intent.providerRef) {
+                    return { skipProviderCall: true, intent };
+                  }
+                  // Lỗi 03 (S-03): Nếu trạng thái đã là PROCESSING mà chưa rõ kết quả từ lần gọi trước (crash/timeout DB sau khi gửi HTTP),
+                  // TUYỆT ĐỐI KHÔNG tự động gửi lại lệnh hoàn lần 2 mà chuyển sang UNKNOWN_RECONCILE để đối soát!
+                  if (intent.status === RefundIntentStatus.PROCESSING) {
+                    intent.status = RefundIntentStatus.UNKNOWN_RECONCILE;
+                    await em.save(PromotionRefundIntent, intent);
+                    return { markUnknownReconcile: true, intent };
+                  }
+                  intent.status = RefundIntentStatus.PROCESSING;
+                  await em.save(PromotionRefundIntent, intent);
+                  return { skip: false, intent };
+                });
+
+                if (preCheck.skip) {
+                  break;
+                }
+                if (preCheck.markUnknownReconcile && preCheck.intent) {
+                  await this.promotionsService.confirmRefundIntentSettlement(
+                    { id: 'SYSTEM_REFUND_WORKER', role: 'SYSTEM' },
+                    intentId,
+                    {
+                      settlementOutcome: 'UNKNOWN_RECONCILE',
+                    },
+                  );
+                  break;
+                }
+                if (preCheck.skipProviderCall && preCheck.intent) {
+                  await this.promotionsService.confirmRefundIntentSettlement(
+                    { id: 'SYSTEM_REFUND_WORKER', role: 'SYSTEM' },
+                    intentId,
+                    {
+                      providerRef: preCheck.intent.providerRef || undefined,
+                      payoutReceiptRef: preCheck.intent.payoutReceiptRef || undefined,
+                    },
+                  );
+                  break;
+                }
+              }
+
               const promoRefundRes = await this.refundService.processRefund({
                 paymentId: payload.paymentId,
                 txnRef: payload.txnRef,
                 amount: Number(payload.amount),
-                createBy: 'PromotionRefundWorker',
+                createBy: 'SYSTEM_REFUND_WORKER',
                 reason: payload.reason,
+                idempotencyKey: payload.idempotencyKey,
+                channel: payload.channel,
+                payoutReceiptRef: payload.payoutReceiptRef,
+                isPromotionPartialRefund: true,
               });
-              if (promoRefundRes.success && payload.intentId) {
+
+              if (intentId && promoRefundRes.providerRef) {
+                await this.dataSource
+                  .getRepository(PromotionRefundIntent)
+                  .update({ id: intentId }, { providerRef: promoRefundRes.providerRef });
+              }
+
+              if (promoRefundRes.outcomeStatus === 'UNKNOWN_RECONCILE') {
+                if (intentId) {
+                  await this.promotionsService.confirmRefundIntentSettlement(
+                    { id: 'SYSTEM_REFUND_WORKER', role: 'SYSTEM' },
+                    intentId,
+                    {
+                      providerRef: promoRefundRes.providerRef,
+                      settlementOutcome: 'UNKNOWN_RECONCILE',
+                    },
+                  );
+                }
+                break;
+              }
+
+              if (promoRefundRes.success && intentId) {
                 await this.promotionsService.confirmRefundIntentSettlement(
-                  { id: '1', role: 'ADMIN' },
-                  String(payload.intentId),
-                  { providerRef: promoRefundRes.data?.vnp_TransactionNo || `VNP-REF-${payload.txnRef}` },
+                  { id: 'SYSTEM_REFUND_WORKER', role: 'SYSTEM' },
+                  intentId,
+                  {
+                    providerRef: promoRefundRes.providerRef,
+                    payoutReceiptRef: payload.payoutReceiptRef,
+                    settlementOutcome: promoRefundRes.outcomeStatus,
+                  },
                 );
               } else if (!promoRefundRes.success) {
-                throw new Error(`Promotion VNPay refund failed: ${promoRefundRes.error || 'Unknown error'}`);
+                if (intentId) {
+                  await this.promotionsService.confirmRefundIntentSettlement(
+                    { id: 'SYSTEM_REFUND_WORKER', role: 'SYSTEM' },
+                    intentId,
+                    {
+                      settlementOutcome: 'FAILED',
+                    },
+                  );
+                }
+                throw new Error(`Promotion refund failed: ${promoRefundRes.error || 'Unknown error'}`);
               }
               break;
             }
