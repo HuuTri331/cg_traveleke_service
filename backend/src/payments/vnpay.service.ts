@@ -142,9 +142,7 @@ export class VnpayService {
     const hmac = crypto.createHmac('sha512', this.hashSecret);
     const signed = hmac.update(Buffer.from(signData, 'utf-8')).digest('hex');
 
-    return (
-      String(secureHash).toLowerCase() === String(signed).toLowerCase()
-    );
+    return this.safeCompareHex(signed, String(secureHash));
   }
 
   /**
@@ -201,12 +199,21 @@ export class VnpayService {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
       });
+      if (response && 'ok' in response && !response.ok) {
+        throw new Error(`VNPay QueryDr HTTP ${response.status}`);
+      }
       const data = await response.json();
-      if (data && data.vnp_SecureHash && !this.verifyQueryDrResponse(data)) {
+      if (!data || !this.verifyQueryDrResponse(data)) {
         this.logger.error(
-          `[QueryDr] Sai lệch chữ ký phản hồi (Invalid Checksum) cho txnRef: ${params.txnRef}`,
+          `[QueryDr] Thiếu chữ ký hoặc sai lệch chữ ký phản hồi (Invalid Checksum) cho txnRef: ${params.txnRef}`,
         );
-        throw new Error('Chữ ký phản hồi QueryDr từ VNPay không hợp lệ.');
+        throw new Error('Chữ ký phản hồi QueryDr từ VNPay thiếu hoặc không hợp lệ.');
+      }
+      if (data.vnp_TmnCode && vnpTmnCode && String(data.vnp_TmnCode) !== String(vnpTmnCode)) {
+        throw new Error('Mã merchant (vnp_TmnCode) trong phản hồi QueryDr không khớp.');
+      }
+      if (data.vnp_TxnRef && String(data.vnp_TxnRef) !== String(vnpTxnRef)) {
+        throw new Error('Mã giao dịch (vnp_TxnRef) trong phản hồi QueryDr không khớp.');
       }
       return data;
     } catch (err: any) {

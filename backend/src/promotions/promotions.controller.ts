@@ -256,6 +256,10 @@ export class PromotionsController {
     @CurrentUser() user: { id: string; role: string },
     @Body() body: ConfirmRefundIntentDto,
   ) {
-    return await this.promotionsService.confirmRefundIntentSettlement(user, intentId, body);
+    return await this.promotionsService.confirmRefundIntentSettlement(user, intentId, {
+      providerRef: body?.providerRef,
+      payoutReceiptRef: body?.payoutReceiptRef,
+      settlementOutcome: body?.settlementOutcome,
+    });
   }
 }

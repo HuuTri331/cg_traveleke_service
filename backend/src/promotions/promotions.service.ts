@@ -40,6 +40,7 @@ import {
   hasRemainingCampaignBudget,
   toLocalHotelDate,
 } from './promotion-engine';
+import { computeServiceReceivableProjection } from './service-receivable-projection';
 
 @Injectable()
 export class PromotionsService {
@@ -380,7 +381,7 @@ export class PromotionsService {
   }
 
   async quoteServiceItem(params: QuoteServiceItemDto & { hotelId?: string; baseUnitPrice?: number; usageAt?: Date | string }) {
-    if ((params as any).baseUnitPrice !== undefined && process.env.NODE_ENV !== 'test') {
+    if ((params as any).baseUnitPrice !== undefined) {
       throw new BadRequestException('Không chấp nhận đơn giá dịch vụ (baseUnitPrice) tự khai từ phía client.');
     }
     let authoritativeHotelId = '';
@@ -1710,55 +1711,7 @@ export class PromotionsService {
           where: { bookingId: Number(booking.id) },
           order: { id: 'ASC' },
         });
-        serviceReceivables = (reqs || []).map((r) => {
-          const qty = Math.max(1, Math.round(Number(r.quantity || 1)));
-          const grossTotal = Math.max(0, Math.round(Number(r.unitPrice || 0) * qty));
-          const netTotal = Math.max(0, Math.round(Number(r.totalPrice || 0)));
-          const directDiscountAmount = Math.max(0, grossTotal - netTotal);
-          const unitNet = qty > 0 ? Math.round(netTotal / qty) : netTotal;
-          const srEntries = ledger.filter((l) => String(l.serviceRequestId) === String(r.id));
-          const redeemedAmount = Math.max(
-            0,
-            srEntries.reduce((sum, l) => {
-              if (l.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(l.amountDelta || 0)));
-              if (l.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(l.amountDelta || 0)));
-              return sum;
-            }, 0),
-          );
-          const redeemedQuota = Math.max(
-            0,
-            srEntries.reduce((sum, l) => {
-              if (l.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(l.quotaDelta || 0)));
-              if (l.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(l.quotaDelta || 0)));
-              return sum;
-            }, 0),
-          );
-          const quotaValue = redeemedQuota * unitNet;
-          const isCancelled = r.status === ServiceRequestStatus.CANCELLED || r.status === ServiceRequestStatus.FAILED;
-          const remainingPayable = isCancelled ? 0 : Math.max(0, netTotal - redeemedAmount - quotaValue);
-          return {
-            serviceRequestId: String(r.id),
-            serviceId: String(r.serviceId),
-            serviceName: r.serviceName,
-            status: r.status,
-            grossTotal,
-            directDiscountAmount,
-            netTotal,
-            creditsApplied: redeemedAmount + quotaValue,
-            redeemedAmount,
-            redeemedQuota,
-            cashPaid: 0,
-            amountDue: remainingPayable,
-            remainingPayable,
-            settlementStatus: isCancelled
-              ? 'CANCELLED'
-              : remainingPayable === 0
-              ? 'SETTLED_BY_BENEFIT'
-              : redeemedAmount > 0 || redeemedQuota > 0
-              ? 'PARTIALLY_OFFSET'
-              : 'UNPAID',
-          };
-        });
+        serviceReceivables = (reqs || []).map((r) => computeServiceReceivableProjection(r, ledger));
       }
     } catch {}
     const totalServiceAmountDue = serviceReceivables.reduce((s, r) => s + r.amountDue, 0);

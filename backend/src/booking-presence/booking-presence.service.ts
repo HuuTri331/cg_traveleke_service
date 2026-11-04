@@ -31,6 +31,7 @@ import {
   BookingBenefitLedger,
 } from '../promotions/entities/booking-benefit-ledger.entity';
 import { BenefitKind } from '../promotions/entities/promotion-campaign.entity';
+import { computeServiceReceivableProjection } from '../promotions/service-receivable-projection';
 import { ServiceRequest, ServiceRequestStatus } from '../services/entities/service-request.entity';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { runWithDeadlockRetry } from '../common/database/transaction-retry.helper';
@@ -414,30 +415,21 @@ export class BookingPresenceService {
                   })) || [];
               }
               for (const sr of completedServices) {
-                const netTotal = Math.max(0, Math.round(Number(sr.totalPrice || 0)));
-                const qty = Math.max(1, Math.round(Number(sr.quantity || 1)));
-                const unitNet = qty > 0 ? Math.round(netTotal / qty) : netTotal;
-                const srEntries = bookingLedgers.filter((l) => String(l.serviceRequestId) === String(sr.id));
-                const redeemedAmt = srEntries.reduce((sum, l) => {
-                  if (l.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(l.amountDelta || 0)));
-                  if (l.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(l.amountDelta || 0)));
-                  return sum;
-                }, 0);
-                const redeemedQuota = srEntries.reduce((sum, l) => {
-                  if (l.entryType === BenefitLedgerEntryType.REDEEM) return sum + Math.abs(Math.round(Number(l.quotaDelta || 0)));
-                  if (l.entryType === BenefitLedgerEntryType.REVERSAL) return sum - Math.abs(Math.round(Number(l.quotaDelta || 0)));
-                  return sum;
-                }, 0);
-                const quotaCovered = Math.max(0, redeemedQuota) * unitNet;
-                const remainingPayable = Math.max(0, netTotal - Math.max(0, redeemedAmt) - quotaCovered);
+                const proj = computeServiceReceivableProjection(sr, bookingLedgers);
+                const remainingPayable = proj.remainingPayable;
                 serviceReceivables.push({
-                  serviceRequestId: String(sr.id),
-                  serviceName: sr.serviceName,
-                  netTotal,
-                  redeemedAmount: Math.max(0, redeemedAmt),
-                  redeemedQuota: Math.max(0, redeemedQuota),
+                  serviceRequestId: proj.serviceRequestId,
+                  serviceName: proj.serviceName,
+                  netTotal: proj.netTotal,
+                  redeemedAmount: proj.redeemedAmount,
+                  redeemedQuota: proj.redeemedQuota,
                   remainingPayable,
-                  status: remainingPayable === 0 ? 'SETTLED' : dto.servicePaymentReceiptRef || dto.acknowledgeServiceReceivables ? 'SETTLED_AT_CHECKOUT' : 'UNPAID',
+                  status:
+                    remainingPayable === 0
+                      ? 'SETTLED'
+                      : dto.servicePaymentReceiptRef || dto.acknowledgeServiceReceivables
+                        ? 'SETTLED_AT_CHECKOUT'
+                        : 'UNPAID',
                 });
               }
 

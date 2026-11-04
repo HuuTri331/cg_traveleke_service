@@ -39,6 +39,7 @@ import { PromotionCampaign, PromotionCampaignStatus } from '../promotions/entiti
 import { BenefitAccountStatus, BookingBenefitAccount } from '../promotions/entities/booking-benefit-account.entity';
 import { BenefitLedgerEntryType, BookingBenefitLedger } from '../promotions/entities/booking-benefit-ledger.entity';
 import { computeServiceItemPricing, hasRemainingCampaignBudget } from '../promotions/promotion-engine';
+import { computeServiceReceivableProjection } from '../promotions/service-receivable-projection';
 
 @Injectable()
 export class ServicesService {
@@ -269,53 +270,19 @@ export class ServicesService {
       return requests;
     }
 
-    const byReq = new Map<string, { redeemedAmount: number; redeemedQuota: number }>();
-    for (const l of ledgers) {
-      const key = String(l.serviceRequestId || '');
-      if (!key) continue;
-      const cur = byReq.get(key) || { redeemedAmount: 0, redeemedQuota: 0 };
-      const amt = Math.abs(Math.round(Number(l.amountDelta || 0)));
-      const q = Math.abs(Math.round(Number(l.quotaDelta || 0)));
-      if (l.entryType === BenefitLedgerEntryType.REDEEM) {
-        cur.redeemedAmount += amt;
-        cur.redeemedQuota += q;
-      } else if (l.entryType === BenefitLedgerEntryType.REVERSAL) {
-        cur.redeemedAmount = Math.max(0, cur.redeemedAmount - amt);
-        cur.redeemedQuota = Math.max(0, cur.redeemedQuota - q);
-      }
-      byReq.set(key, cur);
-    }
-
     return requests.map((r) => {
-      const qty = Math.max(1, Math.round(Number(r.quantity || 1)));
-      const grossTotal = Math.max(0, Math.round(Number(r.unitPrice || 0) * qty));
-      const netTotal = Math.max(0, Math.round(Number(r.totalPrice || 0)));
-      const directDiscountAmount = Math.max(0, grossTotal - netTotal);
-      const unitNet = qty > 0 ? Math.round(netTotal / qty) : netTotal;
-      const stats = byReq.get(String(r.id)) || { redeemedAmount: 0, redeemedQuota: 0 };
-      const quotaValue = stats.redeemedQuota * unitNet;
-      const remainingPayable =
-        r.status === ServiceRequestStatus.CANCELLED || r.status === ServiceRequestStatus.FAILED
-          ? 0
-          : Math.max(0, netTotal - stats.redeemedAmount - quotaValue);
+      const proj = computeServiceReceivableProjection(r, ledgers);
       return Object.assign(r, {
-        grossTotal,
-        directDiscountAmount,
-        netTotal,
-        creditsApplied: stats.redeemedAmount + quotaValue,
-        redeemedAmount: stats.redeemedAmount,
-        redeemedQuota: stats.redeemedQuota,
-        cashPaid: 0,
-        amountDue: remainingPayable,
-        remainingPayable,
-        settlementStatus:
-          r.status === ServiceRequestStatus.CANCELLED || r.status === ServiceRequestStatus.FAILED
-            ? 'CANCELLED'
-            : remainingPayable === 0
-              ? 'SETTLED_BY_BENEFIT'
-              : stats.redeemedAmount > 0 || stats.redeemedQuota > 0
-                ? 'PARTIALLY_OFFSET'
-                : 'UNPAID',
+        grossTotal: proj.grossTotal,
+        directDiscountAmount: proj.directDiscountAmount,
+        netTotal: proj.netTotal,
+        creditsApplied: proj.creditsApplied,
+        redeemedAmount: proj.redeemedAmount,
+        redeemedQuota: proj.redeemedQuota,
+        cashPaid: proj.cashPaid,
+        amountDue: proj.amountDue,
+        remainingPayable: proj.remainingPayable,
+        settlementStatus: proj.settlementStatus,
       });
     });
   }
@@ -655,7 +622,10 @@ export class ServicesService {
 
       if (dto.status) req.status = dto.status;
       if (dto.assignedTo !== undefined) req.assignedTo = dto.assignedTo;
-      if (dto.note !== undefined) req.note = dto.note;
+      if (dto.note !== undefined) {
+        const preservedTags = (String(req.note || '').match(/\[(KM|RESCHEDULED|PROMO_SNAPSHOT)[^\]]*\]/g) || []).join(' ');
+        req.note = preservedTags ? `${dto.note} ${preservedTags}`.trim() : dto.note;
+      }
       if (dto.completedAt) req.completedAt = new Date(dto.completedAt);
       if (dto.confirmedAt) req.confirmedAt = new Date(dto.confirmedAt);
       if (dto.failureReason) req.failureReason = dto.failureReason;
@@ -753,6 +723,9 @@ export class ServicesService {
 
       req.status = targetStatus;
 
+      const originalNote = String(req.note || '');
+      const preservedAuditTags = (originalNote.match(/\[(KM|RESCHEDULED|PROMO_SNAPSHOT)[^\]]*\]/g) || []).join(' ');
+
       switch (targetStatus) {
         case ServiceRequestStatus.ACCEPTED:
           req.acceptedAt = now;
@@ -777,16 +750,23 @@ export class ServicesService {
             payload?.failureReason ?? 'Dịch vụ gặp sự cố không hoàn tất';
           break;
         case ServiceRequestStatus.CANCELLED:
-          if (payload?.note) req.note = payload.note;
+          if (payload?.note) {
+            req.note = preservedAuditTags ? `${payload.note} ${preservedAuditTags}`.trim() : payload.note;
+          }
           break;
       }
 
-      if (payload?.note) req.note = payload.note;
+      if (payload?.note) {
+        req.note = preservedAuditTags ? `${payload.note} ${preservedAuditTags}`.trim() : payload.note;
+      }
       if (payload?.assignedTo !== undefined) req.assignedTo = payload.assignedTo;
 
       const savedReq = await reqRepo.save(req);
 
-      // Lỗi 17 & FIX-12: Đổi trạng thái CANCELLED/FAILED, giải phóng ngân sách khuyến mãi dịch vụ trực tiếp và đảo bút toán credit (REVERSAL) trong CÙNG 1 transaction nguyên tử
+      // Lỗi 17 & FIX-12: Đổi trạng thái CANCELLED/FAILED lần đầu, giải phóng ngân sách khuyến mãi dịch vụ trực tiếp và đảo bút toán credit (REVERSAL) trong CÙNG 1 transaction nguyên tử
+      const isFirstTimeCancelOrFail =
+        previousStatus !== ServiceRequestStatus.CANCELLED &&
+        previousStatus !== ServiceRequestStatus.FAILED;
       if (
         targetStatus === ServiceRequestStatus.CANCELLED ||
         targetStatus === ServiceRequestStatus.FAILED
@@ -795,16 +775,35 @@ export class ServicesService {
           0,
           Math.round(Number(req.unitPrice || 0) * Math.max(1, Number(req.quantity || 1)) - Number(req.totalPrice || 0)),
         );
-        if (directDisc > 0 && typeof em?.getRepository === 'function') {
+        if (isFirstTimeCancelOrFail && directDisc > 0 && typeof em?.getRepository === 'function') {
           const promoRepo = em.getRepository(PromotionCampaign);
-          const codeMatch = String(req.note || '').match(/\[KM\s+([A-Z0-9_-]+):/i);
+          const codeMatch = originalNote.match(/\[KM\s+([A-Z0-9_-]+):/i);
           if (promoRepo && codeMatch && typeof promoRepo.findOne === 'function') {
+            let resolvedHotelId = req.service?.hotelId ? String(req.service.hotelId) : undefined;
+            if (!resolvedHotelId) {
+              const queryFn =
+                typeof em?.query === 'function'
+                  ? em.query.bind(em)
+                  : typeof this.dataSource?.query === 'function'
+                    ? this.dataSource.query.bind(this.dataSource)
+                    : null;
+              if (queryFn) {
+                const [bRow] = await queryFn(
+                  'SELECT hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
+                  [req.bookingId],
+                );
+                if (bRow?.hotelId) resolvedHotelId = String(bRow.hotelId);
+              }
+            }
+            const whereClause: Record<string, any> = { code: codeMatch[1].toUpperCase() };
+            if (resolvedHotelId) whereClause.hotelId = resolvedHotelId;
             const lockedCamp = await promoRepo.findOne({
-              where: { code: codeMatch[1].toUpperCase() },
+              where: whereClause,
               lock: { mode: 'pessimistic_write' },
             });
             if (lockedCamp) {
               lockedCamp.budgetConsumed = Math.max(0, Number(lockedCamp.budgetConsumed || 0) - directDisc);
+              lockedCamp.budgetReversed = Number(lockedCamp.budgetReversed || 0) + directDisc;
               lockedCamp.redemptionsCount = Math.max(0, Number(lockedCamp.redemptionsCount || 0) - 1);
               await promoRepo.save(lockedCamp);
             }

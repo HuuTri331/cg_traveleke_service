@@ -9,6 +9,23 @@ import { VnpayService } from '../vnpay.service';
 @Injectable()
 export class RefundService {
   private readonly logger = new Logger(RefundService.name);
+  private readonly verifiedOutcomes = new Map<
+    string,
+    {
+      success: boolean;
+      data?: any;
+      error?: string;
+      outcomeStatus?:
+        | 'SIMULATED_SUCCEEDED'
+        | 'SANDBOX_ACCEPTED'
+        | 'SANDBOX_SETTLED'
+        | 'MANUAL_TEST_VERIFIED'
+        | 'FAILED'
+        | 'UNKNOWN_RECONCILE';
+      providerRef?: string;
+      isSimulated?: boolean;
+    }
+  >();
 
   constructor(
     private readonly dataSource: DataSource,
@@ -19,6 +36,33 @@ export class RefundService {
     const raw = (process.env.REFUND_PROVIDER || 'MOCK').toUpperCase();
     if (raw === 'VNPAY_SANDBOX' || raw === 'MANUAL_TEST') return raw;
     return 'MOCK';
+  }
+
+  getVerifiedOutcome(requestKey: string) {
+    return this.verifiedOutcomes.get(requestKey) || null;
+  }
+
+  private rememberOutcome(
+    requestKey: string,
+    mode: string,
+    outcome: {
+      success: boolean;
+      data?: any;
+      error?: string;
+      outcomeStatus?:
+        | 'SIMULATED_SUCCEEDED'
+        | 'SANDBOX_ACCEPTED'
+        | 'SANDBOX_SETTLED'
+        | 'MANUAL_TEST_VERIFIED'
+        | 'FAILED'
+        | 'UNKNOWN_RECONCILE';
+      providerRef?: string;
+      isSimulated?: boolean;
+    },
+  ) {
+    this.verifiedOutcomes.set(`${mode}:${requestKey}`, outcome);
+    this.verifiedOutcomes.set(requestKey, outcome);
+    return outcome;
   }
 
   /**
@@ -56,6 +100,16 @@ export class RefundService {
         : this.getProviderMode();
     const requestKey = params.idempotencyKey || `${params.txnRef}:${Math.round(Number(params.amount || 0))}`;
 
+    // FIX-03: Nếu đã có kết quả xác minh từ lần gọi provider trước đó cho cùng (mode, requestKey),
+    // trả lại kết quả đã lưu thay vì phát lệnh hoàn tiền lần 2 tới cổng VNPay.
+    const cachedOutcome = this.verifiedOutcomes.get(`${mode}:${requestKey}`);
+    if (cachedOutcome && (cachedOutcome.success || cachedOutcome.outcomeStatus === 'UNKNOWN_RECONCILE')) {
+      this.logger.log(
+        `[RefundService] Tái sử dụng kết quả Refund đã xác minh cho idempotencyKey=${requestKey} (${cachedOutcome.outcomeStatus}), không gọi lại provider.`,
+      );
+      return cachedOutcome;
+    }
+
     this.logger.log(
       `[RefundService] Bắt đầu gọi Refund Adapter [mode=${mode}] cho txnRef ${params.txnRef}, số tiền: ${params.amount}`,
     );
@@ -89,13 +143,13 @@ export class RefundService {
 
     if (mode === 'MOCK' && params.isPromotionPartialRefund) {
       const simRef = `TEST-SIM-${requestKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(-24)}`;
-      return {
+      return this.rememberOutcome(requestKey, mode, {
         success: true,
         outcomeStatus: 'SIMULATED_SUCCEEDED',
         providerRef: simRef,
         isSimulated: true,
         data: { providerRef: simRef, providerMode: 'MOCK', simulated: true },
-      };
+      });
     }
 
     if (mode === 'MANUAL_TEST' && params.isPromotionPartialRefund) {
@@ -107,13 +161,13 @@ export class RefundService {
         };
       }
       const manualRef = `TEST-MANUAL-${params.payoutReceiptRef.trim()}`;
-      return {
+      return this.rememberOutcome(requestKey, mode, {
         success: true,
         outcomeStatus: 'MANUAL_TEST_VERIFIED',
         providerRef: manualRef,
         isSimulated: true,
         data: { providerMode: 'MANUAL_TEST', payoutReceiptRef: params.payoutReceiptRef.trim(), simulated: true },
-      };
+      });
     }
 
     if (params.isPromotionPartialRefund && !payment) {
@@ -145,11 +199,11 @@ export class RefundService {
       });
     } catch (err: any) {
       this.logger.error(`[RefundService] Lỗi mạng/chữ ký khi gọi VNPay Refund cho ${params.txnRef}: ${err.message}`);
-      return {
+      return this.rememberOutcome(requestKey, mode, {
         success: false,
         outcomeStatus: 'UNKNOWN_RECONCILE',
         error: err.message || 'Lỗi kết nối cổng hoàn tiền VNPay; cần đối soát trước khi thử lại.',
-      };
+      });
     }
 
     if (refundRes?.vnp_ResponseCode === '00') {
@@ -188,25 +242,25 @@ export class RefundService {
       }
 
       if (!refundRes?.vnp_TransactionNo) {
-        return {
+        return this.rememberOutcome(requestKey, mode, {
           success: true,
           outcomeStatus: 'SANDBOX_ACCEPTED',
           providerRef: undefined,
           isSimulated: true,
           data: refundRes,
-        };
+        });
       }
 
       this.logger.log(
         `[RefundService] VNPay Refund (${transactionType}) -> ${outcomeStatus} cho ${params.txnRef}`,
       );
-      return {
+      return this.rememberOutcome(requestKey, mode, {
         success: true,
         outcomeStatus,
         providerRef: String(refundRes.vnp_TransactionNo),
         isSimulated: true,
         data: refundRes,
-      };
+      });
     } else {
       this.logger.error(
         `[RefundService] VNPay Refund thất bại cho ${params.txnRef}: ${refundRes?.vnp_Message || refundRes?.vnp_ResponseCode}`,

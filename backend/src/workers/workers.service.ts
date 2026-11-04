@@ -132,6 +132,7 @@ export class WorkersService {
               break;
 
             case 'promotion.benefit.grant_requested':
+            case 'booking.financially_committed':
               await this.promotionsService.grantQuoteBenefitsForPaidBooking(String(payload.bookingId));
               break;
 
@@ -155,10 +156,12 @@ export class WorkersService {
               break;
             }
 
-            case 'promotion.refund.requested': {
+            case 'promotion.refund.requested':
+            case 'refund.requested': {
               // Lỗi 03 & Section II.2.3/2.5: Kiểm tra khóa & trạng thái PromotionRefundIntent trước khi gọi provider
               // để không gửi lệnh hoàn lần 2 khi retry; dùng SYSTEM_REFUND_WORKER thay vì giả lập user ID '1'.
               const intentId = payload.intentId ? String(payload.intentId) : null;
+              const requestKey = payload.idempotencyKey || (intentId ? `intent:${intentId}` : `refund:${payload.txnRef}`);
               if (intentId) {
                 const preCheck = await this.dataSource.transaction(async (em) => {
                   const intent = await em.findOne(PromotionRefundIntent, {
@@ -182,9 +185,21 @@ export class WorkersService {
                   if (intent.providerRef) {
                     return { skipProviderCall: true, intent };
                   }
-                  // Lỗi 03 (S-03): Nếu trạng thái đã là PROCESSING mà chưa rõ kết quả từ lần gọi trước (crash/timeout DB sau khi gửi HTTP),
-                  // TUYỆT ĐỐI KHÔNG tự động gửi lại lệnh hoàn lần 2 mà chuyển sang UNKNOWN_RECONCILE để đối soát!
+                  // Lỗi 03 (S-03): Nếu trạng thái đã là PROCESSING:
+                  // - Nếu RefundService đã lưu kết quả xác minh của lần gọi trước -> hoàn tất confirm mà không gọi lại provider.
+                  // - Ngược lại (crash/timeout khi chưa rõ phản hồi) -> chuyển UNKNOWN_RECONCILE, tuyệt đối không gửi lại lệnh hoàn lần 2!
                   if (intent.status === RefundIntentStatus.PROCESSING) {
+                    const cachedOutcome =
+                      typeof (this.refundService as any).getVerifiedOutcome === 'function'
+                        ? (this.refundService as any).getVerifiedOutcome(requestKey)
+                        : null;
+                    if (cachedOutcome && cachedOutcome.success) {
+                      if (cachedOutcome.providerRef) {
+                        intent.providerRef = cachedOutcome.providerRef;
+                        await em.save(PromotionRefundIntent, intent);
+                      }
+                      return { skipProviderCall: true, intent, cachedOutcome };
+                    }
                     intent.status = RefundIntentStatus.UNKNOWN_RECONCILE;
                     await em.save(PromotionRefundIntent, intent);
                     return { markUnknownReconcile: true, intent };
@@ -212,8 +227,12 @@ export class WorkersService {
                     { id: 'SYSTEM_REFUND_WORKER', role: 'SYSTEM' },
                     intentId,
                     {
-                      providerRef: preCheck.intent.providerRef || undefined,
+                      providerRef:
+                        preCheck.intent.providerRef ||
+                        (preCheck as any).cachedOutcome?.providerRef ||
+                        undefined,
                       payoutReceiptRef: preCheck.intent.payoutReceiptRef || undefined,
+                      settlementOutcome: (preCheck as any).cachedOutcome?.outcomeStatus,
                     },
                   );
                   break;
@@ -277,16 +296,16 @@ export class WorkersService {
               break;
             }
 
-            case 'refund.requested':
-            case 'refund.process':
+            case 'refund.process': {
               const refundRes = await this.refundService.processRefund({
                 paymentId: payload.paymentId,
                 txnRef: payload.txnRef,
                 amount: Number(payload.amount),
                 transactionNo: payload.transactionNo,
                 transactionDate: payload.transactionDate,
-                createBy: 'AutoRefundWorker',
+                createBy: 'SYSTEM_REFUND_WORKER',
                 reason: payload.reason,
+                idempotencyKey: payload.idempotencyKey || `cancel:${payload.requestId || payload.txnRef}`,
               });
 
               if (refundRes.success) {
@@ -295,12 +314,17 @@ export class WorkersService {
                   status: 'REFUNDED',
                   amount: payload.amount,
                 });
+              } else if (refundRes.outcomeStatus === 'UNKNOWN_RECONCILE') {
+                this.logger.warn(
+                  `[Worker] Giao dịch hoàn hủy đơn ${payload.txnRef} ở trạng thái UNKNOWN_RECONCILE — dừng tự động gửi lại để tránh hoàn trùng.`,
+                );
               } else {
                 throw new Error(
                   `VNPay refund failed: ${refundRes.error || 'Unknown error'}`,
                 );
               }
               break;
+            }
 
             default:
               this.logger.debug(
