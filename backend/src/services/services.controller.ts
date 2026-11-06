@@ -249,6 +249,17 @@ export class ServicesController {
     );
   }
 
+  @Post('requests/:id/assign')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'EMPLOYEE')
+  assignServiceRequest(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { assignedTo: number; note?: string },
+    @CurrentUser() user: User,
+  ) {
+    return this.servicesService.assignServiceRequest(id, Number(body.assignedTo), user, body.note);
+  }
+
   // ============================================================
   // BOOKING SERVICE SNAPSHOTS (Quyền lợi booking)
   // ============================================================

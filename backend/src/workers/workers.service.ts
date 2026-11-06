@@ -124,12 +124,17 @@ export class WorkersService {
               await this.guestWorkService.createTaskFromServiceRequest(payload, payload.actor);
               break;
 
-            case 'booking.assignment.requested':
-              await this.bookingAssignmentService.assignOnce(
+            case 'booking.assignment.requested': {
+              const assignRes = await this.bookingAssignmentService.assignOnce(
                 payload.bookingId,
                 'PAYMENT_PAID',
               );
+              // P1-10: Khởi tạo idempotent nhiệm vụ PRE_ARRIVAL_CONTACT sau khi phân công lễ tân
+              if (assignRes && (assignRes.success || assignRes.staffUserId)) {
+                await this.guestWorkService.ensurePreArrivalTaskForBooking(String(payload.bookingId));
+              }
               break;
+            }
 
             case 'promotion.benefit.grant_requested':
             case 'booking.financially_committed':
@@ -137,21 +142,61 @@ export class WorkersService {
               break;
 
             case 'promotion.retroactive_scan_requested': {
-              // Lỗi 19: Quét hết toàn bộ các trang bằng nextCursor thay vì dừng ở 50 booking đầu tiên
+              // P1-21 & P1-22: Sử dụng internal worker context (không giả lập role SYSTEM qua public guard)
+              // và quét theo cursor + tiếp nối qua Outbox, không chặn cứng ở 2.500 booking và không bỏ sót failedBookingIds.
               let cursor = String(payload.afterBookingId || '0');
-              let pages = 0;
-              while (pages < 50) {
-                pages += 1;
-                const scanRes = await this.promotionsService.evaluateExistingBookingsForHotel(
+              let batchCount = 0;
+              const maxBatchesPerTick = 20;
+              const accumulatedFailedIds = new Set<string>(
+                Array.isArray(payload.retryFailedBookingIds) ? payload.retryFailedBookingIds.map(String) : [],
+              );
+
+              if (accumulatedFailedIds.size > 0) {
+                for (const failedId of [...accumulatedFailedIds]) {
+                  try {
+                    await this.promotionsService.evaluateExistingBookingBenefitsInternal(failedId, {
+                      actorId: String(payload.actorId || 'SYSTEM_RETRO_WORKER'),
+                    });
+                    accumulatedFailedIds.delete(failedId);
+                  } catch {
+                    // Giữ lại để retry ở chu kỳ kế tiếp
+                  }
+                }
+              }
+
+              let hasMore = false;
+              while (batchCount < maxBatchesPerTick) {
+                batchCount += 1;
+                const scanRes = await this.promotionsService.evaluateExistingBookingsForHotelInternal(
                   String(payload.hotelId),
-                  { id: String(payload.actorId || 'SYSTEM_RETRO_WORKER'), role: 'SYSTEM' },
                   50,
                   cursor,
+                  { actorId: String(payload.actorId || 'SYSTEM_RETRO_WORKER') },
                 );
+                for (const fid of scanRes.failedBookingIds || []) {
+                  accumulatedFailedIds.add(String(fid));
+                }
                 if (!scanRes.hasMore || !scanRes.nextCursor || scanRes.nextCursor === cursor) {
+                  hasMore = false;
                   break;
                 }
                 cursor = scanRes.nextCursor;
+                hasMore = true;
+              }
+
+              if ((hasMore || accumulatedFailedIds.size > 0) && Number(payload.continuationAttempt || 0) < 50) {
+                await this.outboxService.addEvent(
+                  this.dataSource.manager,
+                  'promotion.retroactive_scan_requested',
+                  'Hotel',
+                  String(payload.hotelId),
+                  {
+                    ...payload,
+                    afterBookingId: hasMore ? cursor : '999999999999',
+                    retryFailedBookingIds: [...accumulatedFailedIds],
+                    continuationAttempt: Number(payload.continuationAttempt || 0) + 1,
+                  },
+                );
               }
               break;
             }

@@ -193,6 +193,15 @@ export class BookingsController {
     return this.bookingsService.getAvailableStaffForBooking(id, user);
   }
 
+  @Get(':id/allowed-actions')
+  @UseGuards(JwtAuthGuard)
+  getAllowedActions(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.bookingsService.getAllowedActions(id, user);
+  }
+
   // ================================
   // PHÂN CÔNG LẠI NHÂN VIÊN PHỤ TRÁCH (Admin/Employee)
   // ================================

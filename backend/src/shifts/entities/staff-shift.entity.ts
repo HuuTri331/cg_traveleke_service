@@ -30,11 +30,32 @@ export class StaffShift {
   @Column({ name: 'shift_date', type: 'date' })
   shiftDate!: string;
 
+  @Column({ name: 'planned_start_at', type: 'datetime', nullable: true })
+  plannedStartAt!: Date | null;
+
+  @Column({ name: 'planned_end_at', type: 'datetime', nullable: true })
+  plannedEndAt!: Date | null;
+
+  @Column({ name: 'hotel_timezone', type: 'varchar', length: 64, default: 'Asia/Ho_Chi_Minh' })
+  hotelTimezone!: string;
+
   @Column({ name: 'start_time', type: 'datetime', nullable: true })
   startTime!: Date | null;
 
   @Column({ name: 'end_time', type: 'datetime', nullable: true })
   endTime!: Date | null;
+
+  @Column({ name: 'actual_clock_in_at', type: 'datetime', nullable: true })
+  actualClockInAt!: Date | null;
+
+  @Column({ name: 'actual_clock_out_at', type: 'datetime', nullable: true })
+  actualClockOutAt!: Date | null;
+
+  @Column({ name: 'attendance_confirmed_by', type: 'bigint', unsigned: true, nullable: true })
+  attendanceConfirmedBy!: string | null;
+
+  @Column({ name: 'version', type: 'int', unsigned: true, default: 1 })
+  version!: number;
 
   @Column({
     name: 'status',

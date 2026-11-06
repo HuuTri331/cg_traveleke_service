@@ -103,6 +103,8 @@ export class CancellationsService {
       );
     }
 
+    await this.assertNoActiveAmendment(this.dataSource, booking.id);
+
     const requesterType =
       user.role === 'ADMIN'
         ? CancellationRequesterType.ADMIN
@@ -192,6 +194,16 @@ export class CancellationsService {
         const bookingRepo = manager.getRepository(Booking);
         const paymentRepo = manager.getRepository(PaymentTransaction);
         const reqRepo = manager.getRepository(BookingCancellationRequest);
+
+        const lockedBooking = await bookingRepo.findOne({
+          where: { id: booking.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (lockedBooking) {
+          Object.assign(booking, lockedBooking);
+        }
+
+        await this.assertNoActiveAmendment(manager, booking.id);
 
         // 1. Cập nhật booking -> CANCELLED
         const oldStatus = booking.status;
@@ -406,5 +418,28 @@ export class CancellationsService {
     }
 
     return request;
+  }
+
+  private async assertNoActiveAmendment(
+    runner: { query?: (sql: string, params?: any[]) => Promise<any> },
+    bookingId: string,
+  ): Promise<void> {
+    if (typeof runner?.query !== 'function') return;
+    try {
+      const rows = await runner.query(
+        `SELECT id FROM booking_amendments
+         WHERE booking_id = ?
+           AND status IN ('QUOTED', 'AWAITING_SURCHARGE_PAYMENT', 'AWAITING_ADDITIONAL_PAYMENT', 'READY_TO_COMMIT')
+         LIMIT 1`,
+        [bookingId],
+      );
+      if (Array.isArray(rows) && rows.length > 0) {
+        throw new ConflictException(
+          'AMENDMENT_IN_PROGRESS: Đơn đặt phòng đang có yêu cầu sửa đổi/phụ thu chưa hoàn tất, không thể hủy đồng thời.',
+        );
+      }
+    } catch (err) {
+      if (err instanceof ConflictException) throw err;
+    }
   }
 }

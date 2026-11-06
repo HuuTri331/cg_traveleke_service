@@ -273,6 +273,14 @@ export class Booking {
   presenceVersion!: number;
 
   @Column({
+    name: 'version',
+    type: 'int',
+    unsigned: true,
+    default: 1,
+  })
+  version!: number;
+
+  @Column({
     name: 'late_arrival_expected_at',
     type: 'datetime',
     nullable: true,

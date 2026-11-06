@@ -31,6 +31,60 @@ export class BookingCoverageController {
     return await this.coverageService.createTemporary(bookingId, actor, dto);
   }
 
+  @Post(':bookingId/requests')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async requestCoverage(
+    @Param('bookingId') bookingId: string,
+    @CurrentUser() actor: { id: string; role: string },
+    @Body() dto: CreateTemporaryCoverageDto,
+  ) {
+    return await this.coverageService.requestCoverage(bookingId, actor, dto);
+  }
+
+  @Post(':bookingId/requests/:grantId/approve')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async approveCoverage(
+    @Param('bookingId') bookingId: string,
+    @Param('grantId') grantId: string,
+    @CurrentUser() actor: { id: string; role: string },
+    @Body('note') note?: string,
+  ) {
+    return await this.coverageService.approveCoverage(bookingId, grantId, actor, note);
+  }
+
+  @Post(':bookingId/requests/:grantId/accept')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async acceptCoverage(
+    @Param('bookingId') bookingId: string,
+    @Param('grantId') grantId: string,
+    @CurrentUser() actor: { id: string; role: string },
+    @Body('note') note?: string,
+  ) {
+    return await this.coverageService.acceptCoverage(bookingId, grantId, actor, note);
+  }
+
+  @Post(':bookingId/requests/:grantId/decline')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async declineCoverage(
+    @Param('bookingId') bookingId: string,
+    @Param('grantId') grantId: string,
+    @CurrentUser() actor: { id: string; role: string },
+    @Body('reason') reason?: string,
+  ) {
+    return await this.coverageService.declineCoverage(bookingId, grantId, actor, reason);
+  }
+
+  @Post(':bookingId/requests/:grantId/handback')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async handbackCoverage(
+    @Param('bookingId') bookingId: string,
+    @Param('grantId') grantId: string,
+    @CurrentUser() actor: { id: string; role: string },
+    @Body('reason') reason?: string,
+  ) {
+    return await this.coverageService.handbackCoverage(bookingId, grantId, actor, reason);
+  }
+
   @Post(':bookingId/temporary/:grantId/extend')
   @Roles('ADMIN', 'EMPLOYEE')
   async extendCoverage(

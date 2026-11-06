@@ -532,6 +532,37 @@ export class PromotionsService {
     afterBookingId = '0',
   ) {
     if (actor) await this.assertHotelManager(actor, hotelId);
+    return this.runRetroactiveScanBatch(hotelId, batchSize, afterBookingId, actor);
+  }
+
+  /**
+   * P1-21 & P1-22: Method nội bộ dành riêng cho trusted Outbox Worker (không mở role SYSTEM từ HTTP controller)
+   */
+  async evaluateExistingBookingsForHotelInternal(
+    hotelId: string,
+    batchSize = 50,
+    afterBookingId = '0',
+    trace?: { actorId?: string },
+  ) {
+    return this.runRetroactiveScanBatch(hotelId, batchSize, afterBookingId, {
+      id: trace?.actorId || 'SYSTEM_RETRO_WORKER',
+      role: 'SYSTEM',
+    });
+  }
+
+  async evaluateExistingBookingBenefitsInternal(bookingId: string, trace?: { actorId?: string }) {
+    return this.evaluateExistingBookingBenefits(bookingId, {
+      id: trace?.actorId || 'SYSTEM_RETRO_WORKER',
+      role: 'SYSTEM',
+    });
+  }
+
+  private async runRetroactiveScanBatch(
+    hotelId: string,
+    batchSize = 50,
+    afterBookingId = '0',
+    actor?: { id: string; role: string },
+  ) {
     const bookings = await this.bookingRepo
       .createQueryBuilder('b')
       .where('b.hotel_id = :hotelId', { hotelId })

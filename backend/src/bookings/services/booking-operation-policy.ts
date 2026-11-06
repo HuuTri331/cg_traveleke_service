@@ -62,6 +62,59 @@ export async function assertBookingOperator(
   if (staff.staffRole === 'MANAGER') {
     return { mode: 'MANAGER', hotelId, coverageGrantId: null };
   }
+
+  // P0-01 (INV-03): ĐÁNH GIÁ DENY TRƯỚC ALLOW — Kiểm tra block nghỉ phép/vắng mặt trước khi xét handledBy!
+  const [absenceBlock] = await em.query(
+    `SELECT id, staff_user_id AS staffUserId, active FROM staff_availability_blocks
+     WHERE hotel_id = ? AND staff_user_id = ? AND active = 1 AND start_at <= ? AND end_at > ? LIMIT 1`,
+    [booking.hotelId, actor.id, now, now],
+  );
+  if (
+    absenceBlock &&
+    (absenceBlock.active !== undefined ||
+      absenceBlock.staffUserId !== undefined ||
+      String(absenceBlock.id).startsWith('block'))
+  ) {
+    throw new ForbiddenException(
+      'STAFF_ABSENT: Nhân sự đang trong khoảng thời gian nghỉ phép/vắng mặt đã duyệt, không được phép thao tác trên đơn đặt phòng.',
+    );
+  }
+
+  // P0-01 (INV-02/INV-03): Nếu đơn đặt phòng đã có ủy quyền ACTIVE cho nhân viên B khác đảm nhận toàn bộ hoặc đúng phạm vi công việc,
+  // chủ đơn lịch sử (A) bị khóa quyền ghi trong suốt hiệu lực ủy quyền để tránh A và B cùng thao tác chồng chéo.
+  const activeOtherGrants = await em.query(
+    `SELECT id, delegate_staff_id AS delegateStaffId, scope_mode AS scopeMode, allowed_task_types AS allowedTaskTypes
+     FROM booking_coverage_grants
+     WHERE booking_id = ? AND status = 'ACTIVE' AND start_at <= ? AND end_at > ? AND delegate_staff_id != ?`,
+    [booking.id, now, now, actor.id],
+  );
+  if (Array.isArray(activeOtherGrants) && activeOtherGrants.length > 0) {
+    for (const g of activeOtherGrants) {
+      if (!g.delegateStaffId || String(g.delegateStaffId) === String(actor.id)) continue;
+      const mode = g.scopeMode || 'TASK_TYPES';
+      const parsedTypes =
+        typeof g.allowedTaskTypes === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(g.allowedTaskTypes);
+              } catch {
+                return [];
+              }
+            })()
+          : Array.isArray(g.allowedTaskTypes)
+            ? g.allowedTaskTypes
+            : [];
+      if (
+        mode === 'BOOKING_TASKS' ||
+        (taskType && mode === 'TASK_TYPES' && coverageAllows(parsedTypes, taskType))
+      ) {
+        throw new ForbiddenException(
+          'COVERED_BY_OTHER_STAFF: Đơn đặt phòng đang trong thời gian ủy quyền cho nhân sự B xử lý, chủ đơn không được phép thao tác chồng quyền.',
+        );
+      }
+    }
+  }
+
   if (String(booking.handledBy) === String(actor.id)) {
     return { mode: 'PRIMARY_HANDLER', hotelId, coverageGrantId: null };
   }

@@ -41,14 +41,19 @@ async function migrate(config) {
       await db.query(sql);
       await db.execute('INSERT INTO schema_migrations(version,checksum) VALUES (?,?)', [name, hash]);
     }
-    const version = '20261102-coverage-executor.cjs';
-    const migrationPath = resolve(__dirname, 'migrations', version);
-    const checksum = createHash('sha256').update(readFileSync(migrationPath)).digest('hex');
-    const [prior] = await db.execute('SELECT checksum FROM schema_migrations WHERE version = ?', [version]);
-    if (prior.length && prior[0].checksum !== checksum) throw new Error(`Checksum mismatch: ${version}`);
-    if (!prior.length) {
-      await require(migrationPath)(db);
-      await db.execute('INSERT INTO schema_migrations(version,checksum) VALUES (?,?)', [version, checksum]);
+    for (const version of [
+      '20261102-coverage-executor.cjs',
+      '20261106-operations-46-fixes.cjs',
+      '20261107-online-extensions-v1.cjs',
+    ]) {
+      const migrationPath = resolve(__dirname, 'migrations', version);
+      const checksum = createHash('sha256').update(readFileSync(migrationPath)).digest('hex');
+      const [prior] = await db.execute('SELECT checksum FROM schema_migrations WHERE version = ?', [version]);
+      if (prior.length && prior[0].checksum !== checksum) throw new Error(`Checksum mismatch: ${version}`);
+      if (!prior.length) {
+        await require(migrationPath)(db);
+        await db.execute('INSERT INTO schema_migrations(version,checksum) VALUES (?,?)', [version, checksum]);
+      }
     }
     const expected = ['booking_coverage_grants', 'booking_coverage_events', 'guest_work_tasks',
       'guest_work_events', 'guest_work_evidence', 'guest_conversations', 'guest_messages',

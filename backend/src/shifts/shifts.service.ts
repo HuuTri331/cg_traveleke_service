@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -40,8 +41,13 @@ export class ShiftsService {
         h.name AS hotelName,
         s.shift_name AS shiftName,
         s.shift_date AS shiftDate,
+        s.planned_start_at AS plannedStartAt,
+        s.planned_end_at AS plannedEndAt,
+        s.hotel_timezone AS hotelTimezone,
         s.start_time AS startTime,
         s.end_time AS endTime,
+        s.actual_clock_in_at AS actualClockInAt,
+        s.actual_clock_out_at AS actualClockOutAt,
         s.status,
         s.opening_cash_float AS openingCashFloat,
         s.closing_cash_counted AS closingCashCounted,
@@ -125,8 +131,13 @@ export class ShiftsService {
         hs.staff_role AS staffRole,
         s.shift_name AS shiftName,
         s.shift_date AS shiftDate,
+        s.planned_start_at AS plannedStartAt,
+        s.planned_end_at AS plannedEndAt,
+        s.hotel_timezone AS hotelTimezone,
         s.start_time AS startTime,
         s.end_time AS endTime,
+        s.actual_clock_in_at AS actualClockInAt,
+        s.actual_clock_out_at AS actualClockOutAt,
         s.status,
         s.opening_cash_float AS openingCashFloat,
         s.closing_cash_counted AS closingCashCounted,
@@ -180,11 +191,57 @@ export class ShiftsService {
       );
     }
 
+    let plannedStartAt: Date | null = null;
+    let plannedEndAt: Date | null = null;
+    if (dto.plannedStartAt || dto.plannedEndAt) {
+      if (!dto.plannedStartAt || !dto.plannedEndAt) {
+        throw new BadRequestException('Phải cung cấp đầy đủ giờ bắt đầu và kết thúc dự kiến (plannedStartAt, plannedEndAt).');
+      }
+      plannedStartAt = new Date(dto.plannedStartAt);
+      plannedEndAt = new Date(dto.plannedEndAt);
+      if (
+        Number.isNaN(plannedStartAt.getTime()) ||
+        Number.isNaN(plannedEndAt.getTime()) ||
+        plannedStartAt >= plannedEndAt
+      ) {
+        throw new BadRequestException('Khung giờ ca dự kiến không hợp lệ (plannedStartAt phải nhỏ hơn plannedEndAt).');
+      }
+
+      if (typeof this.dataSource?.query === 'function') {
+        const overlappingShift = await this.dataSource.query(
+          `SELECT id FROM staff_shifts
+           WHERE hotel_id = ? AND staff_user_id = ?
+             AND status IN ('SCHEDULED', 'ACTIVE')
+             AND planned_start_at IS NOT NULL AND planned_end_at IS NOT NULL
+             AND planned_start_at < ? AND planned_end_at > ?
+           LIMIT 1`,
+          [dto.hotelId, dto.staffUserId, plannedEndAt, plannedStartAt],
+        );
+        if (Array.isArray(overlappingShift) && overlappingShift.length > 0) {
+          throw new ConflictException('SHIFT_OVERLAP: Nhân sự đã có ca trực trùng khung giờ dự kiến này.');
+        }
+
+        const overlappingAbsence = await this.dataSource.query(
+          `SELECT id FROM staff_availability_blocks
+           WHERE hotel_id = ? AND staff_user_id = ?
+             AND active = 1 AND start_at < ? AND end_at > ?
+           LIMIT 1`,
+          [dto.hotelId, dto.staffUserId, plannedEndAt, plannedStartAt],
+        );
+        if (Array.isArray(overlappingAbsence) && overlappingAbsence.length > 0) {
+          throw new ConflictException('STAFF_ABSENT: Nhân sự đã có lịch nghỉ phép được duyệt trùng khung giờ ca này.');
+        }
+      }
+    }
+
     const shift = this.shiftRepo.create({
       hotelId: dto.hotelId,
       staffUserId: dto.staffUserId,
       shiftName: dto.shiftName.trim(),
       shiftDate: dto.shiftDate,
+      plannedStartAt,
+      plannedEndAt,
+      hotelTimezone: dto.hotelTimezone?.trim() || 'Asia/Ho_Chi_Minh',
       status: ShiftStatus.SCHEDULED,
       openingCashFloat: dto.openingCashFloat !== undefined ? String(dto.openingCashFloat) : '0.00',
     });
@@ -214,6 +271,7 @@ export class ShiftsService {
       throw new ForbiddenException('Bạn không phải là người trực của ca làm việc này.');
     }
 
+    const now = new Date();
     if (typeof this.dataSource?.query === 'function') {
       const activeMembership = await this.dataSource.query(
         `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
@@ -221,6 +279,19 @@ export class ShiftsService {
       );
       if (Array.isArray(activeMembership) && activeMembership.length === 0) {
         throw new ForbiddenException('Bạn không còn thuộc nhân sự đang hoạt động (ACTIVE) tại khách sạn của ca trực này.');
+      }
+
+      // P1-03: Chặn mở ca ACTIVE nếu nhân viên đang trong khoảng vắng mặt/nghỉ phép đã duyệt
+      const absenceBlocks = await this.dataSource.query(
+        `SELECT id FROM staff_availability_blocks
+         WHERE hotel_id = ? AND staff_user_id = ? AND active = 1 AND start_at <= ? AND end_at > ?
+         LIMIT 1`,
+        [shift.hotelId, staffUserId, now, now],
+      );
+      if (Array.isArray(absenceBlocks) && absenceBlocks.length > 0) {
+        throw new ConflictException(
+          'STAFF_ABSENT: Nhân sự đang trong khoảng thời gian nghỉ phép/vắng mặt đã được duyệt, không thể mở ca trực.',
+        );
       }
     }
 
@@ -233,7 +304,10 @@ export class ShiftsService {
     }
 
     shift.status = ShiftStatus.ACTIVE;
-    shift.startTime = new Date();
+    shift.startTime = now;
+    shift.actualClockInAt = now;
+    shift.attendanceConfirmedBy = String(staffUserId);
+    shift.version = (shift.version || 1) + 1;
     if (dto.openingCashFloat !== undefined) {
       shift.openingCashFloat = String(dto.openingCashFloat);
     }
@@ -271,6 +345,31 @@ export class ShiftsService {
       if (Array.isArray(activeMembership) && activeMembership.length === 0) {
         throw new ForbiddenException('Bạn không còn thuộc nhân sự đang hoạt động (ACTIVE) tại khách sạn của ca trực này.');
       }
+
+      // P1-06: Kiểm tra nghĩa vụ/nhiệm vụ đang mở trước khi đóng ca
+      if (!dto.forceEmergencyClose) {
+        const openObligations = await this.dataSource.query(
+          `SELECT t.id, t.booking_id AS bookingId, t.status, t.title
+           FROM guest_work_tasks t
+           WHERE t.hotel_id = ?
+             AND (t.active_executor_id = ? OR (t.active_executor_id IS NULL AND t.assigned_staff_id = ?))
+             AND t.status IN ('ACCEPTED', 'IN_PROGRESS')
+             AND NOT EXISTS (
+               SELECT 1 FROM booking_coverage_grants g
+               WHERE g.booking_id = t.booking_id
+                 AND g.delegate_staff_id != ?
+                 AND g.status = 'ACTIVE'
+                 AND g.start_at <= NOW() AND g.end_at > NOW()
+             )
+           LIMIT 5`,
+          [shift.hotelId, staffUserId, staffUserId, staffUserId],
+        );
+        if (Array.isArray(openObligations) && openObligations.length > 0) {
+          throw new ConflictException(
+            `HANDOVER_REQUIRED: Không thể đóng ca khi còn ${openObligations.length} nhiệm vụ đang thực hiện chưa hoàn tất hoặc chưa bàn giao ủy quyền.`,
+          );
+        }
+      }
     }
 
     if (shift.status !== ShiftStatus.ACTIVE) {
@@ -302,12 +401,15 @@ export class ShiftsService {
     const expectedClosing = opening + totalCashCollected;
     const variance = counted - expectedClosing;
 
+    const now = new Date();
     shift.status = ShiftStatus.COMPLETED;
-    shift.endTime = new Date();
+    shift.endTime = now;
+    shift.actualClockOutAt = now;
+    shift.version = (shift.version || 1) + 1;
     shift.closingCashCounted = String(counted);
     shift.cashVariance = String(variance);
-    if (dto.handoverNote) {
-      shift.handoverNote = dto.handoverNote;
+    if (dto.handoverNote || dto.notes) {
+      shift.handoverNote = dto.handoverNote || dto.notes || null;
     }
 
     const updated = await this.shiftRepo.save(shift);
@@ -354,10 +456,20 @@ export class ShiftsService {
       );
     }
 
+    // P1-05: Chuẩn hóa toStaffId xuyên suốt API/UI (tương thích ngược receiverStaffId)
+    const targetToStaffId = String(dto.toStaffId || dto.receiverStaffId || '').trim();
+    if (!targetToStaffId) {
+      throw new BadRequestException('Bắt buộc chọn nhân viên nhận bàn giao ca (toStaffId).');
+    }
+    if (targetToStaffId === String(fromStaffId)) {
+      throw new BadRequestException('Người nhận bàn giao ca phải khác người giao ca.');
+    }
+    dto.toStaffId = targetToStaffId;
+
     // Kiểm tra nhân viên nhận bàn giao
     const isReceiverStaff = await this.dataSource.query(
       `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
-      [shift.hotelId, dto.toStaffId],
+      [shift.hotelId, targetToStaffId],
     );
 
     if (!isReceiverStaff || isReceiverStaff.length === 0) {
@@ -422,14 +534,23 @@ export class ShiftsService {
             .join('; ')}]`
         : '';
 
+    const rawPendingText =
+      typeof dto.pendingTasks === 'string'
+        ? dto.pendingTasks
+        : dto.pendingItems
+          ? typeof dto.pendingItems === 'string'
+            ? dto.pendingItems
+            : JSON.stringify(dto.pendingItems)
+          : null;
     const structuredPendingTasks =
       openFinancialItems.length > 0
         ? JSON.stringify({
-            notes: dto.pendingTasks || null,
+            notes: rawPendingText,
             openFinancialItems,
           })
-        : dto.pendingTasks || null;
+        : rawPendingText;
 
+    const noteContent = dto.specialNotes || dto.handoverNotes || '';
     const handover = this.handoverRepo.create({
       shiftId,
       hotelId: shift.hotelId,
@@ -437,7 +558,7 @@ export class ShiftsService {
       toStaffId: dto.toStaffId,
       pendingTasks: structuredPendingTasks,
       cashAmount: dto.cashAmount !== undefined ? String(dto.cashAmount) : '0.00',
-      specialNotes: `${dto.specialNotes || ''}${financialSummaryNote}`.trim() || null,
+      specialNotes: `${noteContent}${financialSummaryNote}`.trim() || null,
       status: HandoverStatus.PENDING,
     });
 

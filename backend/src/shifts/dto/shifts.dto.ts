@@ -26,6 +26,18 @@ export class CreateShiftDto {
   shiftDate!: string;
 
   @IsOptional()
+  @IsDateString()
+  plannedStartAt?: string;
+
+  @IsOptional()
+  @IsDateString()
+  plannedEndAt?: string;
+
+  @IsOptional()
+  @IsString()
+  hotelTimezone?: string;
+
+  @IsOptional()
   @IsNumber()
   @Min(0)
   openingCashFloat?: number;
@@ -36,6 +48,10 @@ export class StartShiftDto {
   @IsNumber()
   @Min(0)
   openingCashFloat?: number;
+
+  @IsOptional()
+  @IsString()
+  commandId?: string;
 }
 
 export class EndShiftDto {
@@ -56,6 +72,13 @@ export class EndShiftDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  commandId?: string;
+
+  @IsOptional()
+  forceEmergencyClose?: boolean;
 }
 
 export class CreateHandoverDto {

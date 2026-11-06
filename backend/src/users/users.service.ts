@@ -127,9 +127,13 @@ export class UsersService {
       );
     }
 
+    // P2-06: Xóa mật khẩu mặc định dùng chung '123456789'; nếu không truyền mật khẩu thì sinh mật khẩu/token ngẫu nhiên mật mã học một lần
+    const generatedOneTimeSecret = !dto.password?.trim()
+      ? `Inv!${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).toUpperCase()}#9a`
+      : null;
     const rawPassword = dto.password?.trim()
       ? dto.password.trim()
-      : '123456789';
+      : generatedOneTimeSecret!;
     const hashedPassword = await bcrypt.hash(rawPassword, 12);
 
     const staff = this.usersRepository.create({
@@ -146,6 +150,9 @@ export class UsersService {
 
     const saved = await this.usersRepository.save(staff);
     delete (saved as unknown as Record<string, unknown>).password;
+    if (generatedOneTimeSecret) {
+      (saved as any).requiresPasswordSetup = true;
+    }
     return saved;
   }
 

@@ -8,7 +8,11 @@ import {
 } from 'typeorm';
 
 export enum CoverageGrantStatus {
+  REQUESTED = 'REQUESTED',
+  APPROVED_PENDING_ACCEPTANCE = 'APPROVED_PENDING_ACCEPTANCE',
+  SCHEDULED = 'SCHEDULED',
   ACTIVE = 'ACTIVE',
+  DECLINED = 'DECLINED',
   EXPIRED = 'EXPIRED',
   REVOKED = 'REVOKED',
 }
@@ -53,10 +57,28 @@ export class BookingCoverageGrant {
   @Column({
     name: 'status',
     type: 'varchar',
-    length: 20,
+    length: 40,
     default: CoverageGrantStatus.ACTIVE,
   })
   status!: CoverageGrantStatus;
+
+  @Column({ name: 'requested_by', type: 'bigint', unsigned: true, nullable: true })
+  requestedBy?: string | null;
+
+  @Column({ name: 'approved_by', type: 'bigint', unsigned: true, nullable: true })
+  approvedBy?: string | null;
+
+  @Column({ name: 'approved_at', type: 'datetime', nullable: true })
+  approvedAt?: Date | null;
+
+  @Column({ name: 'accepted_by', type: 'bigint', unsigned: true, nullable: true })
+  acceptedBy?: string | null;
+
+  @Column({ name: 'accepted_at', type: 'datetime', nullable: true })
+  acceptedAt?: Date | null;
+
+  @Column({ name: 'accept_deadline', type: 'datetime', nullable: true })
+  acceptDeadline?: Date | null;
 
   @Column({ name: 'scope_mode', type: 'varchar', length: 20, default: 'TASK_TYPES' })
   scopeMode!: 'TASK_TYPES' | 'TASK_IDS' | 'BOOKING_TASKS';

@@ -96,6 +96,20 @@ import { GuestConversationsModule } from './guest-conversations/guest-conversati
 import { StaffKpiModule } from './staff-kpi/staff-kpi.module';
 import { HotelAccessModule } from './common/authz/hotel-access.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { PropertySettingsModule } from './property-settings/property-settings.module';
+import { RoomUnitsModule } from './room-units/room-units.module';
+import { HousekeepingModule } from './housekeeping/housekeeping.module';
+import { MaintenanceModule } from './maintenance/maintenance.module';
+import { RoomIncidentsModule } from './room-incidents/room-incidents.module';
+import { DeskBoardModule } from './desk-board/desk-board.module';
+import { RatePlansModule } from './rate-plans/rate-plans.module';
+import { VouchersModule } from './vouchers/vouchers.module';
+import { BookingAmendmentsModule } from './booking-amendments/booking-amendments.module';
+import { FolioModule } from './folio/folio.module';
+import { NightAuditModule } from './night-audit/night-audit.module';
+import { BookingDocumentsModule } from './booking-documents/booking-documents.module';
+import { PrecheckinModule } from './precheckin/precheckin.module';
+import { BookingNotificationsModule } from './booking-notifications/notifications.module';
 
 @Module({
   imports: [
@@ -169,6 +183,20 @@ import { PromotionsModule } from './promotions/promotions.module';
     StaffKpiModule,
     HotelAccessModule,
     PromotionsModule,
+    PropertySettingsModule,
+    RoomUnitsModule,
+    HousekeepingModule,
+    MaintenanceModule,
+    RoomIncidentsModule,
+    DeskBoardModule,
+    RatePlansModule,
+    VouchersModule,
+    BookingAmendmentsModule,
+    FolioModule,
+    NightAuditModule,
+    BookingDocumentsModule,
+    PrecheckinModule,
+    BookingNotificationsModule,
   ],
 
   controllers: [AppController],

@@ -98,6 +98,11 @@ export async function loadAssignmentCandidates(
     const [facts] = await em.query(`SELECT
       EXISTS(SELECT 1 FROM staff_availability_blocks WHERE hotel_id = ? AND staff_user_id = ?
         AND active = 1 AND start_at <= ? AND end_at > ?) AS absent,
+      EXISTS(SELECT 1 FROM staff_shifts WHERE hotel_id = ? AND staff_user_id = ?
+        AND status = 'ACTIVE'
+        AND (planned_start_at IS NULL OR planned_start_at <= ?)
+        AND (planned_end_at IS NULL OR planned_end_at > ?)) AS onDutyShift,
+      EXISTS(SELECT 1 FROM staff_shifts WHERE hotel_id = ? AND status IN ('SCHEDULED', 'ACTIVE')) AS hotelHasShiftSchedule,
       EXISTS(SELECT 1 FROM guest_work_tasks WHERE hotel_id = ? AND (assigned_staff_id = ? OR active_executor_id = ?)
         AND status = 'IN_PROGRESS' AND (type IN ('CHECK_IN','CHECK_OUT','COMPLAINT_HANDLE') OR priority = 'URGENT')) AS busy,
       (SELECT COUNT(*) FROM guest_work_tasks WHERE hotel_id = ? AND (assigned_staff_id = ? OR active_executor_id = ?)
@@ -105,9 +110,15 @@ export async function loadAssignmentCandidates(
       (SELECT COUNT(DISTINCT booking_id) FROM booking_presence_events WHERE hotel_id = ? AND actor_id = ?
         AND event_type = 'DEPARTURE_CONFIRMED') AS completedCount,
       (SELECT MAX(assigned_at) FROM booking_assignments WHERE hotel_id = ? AND staff_user_id = ?) AS lastAssignedAt`,
-      [hotelId, s.staffUserId, now, now, hotelId, s.staffUserId, s.staffUserId, hotelId, s.staffUserId, s.staffUserId,
+      [hotelId, s.staffUserId, now, now, hotelId, s.staffUserId, now, now, hotelId,
+        hotelId, s.staffUserId, s.staffUserId, hotelId, s.staffUserId, s.staffUserId,
         hotelId, s.staffUserId, hotelId, s.staffUserId]);
+    const hasScheduleInHotel = facts?.hotelHasShiftSchedule !== undefined ? Boolean(Number(facts.hotelHasShiftSchedule)) : false;
+    const onDutyShift = facts?.onDutyShift !== undefined
+      ? (hasScheduleInHotel ? Boolean(Number(facts.onDutyShift)) : true)
+      : true;
     return { ...s, staffUserId: String(s.staffUserId), userActive: true, hotelStaffActive: true,
+      onDutyShift,
       isAbsent: Boolean(Number(facts.absent)), isBusyNow: Boolean(Number(facts.busy)),
       activeLoad: Number(facts.activeLoad), completedCount: Number(facts.completedCount),
       lastAssignedAt: facts.lastAssignedAt ? new Date(facts.lastAssignedAt) : null,

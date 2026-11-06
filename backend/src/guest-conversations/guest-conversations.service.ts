@@ -65,7 +65,12 @@ export class GuestConversationsService {
       throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
     }
 
-    await assertBookingOperator(this.bookingRepo.manager, booking, actor);
+    await assertBookingOperator(
+      this.bookingRepo.manager,
+      booking,
+      actor,
+      actor.role !== 'CUSTOMER' ? 'MESSAGE' : undefined,
+    );
     const isAuthorizedStaff = actor.role !== 'CUSTOMER';
 
     const conv = await this.getOrCreateConversation(bookingId);
@@ -88,8 +93,20 @@ export class GuestConversationsService {
     });
     const saved = await this.msgRepo.save(msg);
 
-    // B4: Nếu người gửi là nhân viên phản hồi, ghi nhận First Response cho SLA (gắn theo taskId nếu có, bọc try/catch không làm hỏng việc gửi tin)
-    if (senderRole === MessageSenderRole.EMPLOYEE && dto.taskId) {
+    // P1-11: Tin nhắn khách tự động gắn/mở case SLA; phản hồi của lễ tân tự động liên kết case để ghi nhận First Response SLA
+    if (senderRole === MessageSenderRole.CUSTOMER) {
+      try {
+        await this.guestWorkService.ensureCustomerMessageCase(
+          booking,
+          String(conv.id),
+          String(saved.id),
+          dto.body,
+          saved.sentAt,
+        );
+      } catch (err: any) {
+        this.logger.warn(`Failed to create/link customer message case for booking #${bookingId}: ${err?.message}`);
+      }
+    } else if (senderRole === MessageSenderRole.EMPLOYEE) {
       try {
         await this.guestWorkService.recordFirstResponse(
           bookingId,

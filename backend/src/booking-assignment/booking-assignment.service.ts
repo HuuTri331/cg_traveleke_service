@@ -132,6 +132,66 @@ export class BookingAssignmentService {
           );
         }
 
+        // P1-17: Rà soát sức khỏe người phụ trách đã gán (tài khoản/biên chế bị khóa hoặc đang nghỉ không có B thay)
+        if (typeof manager.query === 'function') {
+          const [ownerHealth] = await manager.query(
+            `SELECT
+               EXISTS(
+                 SELECT 1 FROM hotel_staff hs
+                 JOIN users u ON u.id = hs.staff_user_id
+                 WHERE hs.hotel_id = ? AND hs.staff_user_id = ?
+                   AND hs.status = 'ACTIVE' AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
+               ) AS membershipActive,
+               EXISTS(
+                 SELECT 1 FROM staff_availability_blocks b
+                 WHERE b.hotel_id = ? AND b.staff_user_id = ?
+                   AND b.active = 1 AND b.start_at <= NOW() AND b.end_at > NOW()
+               ) AS isAbsentNow,
+               EXISTS(
+                 SELECT 1 FROM booking_coverage_grants g
+                 WHERE g.booking_id = ? AND g.status = 'ACTIVE'
+                   AND g.start_at <= NOW() AND g.end_at > NOW()
+               ) AS hasActiveCoverage`,
+            [
+              hotelId,
+              existingState.currentStaffId,
+              hotelId,
+              existingState.currentStaffId,
+              bookingId,
+            ],
+          );
+          if (
+            ownerHealth &&
+            ownerHealth.membershipActive !== undefined &&
+            (!Number(ownerHealth.membershipActive) ||
+              (Number(ownerHealth.isAbsentNow) && !Number(ownerHealth.hasActiveCoverage)))
+          ) {
+            const incidentKind = !Number(ownerHealth.membershipActive)
+              ? 'OWNER_INACTIVE_CRITICAL'
+              : 'COVERAGE_GAP_CRITICAL';
+            await manager.query(
+              `INSERT INTO booking_assignment_incidents
+               (booking_id, hotel_id, kind, severity, status, opened_at, due_at, current_owner_id, last_error, command_key)
+               SELECT ?, ?, ?, 'CRITICAL', 'OPEN', NOW(), DATE_ADD(NOW(), INTERVAL 15 MINUTE), ?, ?, ?
+               FROM DUAL
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM booking_assignment_incidents
+                 WHERE booking_id = ? AND kind = ? AND status = 'OPEN'
+               )`,
+              [
+                bookingId,
+                hotelId,
+                incidentKind,
+                existingState.currentStaffId,
+                `Người phụ trách #${existingState.currentStaffId} không còn khả dụng (${incidentKind}) và chưa có B thay thế.`,
+                `health:${bookingId}:${incidentKind}`,
+                bookingId,
+                incidentKind,
+              ],
+            );
+          }
+        }
+
         this.logger.log(
           `[BookingAssignment] Booking #${bookingId} đã được phân công cho nhân viên ${existingState.currentStaffId} trước đó (Idempotent No-op).`,
         );
@@ -322,6 +382,15 @@ export class BookingAssignmentService {
           }),
         );
 
+        if (typeof manager.query === 'function') {
+          await manager.query(
+            `UPDATE booking_assignment_incidents
+             SET status = 'RESOLVED', resolved_at = ?, current_owner_id = ?
+             WHERE booking_id = ? AND status = 'OPEN'`,
+            [now, assignedStaffId, bookingId],
+          );
+        }
+
         this.logger.log(
           `[BookingAssignment] Đã phân công thành công booking #${bookingId} cho ${decision.chosenCandidate.staffName} (${assignedStaffId}) [Tier: ${serviceTier}, Bucket: ${decision.freshnessBucket}, Outcome: ${decision.outcome}].`,
         );
@@ -378,6 +447,30 @@ export class BookingAssignmentService {
         }),
       );
 
+      // P2-03: Ghi nhận sự cố UNASSIGNED_CRITICAL có SLA deadline 15 phút cho hàng đợi Quản lý
+      if (typeof manager.query === 'function') {
+        const slaDueAt = new Date(now.getTime() + 15 * 60000);
+        await manager.query(
+          `INSERT INTO booking_assignment_incidents
+           (booking_id, hotel_id, kind, severity, status, opened_at, due_at, current_owner_id, retry_count, last_error, command_key)
+           SELECT ?, ?, 'UNASSIGNED_CRITICAL', 'CRITICAL', 'OPEN', ?, ?, NULL, 1, ?, ?
+           FROM DUAL
+           WHERE NOT EXISTS (
+             SELECT 1 FROM booking_assignment_incidents
+             WHERE booking_id = ? AND kind = 'UNASSIGNED_CRITICAL' AND status = 'OPEN'
+           )`,
+          [
+            bookingId,
+            hotelId,
+            now,
+            slaDueAt,
+            decision.reason,
+            `unassigned:${bookingId}`,
+            bookingId,
+          ],
+        );
+      }
+
       this.logger.warn(
         `[BookingAssignment] Booking #${bookingId} rơi vào UNASSIGNED_CRITICAL tại hotel #${hotelId}`,
       );
@@ -389,6 +482,32 @@ export class BookingAssignmentService {
         reason: decision.reason,
       };
     });
+  }
+
+  /**
+   * P1-17 & P2-03: Giám sát sức khỏe người phụ trách các booking đang mở
+   */
+  async monitorAssignedBookingsHealth(hotelId?: string): Promise<{ checkedCount: number; incidentCount: number }> {
+    if (typeof this.dataSource?.query !== 'function') {
+      return { checkedCount: 0, incidentCount: 0 };
+    }
+    const params: any[] = [];
+    const hotelClause = hotelId ? ' AND b.hotel_id = ?' : '';
+    if (hotelId) params.push(hotelId);
+    const rows = await this.dataSource.query(
+      `SELECT b.id AS bookingId, b.hotel_id AS hotelId, b.handled_by AS handledBy
+       FROM bookings b
+       WHERE b.status IN ('PENDING', 'CONFIRMED', 'CHECKED_IN', 'NO_SHOW')
+         AND b.handled_by IS NOT NULL${hotelClause}
+       LIMIT 200`,
+      params,
+    );
+    let incidentCount = 0;
+    for (const r of rows || []) {
+      const res = await this.assignOnce(String(r.bookingId), 'REPAIR');
+      if (!res.success) incidentCount += 1;
+    }
+    return { checkedCount: Array.isArray(rows) ? rows.length : 0, incidentCount };
   }
 
   /**

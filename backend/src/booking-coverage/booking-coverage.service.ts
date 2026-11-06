@@ -12,7 +12,7 @@ import { GuestWorkEvent, WorkEventType, WorkEvidenceType } from '../guest-work/e
 import { GuestWorkTask, WorkTaskStatus } from '../guest-work/entities/guest-work-task.entity';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { StaffAvailabilityService } from '../staff-availability/staff-availability.service';
-import { assertCoverageInterval, assertDelegate, createCoverage } from './coverage-commands';
+import { assertCoverageInterval, assertDelegate, assertNoOverlappingCoverage, createCoverage } from './coverage-commands';
 import { findCoverage, requireActiveStaff, requireManager } from './coverage-policy';
 import { CreateTemporaryCoverageDto } from './dto/create-temporary-coverage.dto';
 import { ExtendCoverageDto } from './dto/extend-coverage.dto';
@@ -38,6 +38,193 @@ export class BookingCoverageService {
     const saved = await this.dataSource.transaction((em) => createCoverage(em, bookingId, actor, dto));
     this.notify(saved.hotelId, bookingId, `Đơn #${bookingId} đã cấp hỗ trợ tạm cho #${dto.delegateStaffUserId}`);
     return saved;
+  }
+
+  async requestCoverage(bookingId: string, actor: { id: string; role: string }, dto: CreateTemporaryCoverageDto) {
+    return this.dataSource.transaction(async (em) => {
+      const booking = await em.findOne(Booking, { where: { id: bookingId }, lock: { mode: 'pessimistic_write' } });
+      if (!booking) throw new NotFoundException('Không tìm thấy booking.');
+      if (actor.role !== 'ADMIN') {
+        const staff = await requireActiveStaff(em, booking.hotelId, actor.id);
+        const isMgr = staff.staffRole === 'MANAGER';
+        if (!isMgr && String(booking.handledBy) !== String(actor.id)) {
+          throw new ForbiddenException('Chỉ nhân viên phụ trách đơn (A) hoặc Quản lý mới có quyền khởi tạo đề nghị hỗ trợ.');
+        }
+        if (isMgr) {
+          return createCoverage(em, bookingId, actor, { ...dto, requireDelegateAcceptance: true });
+        }
+      } else {
+        return createCoverage(em, bookingId, actor, { ...dto, requireDelegateAcceptance: true });
+      }
+
+      const start = new Date(dto.startAt), end = new Date(dto.endAt);
+      await assertCoverageInterval(em, booking, start, end, dto.absenceRequestId);
+      if (end <= new Date() || String(booking.handledBy) === dto.delegateStaffUserId) {
+        throw new BadRequestException('Người hỗ trợ phải khác chủ booking; thời hạn chưa kết thúc.');
+      }
+      await assertDelegate(em, booking, dto.delegateStaffUserId, start, end);
+      const mode = dto.scopeMode || 'BOOKING_TASKS';
+      const taskIds = [...new Set(dto.taskIds || [])];
+      const deadline = dto.completionDeadline ? new Date(dto.completionDeadline) : end;
+      await assertNoOverlappingCoverage(em, bookingId, start, end, mode, dto.allowedTaskTypes || [], taskIds);
+
+      const grant = await em.save(BookingCoverageGrant, em.create(BookingCoverageGrant, {
+        bookingId, hotelId: booking.hotelId, principalStaffId: booking.handledBy!, delegateStaffId: dto.delegateStaffUserId,
+        mode: 'TEMPORARY', scopeMode: mode, absenceRequestId: dto.absenceRequestId || null,
+        startAt: start, endAt: end, completionDeadline: deadline, allowedTaskTypes: dto.allowedTaskTypes || [],
+        status: CoverageGrantStatus.REQUESTED, createdBy: actor.id, requestedBy: actor.id,
+        reason: dto.reason || 'Nhân viên phụ trách đề nghị bàn giao tạm thời', commandKey: dto.commandId || null, version: 1,
+      }));
+      for (const id of taskIds) {
+        await em.query('INSERT INTO booking_coverage_task_scopes(grant_id,task_id) VALUES (?,?)', [grant.id, id]);
+      }
+      await em.save(BookingCoverageEvent, em.create(BookingCoverageEvent, {
+        grantId: grant.id, bookingId, actorId: actor.id, eventType: CoverageEventType.GRANT_REQUESTED,
+        newValue: { status: CoverageGrantStatus.REQUESTED, delegateStaffId: dto.delegateStaffUserId, scopeMode: mode },
+        note: dto.reason || null,
+      }));
+      return grant;
+    });
+  }
+
+  async approveCoverage(bookingId: string, grantId: string, actor: { id: string; role: string }, note?: string) {
+    return this.dataSource.transaction(async (em) => {
+      const booking = await em.findOne(Booking, { where: { id: bookingId }, lock: { mode: 'pessimistic_write' } });
+      const grant = await em.findOne(BookingCoverageGrant, { where: { id: grantId, bookingId }, lock: { mode: 'pessimistic_write' } });
+      if (!booking || !grant) throw new NotFoundException(`Không tìm thấy yêu cầu hỗ trợ #${grantId}`);
+      await requireManager(em, booking.hotelId, actor);
+      if (grant.status === CoverageGrantStatus.APPROVED_PENDING_ACCEPTANCE) return grant;
+      if (grant.status !== CoverageGrantStatus.REQUESTED) {
+        throw new ConflictException(`Chỉ có thể duyệt yêu cầu ở trạng thái REQUESTED (hiện tại: ${grant.status}).`);
+      }
+      await assertNoOverlappingCoverage(
+        em, bookingId, new Date(grant.startAt), new Date(grant.endAt),
+        grant.scopeMode || 'TASK_TYPES', grant.allowedTaskTypes || [], [], grant.id,
+      );
+      const now = new Date();
+      grant.status = CoverageGrantStatus.APPROVED_PENDING_ACCEPTANCE;
+      grant.approvedBy = actor.id;
+      grant.approvedAt = now;
+      grant.acceptDeadline = new Date(Math.min(new Date(grant.endAt).getTime(), Math.max(new Date(grant.startAt).getTime(), now.getTime() + 30 * 60000)));
+      grant.version += 1;
+      const saved = await em.save(BookingCoverageGrant, grant);
+      await em.save(BookingCoverageEvent, em.create(BookingCoverageEvent, {
+        grantId: grant.id, bookingId, actorId: actor.id, eventType: CoverageEventType.GRANT_APPROVED,
+        newValue: { status: saved.status, approvedBy: actor.id }, note: note || 'Quản lý phê duyệt yêu cầu bàn giao, chờ B xác nhận',
+      }));
+      this.notify(booking.hotelId, bookingId, `Yêu cầu hỗ trợ đơn #${bookingId} đã được duyệt, chờ nhân sự #${grant.delegateStaffId} xác nhận.`);
+      return saved;
+    });
+  }
+
+  async acceptCoverage(bookingId: string, grantId: string, actor: { id: string; role: string }, note?: string) {
+    return this.dataSource.transaction(async (em) => {
+      const booking = await em.findOne(Booking, { where: { id: bookingId }, lock: { mode: 'pessimistic_write' } });
+      const grant = await em.findOne(BookingCoverageGrant, { where: { id: grantId, bookingId }, lock: { mode: 'pessimistic_write' } });
+      if (!booking || !grant) throw new NotFoundException(`Không tìm thấy yêu cầu hỗ trợ #${grantId}`);
+      if (String(grant.delegateStaffId) !== String(actor.id) && actor.role !== 'ADMIN') {
+        throw new ForbiddenException('Chỉ nhân sự B được chỉ định mới có quyền ký nhận bàn giao này.');
+      }
+      if ([CoverageGrantStatus.ACTIVE, CoverageGrantStatus.SCHEDULED].includes(grant.status) && grant.acceptedAt) {
+        return grant;
+      }
+      if (grant.status !== CoverageGrantStatus.APPROVED_PENDING_ACCEPTANCE) {
+        throw new ConflictException(`Yêu cầu hỗ trợ phải được Quản lý duyệt trước khi ký nhận (hiện tại: ${grant.status}).`);
+      }
+      const now = new Date();
+      if (new Date(grant.endAt) <= now) {
+        throw new ConflictException('Khoảng thời gian hỗ trợ đã kết thúc, không thể nhận bàn giao.');
+      }
+      await assertDelegate(em, booking, grant.delegateStaffId, new Date(grant.startAt), new Date(grant.endAt));
+      await assertNoOverlappingCoverage(
+        em, bookingId, new Date(grant.startAt), new Date(grant.endAt),
+        grant.scopeMode || 'TASK_TYPES', grant.allowedTaskTypes || [], [], grant.id,
+      );
+      grant.acceptedBy = actor.id;
+      grant.acceptedAt = now;
+      grant.status = new Date(grant.startAt) <= now ? CoverageGrantStatus.ACTIVE : CoverageGrantStatus.SCHEDULED;
+      grant.version += 1;
+      const saved = await em.save(BookingCoverageGrant, grant);
+      await em.save(BookingCoverageEvent, em.create(BookingCoverageEvent, {
+        grantId: grant.id, bookingId, actorId: actor.id, eventType: CoverageEventType.GRANT_ACCEPTED,
+        newValue: { status: saved.status, acceptedBy: actor.id, acceptedAt: now.toISOString() },
+        note: note || 'Nhân sự hỗ trợ B đã xác nhận nhận bàn giao',
+      }));
+      this.notify(booking.hotelId, bookingId, `Nhân sự #${grant.delegateStaffId} đã ký nhận hỗ trợ đơn #${bookingId}.`);
+      return saved;
+    });
+  }
+
+  async declineCoverage(bookingId: string, grantId: string, actor: { id: string; role: string }, reason?: string) {
+    return this.dataSource.transaction(async (em) => {
+      const grant = await em.findOne(BookingCoverageGrant, { where: { id: grantId, bookingId }, lock: { mode: 'pessimistic_write' } });
+      if (!grant) throw new NotFoundException(`Không tìm thấy yêu cầu hỗ trợ #${grantId}`);
+      if (String(grant.delegateStaffId) !== String(actor.id) && actor.role !== 'ADMIN') {
+        throw new ForbiddenException('Chỉ nhân sự B được chỉ định mới có thể từ chối nhận bàn giao.');
+      }
+      if (![CoverageGrantStatus.APPROVED_PENDING_ACCEPTANCE, CoverageGrantStatus.REQUESTED].includes(grant.status)) {
+        throw new ConflictException(`Không thể từ chối yêu cầu ở trạng thái ${grant.status}.`);
+      }
+      grant.status = CoverageGrantStatus.DECLINED;
+      grant.version += 1;
+      const saved = await em.save(BookingCoverageGrant, grant);
+      await em.save(BookingCoverageEvent, em.create(BookingCoverageEvent, {
+        grantId: grant.id, bookingId, actorId: actor.id, eventType: CoverageEventType.GRANT_DECLINED,
+        newValue: { status: CoverageGrantStatus.DECLINED, reason: reason || 'Nhân sự B từ chối nhận bàn giao' },
+        note: reason || 'Nhân sự B từ chối nhận bàn giao',
+      }));
+      this.notify(grant.hotelId, bookingId, `[CẢNH BÁO] Nhân sự #${actor.id} từ chối nhận hỗ trợ đơn #${bookingId}. Cần Quản lý điều phối ngay.`);
+      return saved;
+    });
+  }
+
+  async handbackCoverage(bookingId: string, grantId: string, actor: { id: string; role: string }, reason?: string) {
+    return this.dataSource.transaction(async (em) => {
+      const booking = await em.findOne(Booking, { where: { id: bookingId }, lock: { mode: 'pessimistic_write' } });
+      const grant = await em.findOne(BookingCoverageGrant, { where: { id: grantId, bookingId }, lock: { mode: 'pessimistic_write' } });
+      if (!booking || !grant) throw new NotFoundException(`Không tìm thấy quyền hỗ trợ #${grantId}`);
+      await requireManager(em, grant.hotelId, actor);
+      const now = new Date();
+      if (booking.handledBy) {
+        const [activeBlock] = await em.query(
+          `SELECT id FROM staff_availability_blocks WHERE hotel_id = ? AND staff_user_id = ? AND active = 1 AND start_at <= ? AND end_at > ? LIMIT 1`,
+          [grant.hotelId, booking.handledBy, now, now],
+        );
+        if (activeBlock) {
+          throw new ConflictException('STAFF_ABSENT: Nhân sự chính A vẫn đang trong khoảng nghỉ phép/vắng mặt, chưa thể hoàn trả quyền.');
+        }
+      }
+      grant.status = CoverageGrantStatus.REVOKED;
+      grant.endAt = now;
+      grant.version += 1;
+      const saved = await em.save(BookingCoverageGrant, grant);
+      const tasks = await em.getRepository(GuestWorkTask).createQueryBuilder('t').setLock('pessimistic_write')
+        .where('t.booking_id = :bookingId AND (t.coverage_grant_id = :grantId OR t.active_executor_id = :delegateId)', {
+          bookingId, grantId, delegateId: grant.delegateStaffId,
+        }).orderBy('t.id', 'ASC').getMany();
+      for (const task of tasks) {
+        if (![WorkTaskStatus.ASSIGNED, WorkTaskStatus.ACCEPTED, WorkTaskStatus.IN_PROGRESS].includes(task.status)) continue;
+        const fromStatus = task.status;
+        task.assignedStaffId = booking.handledBy || task.assignedStaffId;
+        task.activeExecutorId = booking.handledBy || null;
+        task.coverageGrantId = null;
+        task.executionLeaseUntil = null;
+        if (task.status !== WorkTaskStatus.ASSIGNED) task.status = WorkTaskStatus.ASSIGNED;
+        task.version += 1;
+        await em.save(GuestWorkTask, task);
+        await em.save(GuestWorkEvent, em.create(GuestWorkEvent, {
+          taskId: task.id, bookingId, hotelId: grant.hotelId, actorType: 'USER', actorStaffId: actor.id,
+          eventType: WorkEventType.TASK_HANDOVER_REQUIRED, fromStatus, toStatus: task.status, occurredAt: now,
+          evidenceType: WorkEvidenceType.SYSTEM_LOG, evidenceRef: `HANDBACK_TO_PRINCIPAL:${grant.id}->${booking.handledBy}`,
+        }));
+      }
+      await em.save(BookingCoverageEvent, em.create(BookingCoverageEvent, {
+        grantId: grant.id, bookingId, actorId: actor.id, eventType: CoverageEventType.GRANT_HANDBACK,
+        newValue: { status: CoverageGrantStatus.REVOKED, handbackTo: booking.handledBy },
+        note: reason || 'Hoàn trả quyền xử lý về nhân viên phụ trách chính A',
+      }));
+      return saved;
+    });
   }
 
   async extend(bookingId: string, grantId: string, actor: { id: string; role: string }, dto: ExtendCoverageDto) {
@@ -139,14 +326,51 @@ export class BookingCoverageService {
   async expireOverdueGrants(): Promise<number> {
     return this.dataSource.transaction(async (em) => {
       const now = new Date();
+      // Kích hoạt các grant SCHEDULED đã được B accept khi đến startAt
+      const dueToStart = await em.getRepository(BookingCoverageGrant).createQueryBuilder('g').setLock('pessimistic_write')
+        .where("g.status = 'SCHEDULED' AND g.start_at <= :now AND g.end_at > :now", { now }).orderBy('g.id', 'ASC').getMany();
+      for (const g of dueToStart) {
+        g.status = CoverageGrantStatus.ACTIVE;
+        g.version += 1;
+        await em.save(BookingCoverageGrant, g);
+      }
+
       const overdue = await em.getRepository(BookingCoverageGrant).createQueryBuilder('g').setLock('pessimistic_write')
-        .where("g.status = 'ACTIVE' AND g.end_at <= :now", { now }).orderBy('g.id', 'ASC').getMany();
+        .where("g.status IN ('ACTIVE', 'SCHEDULED', 'APPROVED_PENDING_ACCEPTANCE') AND g.end_at <= :now", { now })
+        .orderBy('g.id', 'ASC').getMany();
       for (const grant of overdue) {
         grant.status = CoverageGrantStatus.EXPIRED; grant.version += 1;
         await em.save(BookingCoverageGrant, grant);
+
+        // P1-26: Xử lý các task đang mở của B khi grant hết hạn (tránh kẹt activeExecutorId)
+        const openTasks = await em.getRepository(GuestWorkTask).createQueryBuilder('t').setLock('pessimistic_write')
+          .where('t.booking_id = :bookingId AND (t.coverage_grant_id = :grantId OR t.active_executor_id = :delegateId)', {
+            bookingId: grant.bookingId, grantId: grant.id, delegateId: grant.delegateStaffId,
+          }).orderBy('t.id', 'ASC').getMany();
+        for (const task of openTasks) {
+          if (![WorkTaskStatus.ACCEPTED, WorkTaskStatus.IN_PROGRESS].includes(task.status)) continue;
+          if (task.executionLeaseUntil && new Date(task.executionLeaseUntil) > now) continue;
+          const fromStatus = task.status;
+          const prevExecutor = task.activeExecutorId;
+          task.status = WorkTaskStatus.ASSIGNED;
+          task.activeExecutorId = null;
+          task.coverageGrantId = null;
+          task.executionLeaseUntil = null;
+          task.version += 1;
+          await em.save(GuestWorkTask, task);
+          await em.save(GuestWorkEvent, em.create(GuestWorkEvent, {
+            taskId: task.id, bookingId: grant.bookingId, hotelId: grant.hotelId,
+            actorType: 'SYSTEM', actorStaffId: null,
+            eventType: WorkEventType.TASK_HANDOVER_REQUIRED,
+            fromStatus, toStatus: task.status, occurredAt: now,
+            evidenceType: WorkEvidenceType.SYSTEM_LOG,
+            evidenceRef: `EXPIRE_GRANT:${grant.id}:${prevExecutor || 'none'}`,
+          }));
+        }
+
         await em.save(BookingCoverageEvent, em.create(BookingCoverageEvent, {
           grantId: grant.id, bookingId: grant.bookingId, eventType: CoverageEventType.GRANT_EXPIRED,
-          actorId: null, note: 'Quyền hỗ trợ tạm thời tự động hết hạn',
+          actorId: null, note: 'Quyền hỗ trợ tạm thời tự động hết hạn và thu hồi nhiệm vụ dở dang',
         }));
       }
       return overdue.length;

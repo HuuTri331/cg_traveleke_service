@@ -9,6 +9,9 @@ import { PresenceSchedulerService } from './presence-scheduler.service';
 import { BookingPresenceController } from './booking-presence.controller';
 import { StaffAvailabilityModule } from '../staff-availability/staff-availability.module';
 import { BookingCoverageModule } from '../booking-coverage/booking-coverage.module';
+import { RoomUnitsModule } from '../room-units/room-units.module';
+import { FolioModule } from '../folio/folio.module';
+import { OutboxModule } from '../outbox/outbox.module';
 
 @Module({
   imports: [
@@ -20,6 +23,9 @@ import { BookingCoverageModule } from '../booking-coverage/booking-coverage.modu
     ]),
     StaffAvailabilityModule,
     BookingCoverageModule,
+    RoomUnitsModule,
+    FolioModule,
+    OutboxModule,
   ],
   controllers: [BookingPresenceController],
   providers: [BookingPresenceService, PresenceSchedulerService],

@@ -87,8 +87,74 @@ export class GuestWorkService {
   }
 
   private async pickAssignee(booking: Booking): Promise<string | null> {
-    // Primary task owner stays the booking primary owner; temporary coverage uses activeExecutorId.
     return booking.handledBy || null;
+  }
+
+  private async resolveEffectiveAssignee(
+    em: any,
+    booking: Booking | null | undefined,
+    taskType: WorkTaskType | string = WorkTaskType.SERVICE_REQUEST,
+    now: Date = new Date(),
+  ): Promise<{ assignedStaffId: string | null; activeExecutorId: string | null; coverageGrantId: string | null }> {
+    if (!booking) return { assignedStaffId: null, activeExecutorId: null, coverageGrantId: null };
+    // P0-05: Ưu tiên kiểm tra ủy quyền B đang ACTIVE trên booking trước khi gán cho handledBy (A)
+    if (em?.getRepository) {
+      try {
+        const grants = await em
+          .getRepository(BookingCoverageGrant)
+          .createQueryBuilder('g')
+          .where('g.booking_id = :bookingId', { bookingId: booking.id })
+          .andWhere("g.status = 'ACTIVE' AND g.start_at <= :now AND g.end_at > :now", { now })
+          .orderBy('g.id', 'ASC')
+          .getMany();
+        for (const g of grants || []) {
+          if (
+            g.scopeMode === 'BOOKING_TASKS' ||
+            ((g.scopeMode || 'TASK_TYPES') === 'TASK_TYPES' &&
+              coverageAllows(g.allowedTaskTypes || [], String(taskType)))
+          ) {
+            return {
+              assignedStaffId: String(g.delegateStaffId),
+              activeExecutorId: String(g.delegateStaffId),
+              coverageGrantId: String(g.id),
+            };
+          }
+        }
+      } catch {}
+    } else if (this.coverageService?.getActiveGrantsForHotel && booking.hotelId) {
+      try {
+        const activeGrants = await this.coverageService.getActiveGrantsForHotel(String(booking.hotelId));
+        const matched = (activeGrants || []).find(
+          (g) =>
+            String(g.bookingId) === String(booking.id) &&
+            (g.scopeMode === 'BOOKING_TASKS' ||
+              coverageAllows(g.allowedTaskTypes || [], String(taskType))),
+        );
+        if (matched) {
+          return {
+            assignedStaffId: String(matched.delegateStaffId),
+            activeExecutorId: String(matched.delegateStaffId),
+            coverageGrantId: String(matched.id),
+          };
+        }
+      } catch {}
+    }
+
+    if (booking.handledBy) {
+      if (typeof this.staffAvailabilityService?.isStaffAvailableAt === 'function') {
+        const avail = await this.staffAvailabilityService.isStaffAvailableAt(
+          String(booking.hotelId),
+          String(booking.handledBy),
+          now,
+        );
+        if (avail && avail.available === false) {
+          // A đang nghỉ phép nhưng chưa có B nhận -> Đưa vào hàng đợi Quản lý (CREATED), không gán lặng lẽ cho A đang nghỉ!
+          return { assignedStaffId: null, activeExecutorId: null, coverageGrantId: null };
+        }
+      }
+      return { assignedStaffId: String(booking.handledBy), activeExecutorId: null, coverageGrantId: null };
+    }
+    return { assignedStaffId: null, activeExecutorId: null, coverageGrantId: null };
   }
 
   async createTask(dto: CreateWorkTaskDto, actor?: { id: string; role: string }): Promise<GuestWorkTask> {
@@ -125,11 +191,17 @@ export class GuestWorkService {
     }
     const priority = dto.priority || WorkTaskPriority.NORMAL;
     const [respMin, resMin] = SLA[priority];
-    const assignedStaffId = dto.assignedStaffId || await this.pickAssignee(booking);
     return this.dataSource.transaction(async (em) => {
+      const resolved = dto.assignedStaffId
+        ? { assignedStaffId: dto.assignedStaffId, activeExecutorId: null, coverageGrantId: null }
+        : await this.resolveEffectiveAssignee(em, booking, dto.type || WorkTaskType.SERVICE_REQUEST, now);
+      const assignedStaffId = resolved.assignedStaffId;
       const savedTask = await em.save(GuestWorkTask, em.create(GuestWorkTask, {
         hotelId: booking.hotelId, bookingId: booking.id, type: dto.type,
-        assignedStaffId, ownerAtCreate: booking.handledBy || null,
+        assignedStaffId,
+        activeExecutorId: resolved.activeExecutorId,
+        coverageGrantId: resolved.coverageGrantId,
+        ownerAtCreate: booking.handledBy || null,
         status: assignedStaffId ? WorkTaskStatus.ASSIGNED : WorkTaskStatus.CREATED,
         priority, title: dto.title, description: dto.description || null,
         responseSlaDueAt: new Date(now.getTime() + respMin * 60000),
@@ -158,11 +230,21 @@ export class GuestWorkService {
       const booking = await em.findOne(Booking, { where: { id: req.bookingId } }) ||
         await this.bookingRepo.findOne({ where: { id: req.bookingId } });
       const now = new Date();
-      const assignedStaffId = booking ? await this.pickAssignee(booking) : null;
+      const resolved = await this.resolveEffectiveAssignee(em, booking, WorkTaskType.SERVICE_REQUEST, now);
+      const assignedStaffId = resolved.assignedStaffId;
+      if (assignedStaffId && typeof em.query === 'function') {
+        await em.query(
+          `UPDATE service_requests SET assigned_to = COALESCE(assigned_to, ?) WHERE id = ?`,
+          [assignedStaffId, req.id],
+        ).catch(() => null);
+      }
       const saved = await em.save(GuestWorkTask, em.create(GuestWorkTask, {
         hotelId: req.hotelId, bookingId: req.bookingId, type: WorkTaskType.SERVICE_REQUEST,
         sourceTable: 'service_requests', sourceId: String(req.id),
-        assignedStaffId, ownerAtCreate: booking?.handledBy || null,
+        assignedStaffId,
+        activeExecutorId: resolved.activeExecutorId,
+        coverageGrantId: resolved.coverageGrantId,
+        ownerAtCreate: booking?.handledBy || null,
         status: assignedStaffId ? WorkTaskStatus.ASSIGNED : WorkTaskStatus.CREATED,
         priority: WorkTaskPriority.NORMAL,
         title: `Yêu cầu dịch vụ: ${req.serviceName || 'Dịch vụ lưu trú'}`,
@@ -180,6 +262,152 @@ export class GuestWorkService {
       return saved;
     };
     return manager ? run(manager) : this.dataSource.transaction(run);
+  }
+
+  async ensurePreArrivalTaskForBooking(bookingId: string): Promise<GuestWorkTask | null> {
+    return this.dataSource.transaction(async (em) => {
+      const existing = await em.findOne(GuestWorkTask, {
+        where: { sourceTable: 'bookings_pre_arrival', sourceId: String(bookingId) },
+      });
+      if (existing) return existing;
+      const booking =
+        (await em.findOne(Booking, { where: { id: bookingId } })) ||
+        (await this.bookingRepo.findOne({ where: { id: bookingId } }));
+      if (!booking) return null;
+      const now = new Date();
+      const resolved = await this.resolveEffectiveAssignee(em, booking, WorkTaskType.PRE_ARRIVAL_CONTACT, now);
+      const assignedStaffId = resolved.assignedStaffId;
+      const saved = await em.save(
+        GuestWorkTask,
+        em.create(GuestWorkTask, {
+          hotelId: booking.hotelId,
+          bookingId: booking.id,
+          type: WorkTaskType.PRE_ARRIVAL_CONTACT,
+          sourceTable: 'bookings_pre_arrival',
+          sourceId: String(booking.id),
+          assignedStaffId,
+          activeExecutorId: resolved.activeExecutorId,
+          coverageGrantId: resolved.coverageGrantId,
+          ownerAtCreate: booking.handledBy || null,
+          status: assignedStaffId ? WorkTaskStatus.ASSIGNED : WorkTaskStatus.CREATED,
+          priority: WorkTaskPriority.HIGH,
+          title: `Liên hệ khách trước nhận phòng (#${booking.bookingCode || booking.id})`,
+          description: 'Xác nhận giờ dự kiến đến, hướng dẫn thủ tục nhận phòng và yêu cầu đặc biệt của khách.',
+          responseSlaDueAt: new Date(now.getTime() + 30 * 60000),
+          resolutionSlaDueAt: new Date(Math.max(now.getTime() + 120 * 60000, new Date(booking.checkInAt || now).getTime())),
+          version: 1,
+        }),
+      );
+      await em.save(
+        GuestWorkEvent,
+        em.create(GuestWorkEvent, {
+          taskId: saved.id,
+          bookingId: booking.id,
+          hotelId: booking.hotelId,
+          actorType: 'SYSTEM',
+          actorStaffId: assignedStaffId,
+          eventType: WorkEventType.TASK_CREATED,
+          fromStatus: null,
+          toStatus: saved.status,
+          occurredAt: now,
+          evidenceType: WorkEvidenceType.SYSTEM_LOG,
+          evidenceRef: `PreArrival #${booking.id}`,
+          idempotencyKey: `pre_arrival:${booking.id}`,
+        }),
+      );
+      return saved;
+    });
+  }
+
+  async ensureCustomerMessageCase(
+    booking: Booking,
+    conversationId: string,
+    messageId: string,
+    body: string,
+    sentAt: Date = new Date(),
+  ): Promise<GuestWorkTask> {
+    return this.dataSource.transaction(async (em) => {
+      const openTasks = await em.find(GuestWorkTask, { where: { bookingId: booking.id } });
+      const activeCase = (openTasks || []).find((t: GuestWorkTask) =>
+        [WorkTaskStatus.CREATED, WorkTaskStatus.ASSIGNED, WorkTaskStatus.ACCEPTED, WorkTaskStatus.IN_PROGRESS].includes(t.status) &&
+        [WorkTaskType.SERVICE_REQUEST, WorkTaskType.SERVICE_RESPONSE, WorkTaskType.PRE_ARRIVAL_CONTACT, WorkTaskType.COMPLAINT_HANDLE].includes(t.type),
+      );
+      if (activeCase) return activeCase;
+
+      const resolved = await this.resolveEffectiveAssignee(em, booking, WorkTaskType.SERVICE_REQUEST, sentAt);
+      const assignedStaffId = resolved.assignedStaffId;
+      const saved = await em.save(
+        GuestWorkTask,
+        em.create(GuestWorkTask, {
+          hotelId: booking.hotelId,
+          bookingId: booking.id,
+          type: WorkTaskType.SERVICE_REQUEST,
+          sourceTable: 'guest_messages',
+          sourceId: String(messageId),
+          assignedStaffId,
+          activeExecutorId: resolved.activeExecutorId,
+          coverageGrantId: resolved.coverageGrantId,
+          ownerAtCreate: booking.handledBy || null,
+          status: assignedStaffId ? WorkTaskStatus.ASSIGNED : WorkTaskStatus.CREATED,
+          priority: WorkTaskPriority.HIGH,
+          title: `Phản hồi tin nhắn khách (#${booking.bookingCode || booking.id})`,
+          description: body ? String(body).slice(0, 250) : null,
+          responseSlaDueAt: new Date(sentAt.getTime() + 30 * 60000),
+          resolutionSlaDueAt: new Date(sentAt.getTime() + 120 * 60000),
+          version: 1,
+        }),
+      );
+      await em.save(
+        GuestWorkEvent,
+        em.create(GuestWorkEvent, {
+          taskId: saved.id,
+          bookingId: booking.id,
+          hotelId: booking.hotelId,
+          actorType: 'USER',
+          actorStaffId: null,
+          eventType: WorkEventType.TASK_CREATED,
+          fromStatus: null,
+          toStatus: saved.status,
+          occurredAt: sentAt,
+          evidenceType: WorkEvidenceType.MESSAGE,
+          evidenceRef: `conv:${conversationId}:msg:${messageId}`,
+          idempotencyKey: `guest_msg_case:${messageId}`,
+        }),
+      );
+      return saved;
+    });
+  }
+
+  private async syncLinkedServiceRequest(em: any, task: GuestWorkTask, actorId: string, now: Date) {
+    if (task.sourceTable !== 'service_requests' || !task.sourceId || typeof em?.query !== 'function') return;
+    try {
+      if (task.status === WorkTaskStatus.ACCEPTED) {
+        await em.query(
+          `UPDATE service_requests SET status = 'ACCEPTED', accepted_at = COALESCE(accepted_at, ?), assigned_to = COALESCE(assigned_to, ?) WHERE id = ? AND status IN ('PENDING', 'ASSIGNED')`,
+          [now, actorId, task.sourceId],
+        );
+      } else if (task.status === WorkTaskStatus.IN_PROGRESS) {
+        await em.query(
+          `UPDATE service_requests SET status = 'IN_PROGRESS', started_at = COALESCE(started_at, ?), assigned_to = COALESCE(assigned_to, ?) WHERE id = ? AND status IN ('PENDING', 'ACCEPTED', 'ASSIGNED')`,
+          [now, actorId, task.sourceId],
+        );
+      } else if (task.status === WorkTaskStatus.COMPLETED) {
+        await em.query(
+          `UPDATE service_requests SET status = 'COMPLETED', completed_at = COALESCE(completed_at, ?), assigned_to = COALESCE(assigned_to, ?) WHERE id = ? AND status NOT IN ('CONFIRMED', 'CANCELLED', 'FAILED')`,
+          [now, actorId, task.sourceId],
+        );
+      } else if (task.status === WorkTaskStatus.VERIFIED) {
+        await em.query(
+          `UPDATE service_requests SET status = 'CONFIRMED', confirmed_at = COALESCE(confirmed_at, ?) WHERE id = ? AND status = 'COMPLETED'`,
+          [now, task.sourceId],
+        );
+      } else if (task.status === WorkTaskStatus.FAILED) {
+        await em.query(
+          `UPDATE service_requests SET status = 'FAILED', failure_reason = COALESCE(failure_reason, 'Không đạt nghiệm thu 4-eyes') WHERE id = ? AND status NOT IN ('CONFIRMED', 'CANCELLED')`,
+          [task.sourceId],
+        );
+      }
+    } catch {}
   }
 
   async acceptTask(taskId: string, actor: { id: string; role: string }, dto?: ClaimTaskDto): Promise<GuestWorkTask> {
@@ -204,6 +432,7 @@ export class GuestWorkService {
       }
       task.version += 1;
       const updated = await em.save(GuestWorkTask, task);
+      await this.syncLinkedServiceRequest(em, updated, actor.id, now);
       await em.save(GuestWorkEvent, em.create(GuestWorkEvent, {
         taskId: task.id, bookingId: task.bookingId, hotelId: task.hotelId,
         actorType: 'USER', actorStaffId: actor.id, eventType: WorkEventType.TASK_ACCEPTED,
@@ -237,6 +466,7 @@ export class GuestWorkService {
       task.startedAt = task.startedAt || now;
       task.version += 1;
       const updated = await em.save(GuestWorkTask, task);
+      await this.syncLinkedServiceRequest(em, updated, actor.id, now);
       await em.save(GuestWorkEvent, em.create(GuestWorkEvent, {
         taskId: task.id, bookingId: task.bookingId, hotelId: task.hotelId,
         actorType: 'USER', actorStaffId: actor.id, eventType: WorkEventType.TASK_STARTED,
@@ -263,6 +493,7 @@ export class GuestWorkService {
       task.completedAt = now;
       task.version += 1;
       const saved = await em.save(GuestWorkTask, task);
+      await this.syncLinkedServiceRequest(em, saved, actor.id, now);
       if (dto?.evidenceRef) {
         await em.save(GuestWorkEvidence, em.create(GuestWorkEvidence, {
           taskId: task.id, submittedBy: actor.id,
@@ -322,6 +553,7 @@ export class GuestWorkService {
       task.verifiedAt = now;
       task.version += 1;
       const updated = await em.save(GuestWorkTask, task);
+      await this.syncLinkedServiceRequest(em, updated, actor.id, now);
       await em.save(GuestWorkEvent, em.create(GuestWorkEvent, {
         taskId: task.id, bookingId: task.bookingId, hotelId: task.hotelId,
         actorType: 'USER', actorStaffId: actor.id, eventType: WorkEventType.TASK_VERIFIED,
@@ -337,13 +569,25 @@ export class GuestWorkService {
   async recordFirstResponse(
     bookingId: string, staffUserId: string, now: Date = new Date(), taskId?: string, messageId?: string,
   ): Promise<void> {
-    if (!taskId || !messageId) return;
+    if (!messageId) return;
     await this.dataSource.transaction(async (em) => {
-      const task = await this.lockTask(em, taskId);
+      let targetTaskId = taskId;
+      if (!targetTaskId) {
+        const candidates = await em.find(GuestWorkTask, { where: { bookingId } });
+        const openUnanswered = (candidates || []).find(
+          (t: GuestWorkTask) =>
+            !t.firstResponseAt &&
+            ![WorkTaskStatus.CANCELLED, WorkTaskStatus.VERIFIED, WorkTaskStatus.FAILED].includes(t.status),
+        );
+        if (openUnanswered) targetTaskId = String(openUnanswered.id);
+      }
+      if (!targetTaskId) return;
+      const task = await this.lockTask(em, targetTaskId);
       if (String(task.bookingId) !== String(bookingId) || task.firstResponseAt) return;
       if ([WorkTaskStatus.CANCELLED, WorkTaskStatus.VERIFIED, WorkTaskStatus.FAILED].includes(task.status)) return;
       await this.assertCanAct(em, task, { id: staffUserId, role: 'EMPLOYEE' }, true);
       task.firstResponseAt = now;
+      task.activeExecutorId = task.activeExecutorId || staffUserId;
       await em.save(GuestWorkTask, task);
       await em.save(GuestWorkEvent, em.create(GuestWorkEvent, {
         taskId: task.id, bookingId: task.bookingId, hotelId: task.hotelId,
@@ -364,22 +608,50 @@ export class GuestWorkService {
     if (actor.role !== 'ADMIN' && !(await this.staffAvailabilityService.isStaffAtHotel(actor.id, booking.hotelId))) {
       throw new ForbiddenException('Bạn không thuộc khách sạn của đơn đặt phòng này.');
     }
-    if (actor.role === 'EMPLOYEE') {
-      const isMgr = await this.staffAvailabilityService.isManagerAtHotel(actor.id, booking.hotelId);
-      if (!isMgr && String(booking.handledBy) !== String(actor.id)) {
-        const taskType = dto.type || WorkTaskType.SERVICE_REQUEST;
-        const hasCov = this.coverageService
-          ? await this.coverageService.isStaffCoveringTask(booking.id, actor.id, taskType, new Date(), dto.taskId)
-          : Boolean(await findCoverage(this.dataSource.manager, booking.id, actor.id, taskType, new Date(), dto.taskId));
-        if (!hasCov) {
-          throw new ForbiddenException('Cần là người phụ trách, quản lý hoặc có ủy quyền đúng loại công việc để ghi nhận công việc.');
-        }
-      }
-    }
     const now = new Date();
     const claimedTime = new Date(dto.claimedOccurredAt);
     if (isNaN(claimedTime.getTime()) || claimedTime > now || now.getTime() - claimedTime.getTime() > 7 * 86400000) {
       throw new BadRequestException('Thời gian khai báo phải trong vòng 7 ngày qua và không ở tương lai.');
+    }
+    if (actor.role === 'EMPLOYEE') {
+      const isMgr = await this.staffAvailabilityService.isManagerAtHotel(actor.id, booking.hotelId);
+      if (!isMgr) {
+        // P1-24: Kiểm tra trạng thái vắng mặt và quyền tại chính thời điểm claimedTime (không chỉ tại thời điểm nộp)
+        if (typeof this.staffAvailabilityService?.isStaffAvailableAt === 'function') {
+          const availAtClaimed = await this.staffAvailabilityService.isStaffAvailableAt(
+            booking.hotelId,
+            actor.id,
+            claimedTime,
+          );
+          if (availAtClaimed && availAtClaimed.available === false) {
+            throw new ConflictException(
+              'STAFF_ABSENT_AT_CLAIMED_TIME: Nhân sự đang trong khoảng nghỉ phép/vắng mặt tại thời điểm khai báo thực hiện công việc.',
+            );
+          }
+        }
+        const taskType = dto.type || WorkTaskType.SERVICE_REQUEST;
+        if (String(booking.handledBy) !== String(actor.id)) {
+          const hasCov = this.coverageService
+            ? await this.coverageService.isStaffCoveringTask(booking.id, actor.id, taskType, claimedTime, dto.taskId)
+            : Boolean(await findCoverage(this.dataSource.manager, booking.id, actor.id, taskType, claimedTime, dto.taskId));
+          if (!hasCov) {
+            throw new ForbiddenException('Cần là người phụ trách, quản lý hoặc có ủy quyền đúng loại công việc tại thời điểm thực hiện để ghi nhận công việc.');
+          }
+        } else if (typeof (this.dataSource as any)?.query === 'function') {
+          const delegatedToOther = await (this.dataSource as any).query(
+            `SELECT id FROM booking_coverage_grants
+             WHERE booking_id = ? AND status = 'ACTIVE'
+               AND start_at <= ? AND end_at > ? AND delegate_staff_id != ?
+             LIMIT 1`,
+            [booking.id, claimedTime, claimedTime, actor.id],
+          );
+          if (Array.isArray(delegatedToOther) && delegatedToOther.length > 0) {
+            throw new ForbiddenException(
+              'COVERED_BY_OTHER_STAFF_AT_CLAIMED_TIME: Tại thời điểm khai báo, đơn đặt phòng đã được ủy quyền cho nhân sự B xử lý.',
+            );
+          }
+        }
+      }
     }
     return this.dataSource.transaction(async (em) => {
       // Self-reported work stays COMPLETED awaiting 4-eyes verification; it is never auto-VERIFIED.
@@ -435,6 +707,10 @@ export class GuestWorkService {
     const rows = await qb.getMany();
     const filtered: GuestWorkTask[] = [];
     for (const t of rows) {
+      // P1-25: Nếu task đã được ủy quyền và đang do B (activeExecutorId != staffId) đảm nhận, không hiển thị trong hàng việc cần làm của A
+      if (t.activeExecutorId && String(t.activeExecutorId) !== String(staffId)) {
+        continue;
+      }
       if (String(t.assignedStaffId) === String(staffId)) { filtered.push(t); continue; }
       if (String(t.activeExecutorId) === String(staffId) &&
           (!t.executionLeaseUntil || new Date(t.executionLeaseUntil) > now)) { filtered.push(t); continue; }
@@ -447,23 +723,55 @@ export class GuestWorkService {
   }
 
   async getTasksForBooking(bookingId: string, actor?: { id: string; role: string }): Promise<GuestWorkTask[]> {
+    const tasks = await this.taskRepo.find({ where: { bookingId }, order: { createdAt: 'ASC' } });
     if (actor && actor.role !== 'ADMIN') {
       const booking = await this.bookingRepo.findOne({ where: { id: bookingId } });
       if (!booking) throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${bookingId}`);
       if (actor.role === 'CUSTOMER') {
         if (String(booking.userId) !== String(actor.id)) throw new ForbiddenException('Không có quyền xem nhiệm vụ.');
-      } else if (!(await this.staffAvailabilityService.isStaffAtHotel(actor.id, booking.hotelId))) {
+        return tasks.map((t) => ({ ...t, description: null })) as GuestWorkTask[];
+      }
+      if (!(await this.staffAvailabilityService.isStaffAtHotel(actor.id, booking.hotelId))) {
         throw new ForbiddenException('Bạn không thuộc khách sạn của đơn đặt phòng này.');
       }
+      // P1-25: Nhân viên C không phải owner, không có grant và không được giao task chỉ xem được summary giới hạn
+      const isMgr = await this.staffAvailabilityService.isManagerAtHotel(actor.id, booking.hotelId);
+      if (!isMgr && String(booking.handledBy) !== String(actor.id)) {
+        const isTaskMember = tasks.some(
+          (t) => String(t.assignedStaffId) === String(actor.id) || String(t.activeExecutorId) === String(actor.id),
+        );
+        const hasCov = this.coverageService
+          ? await this.coverageService.isStaffCoveringTask(booking.id, actor.id, WorkTaskType.SERVICE_REQUEST, new Date())
+          : false;
+        if (!isTaskMember && !hasCov) {
+          return tasks.map((t) => ({ ...t, description: null })) as GuestWorkTask[];
+        }
+      }
     }
-    return this.taskRepo.find({ where: { bookingId }, order: { createdAt: 'ASC' } });
+    return tasks;
   }
 
   async getTaskTimeline(taskId: string, actor?: { id: string; role: string }) {
     const task = await this.taskRepo.findOne({ where: { id: taskId } });
     if (!task) throw new NotFoundException(`Không tìm thấy nhiệm vụ #${taskId}`);
-    if (actor && actor.role !== 'ADMIN' && !(await this.staffAvailabilityService.isStaffAtHotel(actor.id, task.hotelId))) {
-      throw new ForbiddenException('Bạn không thuộc khách sạn của nhiệm vụ này.');
+    if (actor && actor.role !== 'ADMIN') {
+      if (!(await this.staffAvailabilityService.isStaffAtHotel(actor.id, task.hotelId))) {
+        throw new ForbiddenException('Bạn không thuộc khách sạn của nhiệm vụ này.');
+      }
+      const isMgr = await this.staffAvailabilityService.isManagerAtHotel(actor.id, task.hotelId);
+      if (
+        !isMgr &&
+        String(task.assignedStaffId) !== String(actor.id) &&
+        String(task.activeExecutorId) !== String(actor.id) &&
+        String(task.ownerAtCreate) !== String(actor.id)
+      ) {
+        const hasCov = this.coverageService
+          ? await this.coverageService.isStaffCoveringTask(task.bookingId, actor.id, task.type, new Date(), task.id)
+          : false;
+        if (!hasCov) {
+          throw new ForbiddenException('NOT_TASK_EXECUTOR: Bạn không được phân công thực hiện nhiệm vụ này.');
+        }
+      }
     }
     return { task, events: await this.eventRepo.find({ where: { taskId }, order: { occurredAt: 'ASC' } }) };
   }

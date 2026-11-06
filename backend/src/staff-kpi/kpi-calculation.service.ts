@@ -1,5 +1,5 @@
 import {
-  BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException,
+  BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, Optional,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -13,6 +13,7 @@ import { GuestStaffReview } from './entities/guest-staff-review.entity';
 import { AdjustmentStatus, StaffKpiAdjustment } from './entities/staff-kpi-adjustment.entity';
 import { StaffKpiMetricScore } from './entities/staff-kpi-metric-score.entity';
 import { KpiPeriodStatus, StaffKpiPeriodScore } from './entities/staff-kpi-period-score.entity';
+import { StaffKpiPolicy } from './entities/staff-kpi-policy.entity';
 
 export const DEFAULT_KPI_WEIGHTS: Record<string, number> = {
   FIRST_RESPONSE_SLA: 10, PRE_ARRIVAL_PREP: 10, CHECKIN_CHECKOUT_PROCESS: 15,
@@ -33,7 +34,49 @@ export class KpiCalculationService {
     @InjectRepository(GuestWorkTask) private readonly taskRepo: Repository<GuestWorkTask>,
     @InjectRepository(BookingPresenceEvent) private readonly presenceEventRepo: Repository<BookingPresenceEvent>,
     private readonly staffAvailabilityService: StaffAvailabilityService,
+    @Optional() @InjectRepository(StaffKpiPolicy) private readonly policyRepo?: Repository<StaffKpiPolicy>,
   ) {}
+
+  private async resolveActivePolicy(hotelId: string, beforeDate: Date): Promise<{
+    policyVersion: string;
+    weights: Record<string, number>;
+    minSamples: number;
+    minCoverageRatio: number;
+    minReviews: number;
+  }> {
+    let matched: StaffKpiPolicy | null = null;
+    if (this.policyRepo && typeof this.policyRepo.find === 'function') {
+      try {
+        const policies = await this.policyRepo.find({ where: { status: 'ACTIVE' } as any });
+        const eligible = (policies || [])
+          .filter(
+            (p) =>
+              (!p.hotelId || String(p.hotelId) === String(hotelId)) &&
+              (!p.effectiveFrom || new Date(p.effectiveFrom) <= beforeDate),
+          )
+          .sort((a, b) => {
+            const hotelMatchA = a.hotelId && String(a.hotelId) === String(hotelId) ? 1 : 0;
+            const hotelMatchB = b.hotelId && String(b.hotelId) === String(hotelId) ? 1 : 0;
+            if (hotelMatchA !== hotelMatchB) return hotelMatchB - hotelMatchA;
+            return new Date(b.effectiveFrom || 0).getTime() - new Date(a.effectiveFrom || 0).getTime();
+          });
+        matched = eligible[0] || null;
+      } catch {
+        matched = null;
+      }
+    }
+    const rawWeights = matched?.weightsJson && typeof matched.weightsJson === 'object'
+      ? { ...DEFAULT_KPI_WEIGHTS, ...matched.weightsJson }
+      : { ...DEFAULT_KPI_WEIGHTS };
+    const minSampleJson = matched?.minSampleJson || {};
+    return {
+      policyVersion: matched?.policyVersion || 'v1.0',
+      weights: rawWeights,
+      minSamples: Number(minSampleJson.periodTotal ?? 3),
+      minCoverageRatio: Number(minSampleJson.minCoverageRatio ?? 20),
+      minReviews: Number(minSampleJson.guestRating ?? 3),
+    };
+  }
 
   private periodBounds(periodKey: string): [Date, Date] {
     const [year, month] = periodKey.split('-').map((v) => parseInt(v, 10));
@@ -55,6 +98,9 @@ export class KpiCalculationService {
 
   async calculatePeriodScore(hotelId: string, staffUserId: string, periodKey: string): Promise<StaffKpiPeriodScore> {
     const [startDate, endDate] = this.periodBounds(periodKey);
+    const activePolicy = await this.resolveActivePolicy(hotelId, endDate);
+    const weights = activePolicy.weights;
+
     const workEvents = (await this.workEventRepo.find({
       where: { hotelId, actorStaffId: staffUserId, occurredAt: Between(startDate, endDate) },
     })).filter((e) => this.inHalfOpen(e.occurredAt, startDate, endDate));
@@ -75,6 +121,7 @@ export class KpiCalculationService {
       where: { hotelId, staffUserId, periodKey, status: AdjustmentStatus.APPROVED },
     });
 
+    // P1-13: Tách sự kiện đã nghiệm thu 4-eyes / hệ thống xác thực khỏi sự kiện tự khai báo chưa verify
     const verifiedEvent = (e: GuestWorkEvent) =>
       e.evidenceType !== WorkEvidenceType.SELF_REPORTED ||
       taskMap.get(String(e.taskId))?.status === WorkTaskStatus.VERIFIED;
@@ -83,10 +130,18 @@ export class KpiCalculationService {
       return e.eventType === WorkEventType.TASK_COMPLETED && verifiedEvent(e) &&
         (!type || t?.type === type) && t && [WorkTaskStatus.COMPLETED, WorkTaskStatus.VERIFIED].includes(t.status);
     });
-    const failedForActor = (type?: WorkTaskType) => [...taskMap.values()].filter((t) =>
-      (!type || t.type === type) && t.status === WorkTaskStatus.FAILED &&
-      (String(t.activeExecutorId || t.assignedStaffId) === String(staffUserId) ||
-       workEvents.some((e) => String(e.taskId) === String(t.id) && e.eventType === WorkEventType.TASK_COMPLETED)));
+    // P1-27: Quy trách nhiệm task FAILED theo người thực sự thực hiện sự kiện trước khi lỗi (không đổ lỗi tự động cho người nhận bàn giao sau nếu người trước đã làm hỏng)
+    const failedForActor = (type?: WorkTaskType) => [...taskMap.values()].filter((t) => {
+      if ((type && t.type !== type) || t.status !== WorkTaskStatus.FAILED) return false;
+      const actedByThisStaff = workEvents.some(
+        (e) =>
+          String(e.taskId) === String(t.id) &&
+          [WorkEventType.TASK_COMPLETED, WorkEventType.TASK_STARTED, WorkEventType.TASK_ACCEPTED].includes(e.eventType),
+      );
+      if (actedByThisStaff) return true;
+      if (t.activeExecutorId && String(t.activeExecutorId) !== String(staffUserId)) return false;
+      return String(t.activeExecutorId || t.assignedStaffId) === String(staffUserId);
+    });
 
     const metrics: Partial<StaffKpiMetricScore>[] = [];
     // M1: First response belongs to the actor of the response event, even if the task is later transferred.
@@ -98,12 +153,12 @@ export class KpiCalculationService {
     const missedResp = assignedTasks.filter((t) =>
       !t.firstResponseAt && String(t.activeExecutorId || t.assignedStaffId) === String(staffUserId) &&
       t.responseSlaDueAt && new Date(t.responseSlaDueAt) <= endDate);
-    metrics.push(this.buildMetricScore('FIRST_RESPONSE_SLA', DEFAULT_KPI_WEIGHTS.FIRST_RESPONSE_SLA,
+    metrics.push(this.buildMetricScore('FIRST_RESPONSE_SLA', weights.FIRST_RESPONSE_SLA,
       onTimeResp.length, firstRespEvents.length + missedResp.length, firstRespEvents.length));
 
     const preCompleted = completedByActor(WorkTaskType.PRE_ARRIVAL_CONTACT);
     const preFailed = failedForActor(WorkTaskType.PRE_ARRIVAL_CONTACT);
-    metrics.push(this.buildMetricScore('PRE_ARRIVAL_PREP', DEFAULT_KPI_WEIGHTS.PRE_ARRIVAL_PREP,
+    metrics.push(this.buildMetricScore('PRE_ARRIVAL_PREP', weights.PRE_ARRIVAL_PREP,
       preCompleted.length, preCompleted.length + preFailed.length, preCompleted.length));
 
     // M3: Check-in/out KPI requires checklist task completion/failure, not just clicking check-in.
@@ -112,9 +167,9 @@ export class KpiCalculationService {
     const presenceCount = presenceEvents.filter((pe) =>
       ['ARRIVAL_CONFIRMED', 'LATE_CHECK_IN_RECOVERED', 'DEPARTURE_CONFIRMED'].includes(pe.eventType)).length;
     metrics.push(checkCompleted.length + checkFailed.length > 0
-      ? this.buildMetricScore('CHECKIN_CHECKOUT_PROCESS', DEFAULT_KPI_WEIGHTS.CHECKIN_CHECKOUT_PROCESS,
+      ? this.buildMetricScore('CHECKIN_CHECKOUT_PROCESS', weights.CHECKIN_CHECKOUT_PROCESS,
           checkCompleted.length, checkCompleted.length + checkFailed.length, checkCompleted.length + checkFailed.length)
-      : { metricCode: 'CHECKIN_CHECKOUT_PROCESS', weight: DEFAULT_KPI_WEIGHTS.CHECKIN_CHECKOUT_PROCESS,
+      : { metricCode: 'CHECKIN_CHECKOUT_PROCESS', weight: weights.CHECKIN_CHECKOUT_PROCESS,
           eligible: false, numerator: 0, denominator: 0, rawValue: 0, score: 0, evidenceCount: presenceCount,
           noDataReason: presenceCount ? `Đã ghi nhận ${presenceCount} lượt check-in/out nhưng chưa có checklist quy trình được nghiệm thu (N/A)` : 'Chưa phát sinh nhiệm vụ thuộc chỉ tiêu này trong kỳ' });
 
@@ -125,31 +180,32 @@ export class KpiCalculationService {
       return !due || new Date(e.occurredAt) <= new Date(due);
     });
     const serviceFailed = failedForActor(WorkTaskType.SERVICE_REQUEST);
-    metrics.push(this.buildMetricScore('SERVICE_REQUEST_SLA', DEFAULT_KPI_WEIGHTS.SERVICE_REQUEST_SLA,
+    metrics.push(this.buildMetricScore('SERVICE_REQUEST_SLA', weights.SERVICE_REQUEST_SLA,
       serviceOnTime.length, serviceCompleted.length + serviceFailed.length, serviceCompleted.length));
 
     const complaintCompleted = completedByActor(WorkTaskType.COMPLAINT_HANDLE);
     const complaintFailed = failedForActor(WorkTaskType.COMPLAINT_HANDLE);
-    metrics.push(this.buildMetricScore('COMPLAINT_RESOLUTION', DEFAULT_KPI_WEIGHTS.COMPLAINT_RESOLUTION,
+    metrics.push(this.buildMetricScore('COMPLAINT_RESOLUTION', weights.COMPLAINT_RESOLUTION,
       complaintCompleted.length, complaintCompleted.length + complaintFailed.length, complaintCompleted.length));
 
     // M6: Compliance counts only four-eyes VERIFIED vs FAILED tasks; never TASK_CREATED/ASSIGNED.
     const verifiedTasks = [...taskMap.values()].filter((t) => t.status === WorkTaskStatus.VERIFIED &&
       workEvents.some((e) => String(e.taskId) === String(t.id) && e.eventType === WorkEventType.TASK_COMPLETED));
     const failedTasks = failedForActor();
-    metrics.push(this.buildMetricScore('COMPLIANCE_ACCURACY', DEFAULT_KPI_WEIGHTS.COMPLIANCE_ACCURACY,
+    metrics.push(this.buildMetricScore('COMPLIANCE_ACCURACY', weights.COMPLIANCE_ACCURACY,
       verifiedTasks.length, verifiedTasks.length + failedTasks.length, verifiedTasks.length + failedTasks.length));
 
-    // M7: Fewer than 3 valid guest reviews is reference-only (PROVISIONAL), not official score.
+    // M7: Fewer than minReviews valid guest reviews is reference-only (PROVISIONAL), not official score.
+    const minRev = activePolicy.minReviews;
     const avgStars = reviews.length ? reviews.reduce((a, r) => a + r.stars, 0) / reviews.length : 0;
-    const ratingScore = Number((Math.min(1, Math.max(0, (avgStars - 1) / 4)) * DEFAULT_KPI_WEIGHTS.GUEST_RATING).toFixed(2));
+    const ratingScore = Number((Math.min(1, Math.max(0, (avgStars - 1) / 4)) * weights.GUEST_RATING).toFixed(2));
     metrics.push({
-      metricCode: 'GUEST_RATING', weight: DEFAULT_KPI_WEIGHTS.GUEST_RATING, eligible: reviews.length >= 3,
+      metricCode: 'GUEST_RATING', weight: weights.GUEST_RATING, eligible: reviews.length >= minRev,
       numerator: reviews.reduce((a, r) => a + r.stars, 0), denominator: reviews.length * 5,
-      rawValue: Number(avgStars.toFixed(2)), score: reviews.length >= 3 ? ratingScore : 0,
+      rawValue: Number(avgStars.toFixed(2)), score: reviews.length >= minRev ? ratingScore : 0,
       evidenceCount: reviews.length,
       noDataReason: reviews.length === 0 ? 'Khách hàng chưa để lại đánh giá sao trong kỳ (N/A)'
-        : reviews.length < 3 ? `PROVISIONAL: ${reviews.length}/3 đánh giá tối thiểu (${avgStars.toFixed(2)}★ tham khảo, chưa cộng vào điểm chính thức)` : null,
+        : reviews.length < minRev ? `PROVISIONAL: ${reviews.length}/${minRev} đánh giá tối thiểu (${avgStars.toFixed(2)}★ tham khảo, chưa cộng vào điểm chính thức)` : null,
     });
 
     // M8: Manager rubric requires an explicit 0..10 score with evidence.
@@ -157,7 +213,7 @@ export class KpiCalculationService {
     const latestRubric = [...rubrics].sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
     const rubricValue = latestRubric ? Math.min(10, Math.max(0, Number(latestRubric.delta))) : 0;
     metrics.push({
-      metricCode: 'MANAGER_EVALUATION', weight: DEFAULT_KPI_WEIGHTS.MANAGER_EVALUATION, eligible: Boolean(latestRubric),
+      metricCode: 'MANAGER_EVALUATION', weight: weights.MANAGER_EVALUATION, eligible: Boolean(latestRubric),
       numerator: Math.round(rubricValue), denominator: latestRubric ? 10 : 0,
       rawValue: rubricValue, score: rubricValue, evidenceCount: rubrics.length,
       noDataReason: latestRubric ? null : 'Quản lý chưa nhập rubric 0–10 kèm bằng chứng trong kỳ (N/A)',
@@ -169,7 +225,7 @@ export class KpiCalculationService {
     const sampleCount = workEvents.filter(verifiedEvent).length + presenceCount + reviews.length + rubrics.length;
     const totalScore = applicableWeights > 0 ? Number(((achievedScores / applicableWeights) * 100).toFixed(2)) : 0;
     const coverageRatio = Number(applicableWeights.toFixed(2));
-    const sourceHash = createHash('sha256').update(JSON.stringify({ staffUserId, periodKey, metrics, sampleCount })).digest('hex');
+    const sourceHash = createHash('sha256').update(JSON.stringify({ staffUserId, periodKey, policyVersion: activePolicy.policyVersion, metrics, sampleCount })).digest('hex');
 
     const existing = await this.periodScoreRepo.find({ where: { hotelId, staffUserId, periodKey }, relations: ['metrics'] });
     const latest = [...existing].sort((a, b) => Number(b.calculationVersion || 0) - Number(a.calculationVersion || 0))[0] ||
@@ -181,7 +237,7 @@ export class KpiCalculationService {
     if (!latest || latest.status === KpiPeriodStatus.APPROVED) {
       // Approved snapshots are immutable; recalculation creates a new revision row.
       periodScore = this.periodScoreRepo.create({
-        hotelId, staffUserId, periodKey, policyVersion: 'v1.0',
+        hotelId, staffUserId, periodKey, policyVersion: activePolicy.policyVersion,
         calculationVersion: Number(latest?.calculationVersion || 0) + 1,
         totalScore, coverageRatio, sampleCount, sourceHash,
         status: KpiPeriodStatus.DRAFT, calculatedAt: new Date(),
@@ -189,6 +245,7 @@ export class KpiCalculationService {
     } else {
       if (latest.metrics?.length) await this.metricScoreRepo.remove(latest.metrics);
       periodScore = Object.assign(latest, {
+        policyVersion: activePolicy.policyVersion,
         totalScore, coverageRatio, sampleCount, sourceHash,
         calculationVersion: Number(latest.calculationVersion || 0) + 1, calculatedAt: new Date(),
       });
@@ -269,12 +326,18 @@ export class KpiCalculationService {
     if (actorRole !== 'ADMIN' && !(await this.staffAvailabilityService.isManagerAtHotel(managerUserId, hotelId))) {
       throw new ForbiddenException('Chỉ Quản lý khách sạn mới có quyền phê duyệt kỳ KPI');
     }
+    const [, endDate] = this.periodBounds(periodKey);
+    const activePolicy = await this.resolveActivePolicy(hotelId, endDate);
+    const isExceptionOverride = Boolean(reviewNote && reviewNote.includes('[EXCEPTION_APPROVED]'));
     const scores = await this.getHotelPeriodScores(hotelId, periodKey);
     const now = new Date();
     let approvedCount = 0;
     for (const s of scores) {
-      // Never publish/approve insufficient-data snapshots as official scores.
-      if (s.status === KpiPeriodStatus.DRAFT && Number(s.sampleCount) >= 3 && Number(s.coverageRatio) > 0) {
+      // P2-07: Kiểm tra ngưỡng số mẫu tối thiểu (minSamples) VÀ độ bao phủ trọng số tối thiểu (minCoverageRatio) theo policy
+      const meetsThresholds =
+        Number(s.sampleCount) >= activePolicy.minSamples &&
+        (Number(s.coverageRatio) >= activePolicy.minCoverageRatio || isExceptionOverride);
+      if (s.status === KpiPeriodStatus.DRAFT && meetsThresholds) {
         s.status = KpiPeriodStatus.APPROVED;
         s.approvedBy = managerUserId;
         s.approvedAt = now;

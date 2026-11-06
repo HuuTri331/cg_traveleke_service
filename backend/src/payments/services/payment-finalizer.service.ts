@@ -66,6 +66,63 @@ export class PaymentFinalizerService {
       };
     }
 
+    // IMP-05: Phân nhánh nếu purpose/paymentPurpose === 'AMENDMENT_SURCHARGE' (không reset booking về PENDING, không gọi lại assignment)
+    const paymentPurpose =
+      targetPayment.purpose || (targetPayment as any).paymentPurpose || 'INITIAL_BOOKING';
+    if (paymentPurpose === 'AMENDMENT_SURCHARGE') {
+      targetPayment.status = PaymentTransactionStatus.PAID;
+      targetPayment.responseCode = details.responseCode;
+      targetPayment.transactionStatus = details.transactionStatus;
+      targetPayment.vnpTransactionNo = details.vnpTransactionNo || null;
+      targetPayment.bankCode = details.bankCode || null;
+      targetPayment.cardType = details.cardType || null;
+      targetPayment.payDate = details.payDate || new Date();
+      targetPayment.paidAt = new Date();
+      targetPayment.rawIpnResponse = details.rawResponse || null;
+      await paymentRepo.save(targetPayment);
+
+      const amendmentId = String(
+        targetPayment.amendmentId || (targetPayment as any).amendmentId || targetPayment.id,
+      );
+
+      await this.outboxService.addEvent(
+        manager,
+        'amendment.surcharge_paid.v1',
+        'BookingAmendment',
+        amendmentId,
+        {
+          amendmentId,
+          bookingId: String(targetBooking.id),
+          txnRef: targetPayment.txnRef,
+          paymentId: targetPayment.id,
+        },
+      );
+
+      await this.outboxService.addEvent(
+        manager,
+        'amendment.payment_confirmed.v1',
+        'PaymentTransaction',
+        targetPayment.id,
+        {
+          bookingId: targetBooking.id,
+          paymentId: targetPayment.id,
+          txnRef: targetPayment.txnRef,
+          amount: targetPayment.amount,
+          amendmentId: targetPayment.amendmentId || (targetPayment as any).amendmentId || null,
+          occurredAt: new Date(),
+        },
+      );
+
+      return {
+        success: true,
+        paymentStatus: PaymentTransactionStatus.PAID,
+        bookingStatus: targetBooking.status,
+        outcome: 'AMENDMENT_SURCHARGE_PAID',
+        payment: targetPayment,
+        booking: targetBooking,
+      };
+    }
+
     // ========================================================
     // DEFENSE 2: Double Payment Defense
     // Kiểm tra xem đơn đặt phòng này đã có attempt khác PAID chưa!

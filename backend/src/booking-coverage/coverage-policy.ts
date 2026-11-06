@@ -3,13 +3,44 @@ import { EntityManager } from 'typeorm';
 import { BookingCoverageGrant } from './entities/booking-coverage-grant.entity';
 
 export const SERVICE_TASKS = ['SERVICE_REQUEST', 'SERVICE_RESPONSE'];
-export const OPERATION_TASKS = ['PRE_ARRIVAL_CONTACT', 'CHECK_IN', 'CHECK_OUT', 'SERVICE_REQUEST', 'SERVICE_RESPONSE', 'COMPLAINT_HANDLE'];
+export const OPERATION_TASKS = [
+  'PRE_ARRIVAL_CONTACT',
+  'CHECK_IN',
+  'CHECK_OUT',
+  'ROOM_ASSIGN',
+  'ASSIGN_ROOM',
+  'MOVE_ROOM',
+  'MESSAGE',
+  'SERVICE_REQUEST',
+  'SERVICE_RESPONSE',
+  'AMENDMENT_REQUEST',
+  'AMEND_BOOKING',
+  'ARRIVAL_SUPPORT',
+  'FOLIO_SETTLEMENT',
+  'STAY_TIME_REQUEST',
+  'COMPLAINT_HANDLE',
+  'WRITE_BOOKING_STATUS',
+];
 export function coverageAllows(scopes: string[], taskType: string): boolean {
   if (!OPERATION_TASKS.includes(taskType)) return false;
-  return scopes.includes(taskType) ||
+  if (scopes.includes('BOOKING_TASKS') || scopes.includes(taskType)) return true;
+  if (
+    (taskType === 'ROOM_ASSIGN' || taskType === 'ASSIGN_ROOM' || taskType === 'MOVE_ROOM') &&
+    (scopes.includes('ROOM_ASSIGN') || scopes.includes('ASSIGN_ROOM'))
+  ) {
+    return true;
+  }
+  if (
+    (taskType === 'AMENDMENT_REQUEST' || taskType === 'AMEND_BOOKING') &&
+    (scopes.includes('AMENDMENT_REQUEST') || scopes.includes('AMEND_BOOKING'))
+  ) {
+    return true;
+  }
+  return (
     (taskType === 'SERVICE_REQUEST' && scopes.includes('SERVICE_RESPONSE')) ||
     (taskType === 'SERVICE_RESPONSE' && scopes.includes('SERVICE_REQUEST')) ||
-    (scopes.includes('ALL_SERVICE_TASKS') && SERVICE_TASKS.includes(taskType));
+    (scopes.includes('ALL_SERVICE_TASKS') && SERVICE_TASKS.includes(taskType))
+  );
 }
 export async function requireActiveStaff(em: EntityManager, hotelId: string, staffId: string) {
   const [staff] = await em.query(`SELECT hs.staff_role AS staffRole FROM hotel_staff hs

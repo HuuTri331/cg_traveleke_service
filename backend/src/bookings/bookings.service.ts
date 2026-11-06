@@ -36,6 +36,7 @@ import {
   deterministicSort,
 } from '../common/database/transaction-retry.helper';
 import { BookingAccessService } from './services/booking-access.service';
+import { assertBookingOperator } from './services/booking-operation-policy';
 import { BookingCoverageService } from '../booking-coverage/booking-coverage.service';
 import { BookingPresenceService } from '../booking-presence/booking-presence.service';
 import { InventoryService } from '../inventory/inventory.service';
@@ -445,6 +446,15 @@ export class BookingsService {
         if (user && this.bookingAccessService) {
           await this.bookingAccessService.assertCanManage(booking, user);
         }
+        // P0-07: Kiểm tra quyền người phụ trách / ủy quyền B / Quản lý trong cùng transaction đã khóa booking (không chỉ dựa trên cùng khách sạn)
+        if (user && user.role === 'EMPLOYEE' && typeof (manager as any).query === 'function') {
+          await assertBookingOperator(
+            manager,
+            booking,
+            { id: String(user.id || changedByUserId), role: user.role },
+            'WRITE_BOOKING_STATUS',
+          );
+        }
 
         const currentStatus = booking.status;
         const newStatus = dto.status;
@@ -567,12 +577,15 @@ export class BookingsService {
     }
     const [staffRow] = await this.dataSource.query(
       `SELECT u.id, u.full_name AS name, u.email FROM users u WHERE u.id = ? LIMIT 1`, [targetStaffUserId]);
+    const effectiveRole = actor?.role || 'EMPLOYEE';
+    // P1-07: Phân biệt Admin Override và chuyển giao vĩnh viễn theo đúng mã lý do; tránh lỗi 400/409 mơ hồ từ MANUAL_REASSIGN
+    const reasonCode = effectiveRole === 'ADMIN' ? 'ADMIN_OVERRIDE' : 'EMPLOYMENT_ENDED';
     const transferred = await this.bookingCoverageService.transferPermanent(
       bookingId,
-      { id: String(actor?.id || changedByUserId), role: actor?.role || 'EMPLOYEE' },
+      { id: String(actor?.id || changedByUserId), role: effectiveRole },
       {
         toStaffUserId: targetStaffUserId,
-        reasonCode: 'MANUAL_REASSIGN',
+        reasonCode,
         reason: note || `Quản lý/Admin điều chỉnh người phụ trách sang ${staffRow?.name || targetStaffUserId}`,
       },
     );
@@ -599,22 +612,25 @@ export class BookingsService {
       await this.bookingAccessService.assertCanView(booking, actor);
     }
 
-    // Lấy thông tin phòng của booking
-    const [room] = await this.dataSource.query(
-      `SELECT r.id, r.name, r.price_per_night AS pricePerNight
+    // P1-08: Tổng hợp phân hạng phòng (VIP/STANDARD) trên toàn bộ booking_rooms, không chỉ lấy phòng đầu tiên
+    const bookedRooms = await this.dataSource.query(
+      `SELECT r.id, r.name, r.price_per_night AS pricePerNight, r.service_tier AS serviceTier
        FROM booking_rooms br
        INNER JOIN rooms r ON r.id = br.room_id
-       WHERE br.booking_id = ?
-       LIMIT 1`,
+       WHERE br.booking_id = ?`,
       [bookingId],
     );
-
+    const room = Array.isArray(bookedRooms) && bookedRooms.length > 0 ? bookedRooms[0] : null;
     const isVip =
-      room &&
-      (Number(room.pricePerNight) >= 1500000 ||
-        /vip|suite|presidential|deluxe|luxury/i.test(room.name));
+      Array.isArray(bookedRooms) &&
+      bookedRooms.some(
+        (r: any) =>
+          String(r.serviceTier || '').toUpperCase() === 'VIP' ||
+          Number(r.pricePerNight) >= 1500000 ||
+          /vip|suite|presidential|deluxe|luxury/i.test(String(r.name || '')),
+      );
 
-    // Lấy danh sách nhân sự thuộc khách sạn này kèm kỹ năng & thành tích
+    // P1-08: Lấy danh sách nhân sự thuộc khách sạn kèm trạng thái ca trực ACTIVE, vắng mặt, kỹ năng xác minh và bận xử lý
     const staffList = await this.dataSource.query(
       `
       SELECT
@@ -625,19 +641,42 @@ export class BookingsService {
         COALESCE(MAX(ss.level), 1) AS maxSkillLevel,
         COALESCE(MAX(ss.years_exp), 0) AS maxYearsExp,
         COALESCE(MAX(ss.eligibility_level), 'STANDARD') AS eligibilityLevel,
+        MAX(CASE WHEN ss.verified_by IS NOT NULL AND ss.verified_at IS NOT NULL AND COALESCE(ss.is_shadow, 0) = 0 THEN 1 ELSE 0 END) AS hasVerifiedSkill,
+        EXISTS(
+          SELECT 1 FROM staff_availability_blocks ab
+          WHERE ab.hotel_id = hs.hotel_id AND ab.staff_user_id = hs.staff_user_id
+            AND ab.active = 1 AND ab.start_at <= NOW() AND ab.end_at > NOW()
+        ) AS isAbsent,
+        EXISTS(
+          SELECT 1 FROM staff_shifts sh
+          WHERE sh.hotel_id = hs.hotel_id AND sh.staff_user_id = hs.staff_user_id
+            AND sh.status = 'ACTIVE'
+            AND (sh.planned_start_at IS NULL OR sh.planned_start_at <= NOW())
+            AND (sh.planned_end_at IS NULL OR sh.planned_end_at > NOW())
+        ) AS onDutyShift,
+        EXISTS(
+          SELECT 1 FROM staff_shifts sh2
+          WHERE sh2.hotel_id = hs.hotel_id AND sh2.status IN ('SCHEDULED', 'ACTIVE')
+        ) AS hotelHasShiftSchedule,
+        EXISTS(
+          SELECT 1 FROM guest_work_tasks t
+          WHERE t.hotel_id = hs.hotel_id
+            AND (t.assigned_staff_id = hs.staff_user_id OR t.active_executor_id = hs.staff_user_id)
+            AND t.status = 'IN_PROGRESS'
+            AND (t.type IN ('CHECK_IN', 'CHECK_OUT', 'COMPLAINT_HANDLE') OR t.priority = 'URGENT')
+        ) AS isBusyNow,
         (SELECT COUNT(*) FROM bookings b WHERE b.handled_by = hs.staff_user_id AND b.status = 'COMPLETED') AS completedCount,
         (SELECT COUNT(*) FROM bookings b WHERE b.handled_by = hs.staff_user_id AND b.status IN ('PENDING', 'CONFIRMED')) AS activeLoad
       FROM hotel_staff hs
       INNER JOIN users u ON u.id = hs.staff_user_id AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
       LEFT JOIN staff_skills ss ON ss.user_id = hs.staff_user_id
       WHERE hs.hotel_id = ? AND hs.status = 'ACTIVE'
-      GROUP BY hs.staff_user_id, u.full_name, u.email, hs.staff_role
+      GROUP BY hs.staff_user_id, u.full_name, u.email, hs.staff_role, hs.hotel_id
       ORDER BY maxSkillLevel DESC, completedCount DESC
       `,
       [booking.hotelId],
     );
 
-    // Section 11.3: Danh sách ứng viên CHỈ lấy từ nhân sự thuộc đúng khách sạn này. Tuyệt đối không query toàn hệ thống!
     const candidates = staffList || [];
 
     return {
@@ -655,18 +694,132 @@ export class BookingsService {
         : null,
       canReassign:
         [BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.NO_SHOW, BookingStatus.CHECKED_IN].includes(booking.status),
-      staff: candidates.map((s: any) => ({
-        ...s,
-        maxSkillLevel: Number(s.maxSkillLevel),
-        maxYearsExp: Number(s.maxYearsExp),
-        completedCount: Number(s.completedCount),
-        activeLoad: Number(s.activeLoad),
-        recommended: isVip
-          ? Number(s.maxSkillLevel) >= 4 ||
-            Number(s.maxYearsExp) >= 2 ||
-            s.staffRole === 'MANAGER'
-          : Number(s.maxSkillLevel) <= 3 && Number(s.activeLoad) <= 2,
-      })),
+      staff: candidates.map((s: any) => {
+        const isAbsent = Boolean(Number(s.isAbsent || 0));
+        const hasSchedule = Boolean(Number(s.hotelHasShiftSchedule || 0));
+        const onDutyShift = hasSchedule ? Boolean(Number(s.onDutyShift || 0)) : true;
+        const isBusyNow = Boolean(Number(s.isBusyNow || 0));
+        const hasVerifiedSkill = Boolean(Number(s.hasVerifiedSkill ?? 1)) || s.staffRole === 'MANAGER';
+        const reasons: string[] = [];
+        if (isAbsent) reasons.push('ABSENT');
+        if (!onDutyShift) reasons.push('OFF_DUTY');
+        if (isBusyNow) reasons.push('BUSY');
+        if (isVip && !hasVerifiedSkill) reasons.push('NO_VERIFIED_SKILL');
+        const eligible = !isAbsent && onDutyShift && !isBusyNow && (!isVip || hasVerifiedSkill);
+        return {
+          ...s,
+          maxSkillLevel: Number(s.maxSkillLevel),
+          maxYearsExp: Number(s.maxYearsExp),
+          completedCount: Number(s.completedCount),
+          activeLoad: Number(s.activeLoad),
+          isAbsent,
+          onDutyShift,
+          isBusyNow,
+          hasVerifiedSkill,
+          eligible,
+          reasons,
+          recommended:
+            eligible &&
+            (isVip
+              ? Number(s.maxSkillLevel) >= 4 ||
+                Number(s.maxYearsExp) >= 2 ||
+                s.staffRole === 'MANAGER'
+              : Number(s.maxSkillLevel) <= 3 && Number(s.activeLoad) <= 2),
+        };
+      }),
+    };
+  }
+
+  async getAllowedActions(bookingId: string, actor?: User) {
+    const booking = await this.bookingRepository.findOne({ where: { id: bookingId } });
+    if (!booking) throw new NotFoundException('Không tìm thấy đơn đặt phòng.');
+    const now = new Date();
+    const blockedReasons: string[] = [];
+    const allowedActions: string[] = [];
+
+    let effectiveExecutorId: string | null = booking.handledBy ? String(booking.handledBy) : null;
+    let coverageGrantId: string | null = null;
+    let coverageRequestStatus = 'NONE';
+    let dutyStatus = 'ON_DUTY';
+
+    if (typeof this.dataSource?.query === 'function') {
+      const grants = await this.dataSource.query(
+        `SELECT id, delegate_staff_id AS delegateStaffId, status, scope_mode AS scopeMode
+         FROM booking_coverage_grants
+         WHERE booking_id = ? AND status IN ('ACTIVE', 'SCHEDULED', 'APPROVED_PENDING_ACCEPTANCE', 'REQUESTED')
+           AND end_at > ?
+         ORDER BY id DESC LIMIT 1`,
+        [booking.id, now],
+      );
+      if (Array.isArray(grants) && grants.length > 0) {
+        coverageRequestStatus = String(grants[0].status);
+        if (grants[0].status === 'ACTIVE') {
+          effectiveExecutorId = String(grants[0].delegateStaffId);
+          coverageGrantId = String(grants[0].id);
+        }
+      }
+
+      if (actor && actor.role === 'EMPLOYEE') {
+        const [absent] = await this.dataSource.query(
+          `SELECT id FROM staff_availability_blocks WHERE hotel_id = ? AND staff_user_id = ? AND active = 1 AND start_at <= ? AND end_at > ? LIMIT 1`,
+          [booking.hotelId, actor.id, now, now],
+        );
+        if (absent) {
+          dutyStatus = 'ABSENT';
+          blockedReasons.push('STAFF_ABSENT');
+        }
+      }
+    }
+
+    if (actor?.role === 'CUSTOMER') {
+      if (String(booking.userId) === String(actor.id)) {
+        allowedActions.push('CUSTOMER_SEND_MESSAGE');
+        if ([BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.NO_SHOW].includes(booking.status)) {
+          allowedActions.push('CUSTOMER_LATE_ARRIVAL_NOTICE');
+        }
+        if ([BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.CHECKED_IN].includes(booking.status)) {
+          allowedActions.push('CUSTOMER_REQUEST_SERVICE');
+        }
+      } else {
+        blockedReasons.push('NOT_BOOKING_OWNER');
+      }
+    } else if (actor) {
+      let canOperate = actor.role === 'ADMIN';
+      if (!canOperate && actor.role === 'EMPLOYEE') {
+        try {
+          await assertBookingOperator(
+            this.dataSource.manager,
+            booking,
+            { id: String(actor.id), role: actor.role },
+            undefined,
+            now,
+          );
+          canOperate = true;
+        } catch (err: any) {
+          blockedReasons.push(err?.message || 'NOT_EFFECTIVE_HANDLER');
+        }
+      }
+      if (canOperate && blockedReasons.length === 0) {
+        allowedActions.push('SEND_GUEST_MESSAGE', 'EXECUTE_TASK', 'CREATE_SERVICE_REQUEST');
+        if (booking.status === BookingStatus.PENDING) {
+          allowedActions.push('WRITE_BOOKING_STATUS', 'CHECK_IN');
+        } else if (booking.status === BookingStatus.CONFIRMED || booking.status === BookingStatus.NO_SHOW) {
+          allowedActions.push('CHECK_IN');
+        } else if (booking.status === BookingStatus.CHECKED_IN) {
+          allowedActions.push('CHECK_OUT');
+        }
+      }
+    }
+
+    return {
+      bookingId: String(booking.id),
+      now: now.toISOString(),
+      dutyStatus,
+      coverageRequestStatus,
+      effectiveExecutorId,
+      coverageGrantId,
+      allowedActions,
+      blockedReasons,
     };
   }
 
@@ -730,7 +883,11 @@ export class BookingsService {
         (SELECT pt.vnp_transaction_no FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS vnpTransactionNo,
         (SELECT pt.gateway_expire_at FROM payment_transactions pt WHERE pt.booking_id = b.id ORDER BY pt.attempt_no DESC LIMIT 1) AS gatewayExpireAt,
         (SELECT bh.hold_expires_at FROM booking_holds bh WHERE bh.booking_id = b.id LIMIT 1) AS holdExpiresAt,
-        (SELECT bh.status FROM booking_holds bh WHERE bh.booking_id = b.id LIMIT 1) AS holdStatus
+        (SELECT bh.status FROM booking_holds bh WHERE bh.booking_id = b.id LIMIT 1) AS holdStatus,
+        b.handled_by AS handledBy,
+        (SELECT u_owner.full_name FROM users u_owner WHERE u_owner.id = b.handled_by LIMIT 1) AS handledByName,
+        (SELECT g.delegate_staff_id FROM booking_coverage_grants g WHERE g.booking_id = b.id AND g.status = 'ACTIVE' AND g.start_at <= NOW() AND g.end_at > NOW() ORDER BY g.id DESC LIMIT 1) AS activeDelegateId,
+        (SELECT u_del.full_name FROM booking_coverage_grants g JOIN users u_del ON u_del.id = g.delegate_staff_id WHERE g.booking_id = b.id AND g.status = 'ACTIVE' AND g.start_at <= NOW() AND g.end_at > NOW() ORDER BY g.id DESC LIMIT 1) AS activeDelegateName
 
       FROM bookings b
 
@@ -750,9 +907,45 @@ export class BookingsService {
       params,
     );
 
+    // P2-02: Bổ sung responsibleContact hiển thị lễ tân hiện hành đang phụ trách (ưu tiên B nếu có grant ACTIVE), không lộ email/lý do nghỉ nội bộ
+    const enrichedBookings = (bookings || []).map((row: any) => {
+      const isCoveredByDelegate = Boolean(row.activeDelegateId && row.activeDelegateName);
+      const hasPrimaryOwner = Boolean(row.handledBy && row.handledByName);
+      const responsibleContact = isCoveredByDelegate
+        ? {
+            publicName: row.activeDelegateName,
+            roleLabel: 'Lễ tân hỗ trợ trực ca',
+            supportGroup: row.hotelName ? `Quầy Lễ tân ${row.hotelName}` : 'Bộ phận Lễ tân & CSKH',
+            contactChannel: 'IN_APP_CHAT',
+            status: 'AVAILABLE',
+            isDelegatedCoverage: true,
+          }
+        : hasPrimaryOwner
+          ? {
+              publicName: row.handledByName,
+              roleLabel: 'Lễ tân phụ trách đơn',
+              supportGroup: row.hotelName ? `Quầy Lễ tân ${row.hotelName}` : 'Bộ phận Lễ tân & CSKH',
+              contactChannel: 'IN_APP_CHAT',
+              status: 'AVAILABLE',
+              isDelegatedCoverage: false,
+            }
+          : {
+              publicName: row.hotelName ? `Ban Lễ tân ${row.hotelName}` : 'Bộ phận Lễ tân & Hỗ trợ 24/7',
+              roleLabel: 'Điều phối viên trực ca',
+              supportGroup: 'Trung tâm Chăm sóc Khách hàng',
+              contactChannel: 'IN_APP_CHAT',
+              status: 'CONTACT_PENDING',
+              isDelegatedCoverage: false,
+            };
+      return {
+        ...row,
+        responsibleContact,
+      };
+    });
+
     return {
       message: 'Lấy lịch sử đặt phòng thành công.',
-      data: bookings,
+      data: enrichedBookings,
     };
   }
 
@@ -946,18 +1139,33 @@ export class BookingsService {
       [staffUserId, ...bookingHotelScopeParams],
     );
 
-    // 2. Operational Volume (Số lượng booking lễ tân tiếp nhận & phục vụ check-in/out trong phạm vi khách sạn)
+    // 2. Operational Volume (P1-16: Tính lịch sử phục vụ theo assignment history + sự kiện check-in/out thực tế, tránh mất công A khi chuyển sang B)
     const [operationalVolume] = await this.dataSource.query(
       `
       SELECT
-        COUNT(*) AS totalHandledBookings,
-        COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN estimated_total ELSE 0 END), 0) AS handledVolumeAmount,
-        SUM(CASE WHEN status = 'CHECKED_IN' THEN 1 ELSE 0 END) AS checkedInCount,
-        SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completedCount
-      FROM bookings
-      WHERE handled_by = ?${bookingHotelScopeSql}
+        COUNT(DISTINCT b.id) AS totalHandledBookings,
+        COALESCE(SUM(CASE WHEN b.status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED') THEN b.estimated_total ELSE 0 END), 0) AS handledVolumeAmount,
+        SUM(CASE WHEN b.status IN ('CHECKED_IN', 'COMPLETED') AND COALESCE(b.check_in_confirmed_by, b.handled_by) = ? THEN 1 ELSE 0 END) AS checkedInCount,
+        SUM(CASE WHEN b.status = 'COMPLETED' AND COALESCE(b.check_out_confirmed_by, b.handled_by) = ? THEN 1 ELSE 0 END) AS completedCount
+      FROM bookings b
+      WHERE (
+        b.handled_by = ?
+        OR b.check_in_confirmed_by = ?
+        OR b.check_out_confirmed_by = ?
+        OR EXISTS (SELECT 1 FROM booking_assignments ba WHERE ba.booking_id = b.id AND ba.staff_user_id = ?)
+        OR EXISTS (SELECT 1 FROM booking_presence_events bpe WHERE bpe.booking_id = b.id AND bpe.actor_id = ?)
+      )${bookingHotelScopeSql.replace(/hotel_id/g, 'b.hotel_id')}
       `,
-      [staffUserId, ...bookingHotelScopeParams],
+      [
+        staffUserId,
+        staffUserId,
+        staffUserId,
+        staffUserId,
+        staffUserId,
+        staffUserId,
+        staffUserId,
+        ...bookingHotelScopeParams,
+      ],
     );
 
     // 3. Service Upsells (Yêu cầu dịch vụ giao cho lễ tân xử lý / bán thêm trong phạm vi khách sạn)
@@ -981,13 +1189,14 @@ export class BookingsService {
       [staffUserId, ...bookingHotelScopeParams],
     );
 
-    // 4. Shift & Attendance (Ca trực và chênh lệch tiền mặt trong phạm vi khách sạn)
+    // 4. Shift & Attendance (P1-15: Dùng đúng enum ACTIVE/COMPLETED/SCHEDULED của staff_shifts, tương thích ngược OPEN/CLOSED)
     const [shiftStats] = await this.dataSource.query(
       `
       SELECT
         COUNT(*) AS totalShifts,
-        SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) AS closedShifts,
-        SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END) AS openShifts,
+        SUM(CASE WHEN status IN ('COMPLETED', 'CLOSED') THEN 1 ELSE 0 END) AS closedShifts,
+        SUM(CASE WHEN status IN ('ACTIVE', 'OPEN') THEN 1 ELSE 0 END) AS openShifts,
+        SUM(CASE WHEN status = 'SCHEDULED' THEN 1 ELSE 0 END) AS scheduledShifts,
         COALESCE(SUM(cash_variance), 0) AS totalCashVariance
       FROM staff_shifts
       WHERE staff_user_id = ?${bookingHotelScopeSql}

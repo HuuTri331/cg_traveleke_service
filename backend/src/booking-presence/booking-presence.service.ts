@@ -33,9 +33,17 @@ import {
 import { BenefitKind } from '../promotions/entities/promotion-campaign.entity';
 import { computeServiceReceivableProjection } from '../promotions/service-receivable-projection';
 import { ServiceRequest, ServiceRequestStatus } from '../services/entities/service-request.entity';
+import { GuestWorkTask, WorkTaskPriority, WorkTaskStatus, WorkTaskType } from '../guest-work/entities/guest-work-task.entity';
+import { GuestWorkEvent, WorkEventType, WorkEvidenceType } from '../guest-work/entities/guest-work-event.entity';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { runWithDeadlockRetry } from '../common/database/transaction-retry.helper';
 import { BookingCoverageService } from '../booking-coverage/booking-coverage.service';
+import { FeatureFlagsService } from '../property-settings/feature-flags.service';
+import { HotelFeatureFlagKey } from '../property-settings/entities/hotel-feature-flag.entity';
+import { RoomAllocationService } from '../room-units/room-allocation.service';
+import { FolioService } from '../folio/folio.service';
+import { OutboxService } from '../outbox/outbox.service';
+import { BOOKING_DOMAIN_EVENTS } from '../common/events/booking-domain-event-registry';
 
 @Injectable()
 export class BookingPresenceService {
@@ -61,6 +69,18 @@ export class BookingPresenceService {
 
     @Optional()
     private readonly coverageService?: BookingCoverageService,
+
+    @Optional()
+    private readonly featureFlags?: FeatureFlagsService,
+
+    @Optional()
+    private readonly roomAllocationService?: RoomAllocationService,
+
+    @Optional()
+    private readonly folioService?: FolioService,
+
+    @Optional()
+    private readonly outboxService?: OutboxService,
   ) {}
 
   /**
@@ -196,6 +216,19 @@ export class BookingPresenceService {
 
         await assertCommittedEntitlement(manager, booking);
         await assertBookingOperator(manager, booking, { id: actorUserId, role: actorRole }, 'CHECK_IN', now);
+
+        // IMP-01 / GAP-01: Nếu khách sạn bật cờ ROOM_UNIT_CHECKIN_REQUIRED, kiểm tra phòng vật lý đã gán & READY
+        if (this.featureFlags && this.roomAllocationService) {
+          const requireUnitReady = await this.featureFlags.isEnabled(
+            booking.hotelId,
+            HotelFeatureFlagKey.ROOM_UNIT_CHECKIN_REQUIRED,
+            manager,
+          );
+          if (requireUnitReady) {
+            await this.roomAllocationService.assertBookingRoomReady(booking.id, manager);
+          }
+        }
+
         const actingPrefix = '';
 
         const fromStatus = booking.status;
@@ -258,6 +291,16 @@ export class BookingPresenceService {
               : 'Xác nhận khách nhận phòng thực tế tại quầy lễ tân'),
         });
         await logRepo.save(statusLog);
+
+        // P1-12: Tự động liên kết / hoàn tất checklist GuestWorkTask CHECK_IN gắn với sự kiện nhận phòng để chấm KPI M3 đúng actor
+        await this.ensurePresenceChecklistTask(
+          manager,
+          booking,
+          WorkTaskType.CHECK_IN,
+          actorUserId,
+          now,
+          dto.note || 'Hoàn tất quy trình nhận phòng tại quầy',
+        );
 
         return {
           booking: savedBooking,
@@ -414,9 +457,15 @@ export class BookingPresenceService {
                     where: { bookingId: String(booking.id) },
                   })) || [];
               }
+              const hasVerifiedPaymentReceipt = Boolean(
+                dto.servicePaymentReceiptRef && dto.servicePaymentReceiptRef.trim().length >= 3,
+              );
               for (const sr of completedServices) {
                 const proj = computeServiceReceivableProjection(sr, bookingLedgers);
                 const remainingPayable = proj.remainingPayable;
+                // P0-06: Không coi acknowledgeServiceReceivables=true là đã tất toán (SETTLED_AT_CHECKOUT);
+                // chỉ SETTLED_AT_CHECKOUT khi có chứng từ biên lai thu tiền hợp lệ (servicePaymentReceiptRef).
+                // Nếu được duyệt trả phòng còn nợ bằng acknowledgeServiceReceivables thì giữ trạng thái OPEN_RECEIVABLE.
                 serviceReceivables.push({
                   serviceRequestId: proj.serviceRequestId,
                   serviceName: proj.serviceName,
@@ -427,22 +476,37 @@ export class BookingPresenceService {
                   status:
                     remainingPayable === 0
                       ? 'SETTLED'
-                      : dto.servicePaymentReceiptRef || dto.acknowledgeServiceReceivables
+                      : hasVerifiedPaymentReceipt
                         ? 'SETTLED_AT_CHECKOUT'
-                        : 'UNPAID',
+                        : dto.acknowledgeServiceReceivables
+                          ? 'OPEN_RECEIVABLE'
+                          : 'UNPAID',
                 });
               }
 
               const unpaidServices = serviceReceivables.filter((s) => s.remainingPayable > 0);
               const totalUnpaidServiceAmount = unpaidServices.reduce((s, i) => s + i.remainingPayable, 0);
-              if (
-                totalUnpaidServiceAmount > 0 &&
-                !dto.acknowledgeServiceReceivables &&
-                (!dto.servicePaymentReceiptRef || !dto.servicePaymentReceiptRef.trim())
-              ) {
-                throw new ConflictException(
-                  `Chưa thể hoàn tất trả phòng: Đơn còn ${unpaidServices.length} phiếu dịch vụ đã thực hiện nhưng chưa tất toán/cấn trừ hết (${totalUnpaidServiceAmount.toLocaleString('vi-VN')}đ). Vui lòng cấn trừ quyền lợi hoặc xác nhận thu tiền dịch vụ trước khi check-out.`,
-                );
+              if (totalUnpaidServiceAmount > 0 && !hasVerifiedPaymentReceipt) {
+                if (!dto.acknowledgeServiceReceivables) {
+                  throw new ConflictException(
+                    `Chưa thể hoàn tất trả phòng: Đơn còn ${unpaidServices.length} phiếu dịch vụ đã thực hiện nhưng chưa tất toán/cấn trừ hết (${totalUnpaidServiceAmount.toLocaleString('vi-VN')}đ). Vui lòng cấn trừ quyền lợi hoặc xác nhận thu tiền dịch vụ trước khi check-out.`,
+                  );
+                }
+                // P0-06: Chỉ Quản lý khách sạn (MANAGER) hoặc ADMIN mới được duyệt cho trả phòng khi còn công nợ mở (OPEN_RECEIVABLE)
+                if (actorRole !== 'ADMIN') {
+                  const [mgrRow] =
+                    typeof manager.query === 'function'
+                      ? await manager.query(
+                          `SELECT staff_role AS staffRole FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+                          [booking.hotelId, actorUserId],
+                        )
+                      : [];
+                  if (!mgrRow || mgrRow.staffRole !== 'MANAGER') {
+                    throw new ConflictException(
+                      `UNPAID_SERVICE_RECEIVABLE: Còn nợ dịch vụ ${totalUnpaidServiceAmount.toLocaleString('vi-VN')}đ. Lễ tân bắt buộc nhập mã biên lai thu tiền (servicePaymentReceiptRef) hoặc cần Quản lý khách sạn phê duyệt công nợ mở.`,
+                    );
+                  }
+                }
               }
             }
           }
@@ -529,7 +593,43 @@ export class BookingPresenceService {
         booking.checkOutConfirmedBy = actorUserId;
         booking.presenceVersion = (booking.presenceVersion || 1) + 1;
 
+        // IMP-12: Nếu bật cờ FF_FOLIO_LEDGER, kiểm tra sổ tiền Folio không còn công nợ trước khi checkout
+        if (this.featureFlags && this.folioService) {
+          const folioEnabled = await this.featureFlags.isEnabled(
+            booking.hotelId,
+            HotelFeatureFlagKey.FF_FOLIO_LEDGER,
+            manager,
+          );
+          if (folioEnabled) {
+            await this.folioService.assertCheckoutAllowed(booking.id, manager);
+          }
+        }
+
         const savedBooking = await bookingRepo.save(booking);
+
+        // IMP-01 & IMP-02: Giải phóng stay-slots của phòng vật lý, chuyển sang DIRTY và phát sự kiện room.checkout.confirmed.v1
+        if (this.roomAllocationService) {
+          const checkedOutUnitIds = await this.roomAllocationService.completeCheckoutAndMarkDirty(
+            booking.id,
+            manager,
+          );
+          if (this.outboxService && checkedOutUnitIds.length > 0) {
+            for (const unitId of checkedOutUnitIds) {
+              await this.outboxService.addEvent(
+                manager,
+                BOOKING_DOMAIN_EVENTS.ROOM_CHECKOUT_CONFIRMED_V1,
+                'BOOKING',
+                String(booking.id),
+                {
+                  hotelId: booking.hotelId,
+                  bookingId: booking.id,
+                  unitId,
+                  checkedOutAt: now.toISOString(),
+                },
+              );
+            }
+          }
+        }
 
         const presenceEvent = presenceRepo.create({
           bookingId: booking.id,
@@ -554,6 +654,16 @@ export class BookingPresenceService {
           note: dto.note || 'Xác nhận khách trả phòng thành công',
         });
         await logRepo.save(statusLog);
+
+        // P1-12: Tự động liên kết / hoàn tất checklist GuestWorkTask CHECK_OUT gắn với sự kiện trả phòng để chấm KPI M3 đúng actor
+        await this.ensurePresenceChecklistTask(
+          manager,
+          booking,
+          WorkTaskType.CHECK_OUT,
+          actorUserId,
+          now,
+          dto.note || 'Hoàn tất quy trình trả phòng tại quầy',
+        );
 
         return {
           booking: savedBooking,
@@ -1004,6 +1114,9 @@ export class BookingPresenceService {
         });
         await eventRepo.save(event);
 
+        // P1-30: Giao/cập nhật nhiệm vụ theo dõi khách đến muộn cho lễ tân đang trực hoặc nhận ủy quyền B
+        await this.ensureLateArrivalFollowUpTask(manager, booking, expectedDate, note, now);
+
         return {
           success: true,
           data: {
@@ -1055,6 +1168,183 @@ export class BookingPresenceService {
       success: true,
       data: events,
     };
+  }
+
+  private async ensurePresenceChecklistTask(
+    manager: EntityManager,
+    booking: Booking,
+    phase: WorkTaskType.CHECK_IN | WorkTaskType.CHECK_OUT,
+    actorUserId: string,
+    occurredAt: Date,
+    note: string,
+  ): Promise<void> {
+    if (typeof manager?.getRepository !== 'function') return;
+    try {
+      const taskRepo = manager.getRepository(GuestWorkTask);
+      const eventRepo = manager.getRepository(GuestWorkEvent);
+      if (!taskRepo || typeof taskRepo.save !== 'function') return;
+
+      const sourceKey = `${booking.id}:${phase}`;
+      let task =
+        typeof taskRepo.findOne === 'function'
+          ? await taskRepo.findOne({
+              where: { sourceTable: 'booking_presence', sourceId: sourceKey },
+            })
+          : null;
+
+      if (!task && typeof taskRepo.create === 'function') {
+        task = await taskRepo.save(
+          taskRepo.create({
+            hotelId: String(booking.hotelId),
+            bookingId: String(booking.id),
+            type: phase,
+            sourceTable: 'booking_presence',
+            sourceId: sourceKey,
+            assignedStaffId: String(booking.handledBy || actorUserId),
+            activeExecutorId: String(actorUserId),
+            ownerAtCreate: booking.handledBy ? String(booking.handledBy) : null,
+            status: WorkTaskStatus.COMPLETED,
+            priority: WorkTaskPriority.HIGH,
+            title:
+              phase === WorkTaskType.CHECK_IN
+                ? `Thủ tục nhận phòng (#${booking.bookingCode || booking.id})`
+                : `Thủ tục trả phòng (#${booking.bookingCode || booking.id})`,
+            description: note,
+            startedAt: occurredAt,
+            completedAt: occurredAt,
+            version: 1,
+          }),
+        );
+      } else if (task) {
+        task.status = WorkTaskStatus.COMPLETED;
+        task.activeExecutorId = String(actorUserId);
+        task.completedAt = task.completedAt || occurredAt;
+        task.version = Number(task.version || 1) + 1;
+        task = await taskRepo.save(task);
+      }
+
+      if (task?.id && eventRepo && typeof eventRepo.save === 'function' && typeof eventRepo.create === 'function') {
+        const idemKey = `presence_checklist:${booking.id}:${phase}`;
+        const existingEvt =
+          typeof eventRepo.findOne === 'function'
+            ? await eventRepo.findOne({ where: { idempotencyKey: idemKey } })
+            : null;
+        if (!existingEvt) {
+          await eventRepo.save(
+            eventRepo.create({
+              taskId: String(task.id),
+              bookingId: String(booking.id),
+              hotelId: String(booking.hotelId),
+              actorType: 'USER',
+              actorStaffId: String(actorUserId),
+              eventType: WorkEventType.TASK_COMPLETED,
+              fromStatus: WorkTaskStatus.IN_PROGRESS,
+              toStatus: WorkTaskStatus.COMPLETED,
+              occurredAt,
+              evidenceType: WorkEvidenceType.SYSTEM_LOG,
+              evidenceRef: `${phase}:${booking.id}`,
+              idempotencyKey: idemKey,
+            }),
+          );
+        }
+      }
+    } catch {}
+  }
+
+  private async ensureLateArrivalFollowUpTask(
+    manager: EntityManager,
+    booking: Booking,
+    expectedArrivalAt: Date,
+    note: string,
+    occurredAt: Date,
+  ): Promise<void> {
+    if (typeof manager?.getRepository !== 'function') return;
+    try {
+      const taskRepo = manager.getRepository(GuestWorkTask);
+      const eventRepo = manager.getRepository(GuestWorkEvent);
+      if (!taskRepo || typeof taskRepo.save !== 'function' || typeof taskRepo.create !== 'function') return;
+
+      let effectiveAssignee = booking.handledBy ? String(booking.handledBy) : null;
+      let activeExecutorId: string | null = null;
+      let coverageGrantId: string | null = null;
+      if (typeof manager.query === 'function') {
+        const activeGrants = await manager.query(
+          `SELECT id, delegate_staff_id AS delegateStaffId
+           FROM booking_coverage_grants
+           WHERE booking_id = ? AND status = 'ACTIVE' AND start_at <= ? AND end_at > ?
+           ORDER BY id ASC LIMIT 1`,
+          [booking.id, occurredAt, occurredAt],
+        );
+        if (Array.isArray(activeGrants) && activeGrants.length > 0) {
+          effectiveAssignee = String(activeGrants[0].delegateStaffId);
+          activeExecutorId = String(activeGrants[0].delegateStaffId);
+          coverageGrantId = String(activeGrants[0].id);
+        }
+      }
+
+      const sourceKey = `late_arrival:${booking.id}`;
+      const existing =
+        typeof taskRepo.findOne === 'function'
+          ? await taskRepo.findOne({
+              where: { sourceTable: 'late_arrival_notice', sourceId: sourceKey },
+            })
+          : null;
+
+      const title = `Theo dõi khách báo đến muộn (#${booking.bookingCode || booking.id})`;
+      const desc = `Khách báo dự kiến đến lúc ${expectedArrivalAt.toLocaleString('vi-VN')}. Ghi chú: ${note}`;
+
+      if (existing) {
+        existing.assignedStaffId = effectiveAssignee;
+        existing.activeExecutorId = activeExecutorId;
+        existing.coverageGrantId = coverageGrantId;
+        existing.title = title;
+        existing.description = desc;
+        existing.resolutionSlaDueAt = expectedArrivalAt;
+        if ([WorkTaskStatus.CANCELLED, WorkTaskStatus.COMPLETED].includes(existing.status)) {
+          existing.status = effectiveAssignee ? WorkTaskStatus.ASSIGNED : WorkTaskStatus.CREATED;
+        }
+        existing.version = Number(existing.version || 1) + 1;
+        await taskRepo.save(existing);
+      } else {
+        const created = await taskRepo.save(
+          taskRepo.create({
+            hotelId: String(booking.hotelId),
+            bookingId: String(booking.id),
+            type: WorkTaskType.PRE_ARRIVAL_CONTACT,
+            sourceTable: 'late_arrival_notice',
+            sourceId: sourceKey,
+            assignedStaffId: effectiveAssignee,
+            activeExecutorId,
+            coverageGrantId,
+            ownerAtCreate: booking.handledBy ? String(booking.handledBy) : null,
+            status: effectiveAssignee ? WorkTaskStatus.ASSIGNED : WorkTaskStatus.CREATED,
+            priority: WorkTaskPriority.HIGH,
+            title,
+            description: desc,
+            responseSlaDueAt: new Date(occurredAt.getTime() + 30 * 60000),
+            resolutionSlaDueAt: expectedArrivalAt,
+            version: 1,
+          }),
+        );
+        if (created?.id && eventRepo && typeof eventRepo.save === 'function' && typeof eventRepo.create === 'function') {
+          await eventRepo.save(
+            eventRepo.create({
+              taskId: String(created.id),
+              bookingId: String(booking.id),
+              hotelId: String(booking.hotelId),
+              actorType: 'USER',
+              actorStaffId: effectiveAssignee,
+              eventType: WorkEventType.TASK_CREATED,
+              fromStatus: null,
+              toStatus: created.status,
+              occurredAt,
+              evidenceType: WorkEvidenceType.SYSTEM_LOG,
+              evidenceRef: sourceKey,
+            }),
+          );
+        }
+      }
+    } catch {}
   }
 
   /**

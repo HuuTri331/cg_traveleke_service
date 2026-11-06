@@ -352,7 +352,7 @@ export class ServicesService {
 
     // Verify booking exists and authorization (Hotel-First + A->B Task Scope)
     const [booking] = await this.dataSource.query(
-      'SELECT id, user_id AS userId, hotel_id AS hotelId, handled_by AS handledBy, status FROM bookings WHERE id = ? LIMIT 1',
+      'SELECT id, user_id AS userId, hotel_id AS hotelId, handled_by AS handledBy, status, booking_source AS bookingSource FROM bookings WHERE id = ? LIMIT 1',
       [dto.bookingId],
     );
     if (!booking) {
@@ -361,8 +361,42 @@ export class ServicesService {
     if ((dto as any)?.hotelId !== undefined && String((dto as any).hotelId) !== String(booking.hotelId)) {
       throw new ForbiddenException('hotelId truyền lên không khớp với khách sạn thực tế sở hữu đơn đặt phòng.');
     }
-    if (['CANCELLED', 'REJECTED', 'PAYMENT_EXPIRED', 'CLOSED_NO_SHOW', 'COMPLETED'].includes(String(booking.status))) {
-      throw new ConflictException(`Không thể tạo yêu cầu dịch vụ cho đơn đặt phòng ở trạng thái ${booking.status}.`);
+    // P1-18: Chặn tạo dịch vụ khi booking online ở PAYMENT_PENDING, PAYMENT_REVIEW hoặc đã đóng
+    if (
+      [
+        'PAYMENT_PENDING',
+        'PAYMENT_REVIEW',
+        'CANCELLED',
+        'REJECTED',
+        'PAYMENT_EXPIRED',
+        'CLOSED_NO_SHOW',
+        'COMPLETED',
+      ].includes(String(booking.status))
+    ) {
+      throw new ConflictException(`BOOKING_ENTITLEMENT_NOT_COMMITTED: Không thể tạo yêu cầu dịch vụ cho đơn đặt phòng ở trạng thái ${booking.status}.`);
+    }
+
+    const isWebsiteBooking = !booking.bookingSource || String(booking.bookingSource) === 'WEBSITE';
+    if (isWebsiteBooking && typeof this.dataSource.query === 'function') {
+      const entitlementRows = await this.dataSource.query(
+        `SELECT
+           EXISTS(SELECT 1 FROM payment_transactions WHERE booking_id = ? AND status = 'PAID') AS hasPaidTx,
+           EXISTS(SELECT 1 FROM payment_transactions WHERE booking_id = ?) AS hasAnyTx,
+           EXISTS(SELECT 1 FROM booking_holds WHERE booking_id = ? AND status = 'COMMITTED') AS hasCommittedHold,
+           EXISTS(SELECT 1 FROM booking_holds WHERE booking_id = ?) AS hasAnyHold`,
+        [booking.id, booking.id, booking.id, booking.id],
+      );
+      if (Array.isArray(entitlementRows) && entitlementRows.length > 0) {
+        const ent = entitlementRows[0];
+        if (
+          (Number(ent.hasAnyTx) > 0 && Number(ent.hasPaidTx) === 0) ||
+          (Number(ent.hasAnyHold) > 0 && Number(ent.hasCommittedHold) === 0)
+        ) {
+          throw new ConflictException(
+            'BOOKING_ENTITLEMENT_NOT_COMMITTED: Đơn đặt phòng trực tuyến chưa hoàn tất thanh toán PAID và giữ phòng COMMITTED.',
+          );
+        }
+      }
     }
 
     if (user && user.role !== 'ADMIN') {
@@ -386,12 +420,52 @@ export class ServicesService {
       throw new BadRequestException('Dịch vụ này không thuộc khách sạn của booking.');
     }
 
+    // P1-19: Kiểm tra điều kiện hợp lệ của dịch vụ (ServiceEligibilityPolicy)
+    if (service.status && String(service.status) !== 'ACTIVE') {
+      throw new ConflictException('SERVICE_INACTIVE: Dịch vụ hiện đang tạm ngưng phục vụ.');
+    }
+
     const quantity = dto.quantity ?? 1;
+    if (service.maxQuantity && Number(service.maxQuantity) > 0 && quantity > Number(service.maxQuantity)) {
+      throw new BadRequestException(
+        `MAX_QUANTITY_EXCEEDED: Số lượng yêu cầu (${quantity}) vượt quá giới hạn tối đa mỗi lần đặt (${service.maxQuantity}).`,
+      );
+    }
+
     const scheduledAt = dto.scheduledAt
       ? new Date(dto.scheduledAt)
       : new Date();
     if (Number.isNaN(scheduledAt.getTime())) {
       throw new BadRequestException('Thời gian hẹn phục vụ (scheduledAt) không hợp lệ.');
+    }
+
+    if (dto.scheduledAt && service.leadTimeHours && Number(service.leadTimeHours) > 0) {
+      const minScheduledTime = Date.now() + Number(service.leadTimeHours) * 3600000 - 60000;
+      if (scheduledAt.getTime() < minScheduledTime) {
+        throw new BadRequestException(
+          `LEAD_TIME_VIOLATION: Dịch vụ "${service.name}" yêu cầu đặt trước ít nhất ${service.leadTimeHours} giờ.`,
+        );
+      }
+    }
+
+    if (service.capacityPerHour && Number(service.capacityPerHour) > 0 && typeof this.dataSource.query === 'function') {
+      const slotStart = new Date(scheduledAt);
+      slotStart.setMinutes(0, 0, 0);
+      const slotEnd = new Date(slotStart.getTime() + 3600000);
+      const capRows = await this.dataSource.query(
+        `SELECT COALESCE(SUM(quantity), 0) AS usedQty
+         FROM service_requests
+         WHERE service_id = ?
+           AND status NOT IN ('CANCELLED', 'FAILED')
+           AND scheduled_at >= ? AND scheduled_at < ?`,
+        [service.id, slotStart, slotEnd],
+      );
+      const usedQty = Array.isArray(capRows) && capRows[0] ? Number(capRows[0].usedQty || 0) : 0;
+      if (usedQty + quantity > Number(service.capacityPerHour)) {
+        throw new ConflictException(
+          `CAPACITY_EXCEEDED: Khung giờ phục vụ này chỉ còn ${Math.max(0, Number(service.capacityPerHour) - usedQty)} suất khả dụng.`,
+        );
+      }
     }
 
     // Lỗi 12, 13, 24: Fail-closed khi truy vấn khuyến mãi dịch vụ; khóa & tiêu ngân sách campaign trong cùng transaction
@@ -448,12 +522,18 @@ export class ServicesService {
         }
       }
 
+      const initialStatus = service.requiresApproval
+        ? ServiceRequestStatus.PENDING_APPROVAL
+        : ServiceRequestStatus.PENDING;
       const created = await em.getRepository(ServiceRequest).save(em.getRepository(ServiceRequest).create({
         bookingId: dto.bookingId, serviceId: dto.serviceId, serviceName: service.name,
         unitPrice: service.basePrice, quantity, totalPrice,
+        appliedCampaignId: appliedServiceCampaignId,
+        campaignVersion: null,
+        originalPriceSnapshot: totalPrice,
         note: dto.note ? `${dto.note}${promoNoteSuffix}` : promoNoteSuffix ? promoNoteSuffix.trim() : null,
         scheduledAt,
-        slaDueAt, isSlaBreahed: false, status: ServiceRequestStatus.PENDING,
+        slaDueAt, isSlaBreahed: false, status: initialStatus,
       }));
       const taskPayload = {
         id: String(created.id), hotelId: String(booking.hotelId), bookingId: String(created.bookingId),
@@ -594,25 +674,32 @@ export class ServicesService {
                 await promoRepo.save(lockedCamp);
               } else if (repriced.discountAmount < oldDiscount && typeof promoRepo.findOne === 'function') {
                 const releaseDisc = oldDiscount - repriced.discountAmount;
-                const codeMatch = String(req.note || '').match(/\[KM\s+([A-Z0-9_-]+):/i);
-                const matchedCamp = codeMatch
-                  ? activeCampaigns.find((c: any) => String(c.code).toUpperCase() === codeMatch[1].toUpperCase())
-                  : activeCampaigns[0];
-                if (matchedCamp) {
-                  const lockedCamp = await promoRepo.findOne({
-                    where: { id: matchedCamp.id },
+                // P1-23: Ưu tiên dùng appliedCampaignId snapshot; nếu dữ liệu cũ chưa có thì tìm theo mã KM trong note (kể cả khi campaign đã PAUSED), tuyệt đối KHÔNG fallback activeCampaigns[0]
+                let lockedCamp: PromotionCampaign | null = null;
+                if (req.appliedCampaignId) {
+                  lockedCamp = await promoRepo.findOne({
+                    where: { id: String(req.appliedCampaignId) },
                     ...(em ? { lock: { mode: 'pessimistic_write' } } : {}),
                   });
-                  if (lockedCamp) {
-                    lockedCamp.budgetConsumed = Math.max(0, Number(lockedCamp.budgetConsumed || 0) - releaseDisc);
-                    if (repriced.discountAmount === 0) {
-                      lockedCamp.redemptionsCount = Math.max(0, Number(lockedCamp.redemptionsCount || 0) - 1);
-                    }
-                    await promoRepo.save(lockedCamp);
+                } else {
+                  const codeMatch = String(req.note || '').match(/\[KM\s+([A-Z0-9_-]+):/i);
+                  if (codeMatch) {
+                    lockedCamp = await promoRepo.findOne({
+                      where: { hotelId: String(booking.hotelId), code: codeMatch[1].toUpperCase() },
+                      ...(em ? { lock: { mode: 'pessimistic_write' } } : {}),
+                    });
                   }
+                }
+                if (lockedCamp) {
+                  lockedCamp.budgetConsumed = Math.max(0, Number(lockedCamp.budgetConsumed || 0) - releaseDisc);
+                  if (repriced.discountAmount === 0) {
+                    lockedCamp.redemptionsCount = Math.max(0, Number(lockedCamp.redemptionsCount || 0) - 1);
+                  }
+                  await promoRepo.save(lockedCamp);
                 }
               }
               req.totalPrice = repriced.netTotal;
+              req.appliedCampaignId = repriced.appliedCampaign ? String(repriced.appliedCampaign.id) : null;
             }
             const historyTag = `[RESCHEDULED ${prevScheduledIso} -> ${nextScheduled.toISOString()} | ${oldTotalPrice}đ -> ${req.totalPrice}đ]`;
             req.note = req.note ? `${req.note} ${historyTag}` : historyTag;
@@ -620,14 +707,21 @@ export class ServicesService {
         }
       }
 
-      if (dto.status) req.status = dto.status;
-      if (dto.assignedTo !== undefined) req.assignedTo = dto.assignedTo;
-      if (dto.note !== undefined) {
+      // P0-08: Không cho phép đổi trạng thái hoặc timestamps trực tiếp qua updateServiceRequest mà bỏ qua state transition matrix
+      if (dto.status && dto.status !== req.status) {
+        await this.validateAndApplyServiceTransition(em, req, dto.status, {
+          assignedTo: dto.assignedTo,
+          failureReason: dto.failureReason,
+          note: dto.note,
+        }, actor);
+      }
+      if (dto.assignedTo !== undefined && Number(dto.assignedTo) !== Number(req.assignedTo)) {
+        await this.validateAndSyncServiceAssignee(em, req, Number(dto.assignedTo), actor);
+      }
+      if (dto.note !== undefined && !dto.status) {
         const preservedTags = (String(req.note || '').match(/\[(KM|RESCHEDULED|PROMO_SNAPSHOT)[^\]]*\]/g) || []).join(' ');
         req.note = preservedTags ? `${dto.note} ${preservedTags}`.trim() : dto.note;
       }
-      if (dto.completedAt) req.completedAt = new Date(dto.completedAt);
-      if (dto.confirmedAt) req.confirmedAt = new Date(dto.confirmedAt);
       if (dto.failureReason) req.failureReason = dto.failureReason;
 
       // Chặn nhân viên tự ghi đè phê duyệt đền bù (recoveryApprovedBy / recoveryCost) nếu không phải Manager/Admin
@@ -665,6 +759,224 @@ export class ServicesService {
     return await runUpdate();
   }
 
+  private static readonly VALID_SERVICE_TRANSITIONS: Record<string, ServiceRequestStatus[]> = {
+    [ServiceRequestStatus.PENDING_APPROVAL]: [
+      ServiceRequestStatus.PENDING,
+      ServiceRequestStatus.ACCEPTED,
+      ServiceRequestStatus.ASSIGNED,
+      ServiceRequestStatus.CANCELLED,
+    ],
+    [ServiceRequestStatus.PENDING]: [
+      ServiceRequestStatus.ACCEPTED,
+      ServiceRequestStatus.ASSIGNED,
+      ServiceRequestStatus.IN_PROGRESS,
+      ServiceRequestStatus.COMPLETED,
+      ServiceRequestStatus.CANCELLED,
+      ServiceRequestStatus.FAILED,
+    ],
+    [ServiceRequestStatus.ACCEPTED]: [
+      ServiceRequestStatus.ASSIGNED,
+      ServiceRequestStatus.IN_PROGRESS,
+      ServiceRequestStatus.COMPLETED,
+      ServiceRequestStatus.CANCELLED,
+      ServiceRequestStatus.FAILED,
+    ],
+    [ServiceRequestStatus.ASSIGNED]: [
+      ServiceRequestStatus.ACCEPTED,
+      ServiceRequestStatus.IN_PROGRESS,
+      ServiceRequestStatus.COMPLETED,
+      ServiceRequestStatus.CANCELLED,
+      ServiceRequestStatus.FAILED,
+    ],
+    [ServiceRequestStatus.IN_PROGRESS]: [
+      ServiceRequestStatus.COMPLETED,
+      ServiceRequestStatus.CANCELLED,
+      ServiceRequestStatus.FAILED,
+    ],
+    [ServiceRequestStatus.COMPLETED]: [
+      ServiceRequestStatus.CONFIRMED,
+    ],
+    [ServiceRequestStatus.CONFIRMED]: [],
+    [ServiceRequestStatus.CANCELLED]: [],
+    [ServiceRequestStatus.FAILED]: [],
+  };
+
+  private async validateAndSyncServiceAssignee(
+    em: any,
+    req: ServiceRequest,
+    assignedToUserId: number,
+    actor?: User,
+  ): Promise<void> {
+    const queryFn =
+      typeof em?.query === 'function'
+        ? em.query.bind(em)
+        : typeof this.dataSource?.query === 'function'
+          ? this.dataSource.query.bind(this.dataSource)
+          : null;
+    if (queryFn) {
+      const [booking] = await queryFn(
+        'SELECT id, hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
+        [req.bookingId],
+      );
+      if (booking?.hotelId) {
+        const staffRows = await queryFn(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [booking.hotelId, assignedToUserId],
+        );
+        if (Array.isArray(staffRows) && staffRows.length === 0) {
+          throw new BadRequestException(
+            `Nhân sự #${assignedToUserId} không thuộc biên chế đang hoạt động tại khách sạn của đơn đặt phòng.`,
+          );
+        }
+        const absenceRows = await queryFn(
+          `SELECT id FROM staff_availability_blocks
+           WHERE hotel_id = ? AND staff_user_id = ? AND active = 1 AND start_at <= NOW() AND end_at > NOW() LIMIT 1`,
+          [booking.hotelId, assignedToUserId],
+        );
+        if (Array.isArray(absenceRows) && absenceRows.length > 0) {
+          throw new ConflictException(
+            `STAFF_ABSENT: Nhân sự #${assignedToUserId} hiện đang trong khoảng nghỉ phép/vắng mặt, không thể nhận phân công dịch vụ.`,
+          );
+        }
+      }
+      await queryFn(
+        `UPDATE guest_work_tasks
+         SET assigned_staff_id = ?, active_executor_id = ?, status = CASE WHEN status = 'CREATED' THEN 'ASSIGNED' ELSE status END, version = version + 1
+         WHERE source_table = 'service_requests' AND source_id = ?`,
+        [String(assignedToUserId), String(assignedToUserId), String(req.id)],
+      ).catch(() => null);
+    }
+    req.assignedTo = assignedToUserId;
+  }
+
+  private async validateAndApplyServiceTransition(
+    em: any,
+    req: ServiceRequest,
+    targetStatus: ServiceRequestStatus,
+    payload?: { assignedTo?: number; failureReason?: string; note?: string },
+    actor?: User,
+  ): Promise<void> {
+    const previousStatus = req.status;
+    if (previousStatus === targetStatus) return;
+
+    if (
+      (previousStatus === ServiceRequestStatus.COMPLETED ||
+        previousStatus === ServiceRequestStatus.CONFIRMED ||
+        req.completedAt ||
+        req.confirmedAt) &&
+      (targetStatus === ServiceRequestStatus.CANCELLED || targetStatus === ServiceRequestStatus.FAILED)
+    ) {
+      throw new ConflictException(
+        `Phiếu dịch vụ #${req.id} đã hoàn tất (${previousStatus}) nên không thể chuyển sang ${targetStatus} để đảo tín dụng. Nếu dịch vụ có sai sót cần bù đắp, vui lòng lập biên bản Service Recovery có phê duyệt.`,
+      );
+    }
+    if (
+      (previousStatus === ServiceRequestStatus.CANCELLED || previousStatus === ServiceRequestStatus.FAILED) &&
+      targetStatus !== previousStatus
+    ) {
+      throw new ConflictException(
+        `Phiếu dịch vụ #${req.id} đã đóng ở trạng thái ${previousStatus}, không thể chuyển tiếp sang ${targetStatus}.`,
+      );
+    }
+
+    const allowedNext = ServicesService.VALID_SERVICE_TRANSITIONS[previousStatus] || [];
+    if (!allowedNext.includes(targetStatus)) {
+      throw new ConflictException(
+        `INVALID_TRANSITION: Không thể chuyển trạng thái phiếu dịch vụ #${req.id} từ ${previousStatus} sang ${targetStatus}.`,
+      );
+    }
+
+    const now = new Date();
+    if (
+      req.slaDueAt &&
+      now > req.slaDueAt &&
+      targetStatus !== ServiceRequestStatus.COMPLETED &&
+      targetStatus !== ServiceRequestStatus.CONFIRMED
+    ) {
+      req.isSlaBreahed = true;
+    }
+
+    req.status = targetStatus;
+    const originalNote = String(req.note || '');
+    const preservedAuditTags = (originalNote.match(/\[(KM|RESCHEDULED|PROMO_SNAPSHOT)[^\]]*\]/g) || []).join(' ');
+
+    switch (targetStatus) {
+      case ServiceRequestStatus.ACCEPTED:
+        req.acceptedAt = now;
+        break;
+      case ServiceRequestStatus.ASSIGNED:
+        if (payload?.assignedTo) {
+          await this.validateAndSyncServiceAssignee(em, req, Number(payload.assignedTo), actor);
+        }
+        break;
+      case ServiceRequestStatus.IN_PROGRESS:
+        req.startedAt = now;
+        break;
+      case ServiceRequestStatus.COMPLETED:
+        req.completedAt = now;
+        if (req.slaDueAt && now > req.slaDueAt) {
+          req.isSlaBreahed = true;
+        }
+        break;
+      case ServiceRequestStatus.CONFIRMED:
+        req.confirmedAt = now;
+        break;
+      case ServiceRequestStatus.FAILED:
+        req.failureReason = payload?.failureReason ?? 'Dịch vụ gặp sự cố không hoàn tất';
+        break;
+      case ServiceRequestStatus.CANCELLED:
+        if (payload?.note) {
+          req.note = preservedAuditTags ? `${payload.note} ${preservedAuditTags}`.trim() : payload.note;
+        }
+        break;
+    }
+
+    const queryFn =
+      typeof em?.query === 'function'
+        ? em.query.bind(em)
+        : typeof this.dataSource?.query === 'function'
+          ? this.dataSource.query.bind(this.dataSource)
+          : null;
+    if (queryFn) {
+      const taskStatusMap: Record<string, string> = {
+        [ServiceRequestStatus.PENDING]: 'ASSIGNED',
+        [ServiceRequestStatus.ACCEPTED]: 'ACCEPTED',
+        [ServiceRequestStatus.ASSIGNED]: 'ASSIGNED',
+        [ServiceRequestStatus.IN_PROGRESS]: 'IN_PROGRESS',
+        [ServiceRequestStatus.COMPLETED]: 'COMPLETED',
+        [ServiceRequestStatus.CONFIRMED]: 'VERIFIED',
+        [ServiceRequestStatus.CANCELLED]: 'CANCELLED',
+        [ServiceRequestStatus.FAILED]: 'FAILED',
+      };
+      const mappedTaskStatus = taskStatusMap[targetStatus];
+      if (mappedTaskStatus) {
+        await queryFn(
+          `UPDATE guest_work_tasks
+           SET status = ?, version = version + 1
+           WHERE source_table = 'service_requests' AND source_id = ?`,
+          [mappedTaskStatus, String(req.id)],
+        ).catch(() => null);
+      }
+    }
+  }
+
+  async assignServiceRequest(
+    id: number,
+    assignedToUserId: number,
+    actor?: User,
+    note?: string,
+  ): Promise<ServiceRequest> {
+    if (!assignedToUserId || Number.isNaN(Number(assignedToUserId))) {
+      throw new BadRequestException('Bắt buộc cung cấp mã nhân viên được phân công (assignedTo).');
+    }
+    return this.updateServiceRequestStatus(
+      id,
+      ServiceRequestStatus.ASSIGNED,
+      { assignedTo: Number(assignedToUserId), note },
+      actor,
+    );
+  }
+
   async updateServiceRequestStatus(
     id: number,
     targetStatus: ServiceRequestStatus,
@@ -688,82 +1000,22 @@ export class ServicesService {
       // Lỗi 05: Bắt buộc kiểm tra quyền của actor trên booking.hotelId
       await this.assertServiceRequestOperator(em, req, actor);
 
-      // Section IV & FIX-05: Dịch vụ đã cung cấp/nghiệm thu (COMPLETED/CONFIRMED) không được chuyển sang CANCELLED/FAILED để đảo tín dụng
       const previousStatus = req.status;
-      if (
-        (previousStatus === ServiceRequestStatus.COMPLETED ||
-          previousStatus === ServiceRequestStatus.CONFIRMED ||
-          req.completedAt ||
-          req.confirmedAt) &&
-        (targetStatus === ServiceRequestStatus.CANCELLED || targetStatus === ServiceRequestStatus.FAILED)
-      ) {
-        throw new ConflictException(
-          `Phiếu dịch vụ #${id} đã hoàn tất (${previousStatus}) nên không thể chuyển sang ${targetStatus} để đảo tín dụng. Nếu dịch vụ có sai sót cần bù đắp, vui lòng lập biên bản Service Recovery có phê duyệt.`,
-        );
-      }
-      if (
-        (previousStatus === ServiceRequestStatus.CANCELLED || previousStatus === ServiceRequestStatus.FAILED) &&
-        targetStatus !== previousStatus
-      ) {
-        throw new ConflictException(
-          `Phiếu dịch vụ #${id} đã đóng ở trạng thái ${previousStatus}, không thể chuyển tiếp sang ${targetStatus}.`,
-        );
-      }
-
-      const now = new Date();
-
-      if (
-        req.slaDueAt &&
-        now > req.slaDueAt &&
-        targetStatus !== ServiceRequestStatus.COMPLETED &&
-        targetStatus !== ServiceRequestStatus.CONFIRMED
-      ) {
-        req.isSlaBreahed = true;
-      }
-
-      req.status = targetStatus;
-
       const originalNote = String(req.note || '');
       const preservedAuditTags = (originalNote.match(/\[(KM|RESCHEDULED|PROMO_SNAPSHOT)[^\]]*\]/g) || []).join(' ');
 
-      switch (targetStatus) {
-        case ServiceRequestStatus.ACCEPTED:
-          req.acceptedAt = now;
-          break;
-        case ServiceRequestStatus.ASSIGNED:
-          if (payload?.assignedTo) req.assignedTo = payload.assignedTo;
-          break;
-        case ServiceRequestStatus.IN_PROGRESS:
-          req.startedAt = now;
-          break;
-        case ServiceRequestStatus.COMPLETED:
-          req.completedAt = now;
-          if (req.slaDueAt && now > req.slaDueAt) {
-            req.isSlaBreahed = true;
-          }
-          break;
-        case ServiceRequestStatus.CONFIRMED:
-          req.confirmedAt = now;
-          break;
-        case ServiceRequestStatus.FAILED:
-          req.failureReason =
-            payload?.failureReason ?? 'Dịch vụ gặp sự cố không hoàn tất';
-          break;
-        case ServiceRequestStatus.CANCELLED:
-          if (payload?.note) {
-            req.note = preservedAuditTags ? `${payload.note} ${preservedAuditTags}`.trim() : payload.note;
-          }
-          break;
-      }
+      await this.validateAndApplyServiceTransition(em, req, targetStatus, payload, actor);
 
       if (payload?.note) {
         req.note = preservedAuditTags ? `${payload.note} ${preservedAuditTags}`.trim() : payload.note;
       }
-      if (payload?.assignedTo !== undefined) req.assignedTo = payload.assignedTo;
+      if (payload?.assignedTo !== undefined && targetStatus !== ServiceRequestStatus.ASSIGNED) {
+        await this.validateAndSyncServiceAssignee(em, req, Number(payload.assignedTo), actor);
+      }
 
       const savedReq = await reqRepo.save(req);
 
-      // Lỗi 17 & FIX-12: Đổi trạng thái CANCELLED/FAILED lần đầu, giải phóng ngân sách khuyến mãi dịch vụ trực tiếp và đảo bút toán credit (REVERSAL) trong CÙNG 1 transaction nguyên tử
+      // Lỗi 17 & FIX-12 & P1-23: Đổi trạng thái CANCELLED/FAILED lần đầu, giải phóng ngân sách khuyến mãi dịch vụ trực tiếp và đảo bút toán credit (REVERSAL) trong CÙNG 1 transaction nguyên tử
       const isFirstTimeCancelOrFail =
         previousStatus !== ServiceRequestStatus.CANCELLED &&
         previousStatus !== ServiceRequestStatus.FAILED;
@@ -777,30 +1029,40 @@ export class ServicesService {
         );
         if (isFirstTimeCancelOrFail && directDisc > 0 && typeof em?.getRepository === 'function') {
           const promoRepo = em.getRepository(PromotionCampaign);
-          const codeMatch = originalNote.match(/\[KM\s+([A-Z0-9_-]+):/i);
-          if (promoRepo && codeMatch && typeof promoRepo.findOne === 'function') {
-            let resolvedHotelId = req.service?.hotelId ? String(req.service.hotelId) : undefined;
-            if (!resolvedHotelId) {
-              const queryFn =
-                typeof em?.query === 'function'
-                  ? em.query.bind(em)
-                  : typeof this.dataSource?.query === 'function'
-                    ? this.dataSource.query.bind(this.dataSource)
-                    : null;
-              if (queryFn) {
-                const [bRow] = await queryFn(
-                  'SELECT hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
-                  [req.bookingId],
-                );
-                if (bRow?.hotelId) resolvedHotelId = String(bRow.hotelId);
+          if (promoRepo && typeof promoRepo.findOne === 'function') {
+            let lockedCamp: PromotionCampaign | null = null;
+            if (req.appliedCampaignId) {
+              lockedCamp = await promoRepo.findOne({
+                where: { id: String(req.appliedCampaignId) },
+                lock: { mode: 'pessimistic_write' },
+              });
+            } else {
+              const codeMatch = originalNote.match(/\[KM\s+([A-Z0-9_-]+):/i);
+              if (codeMatch) {
+                let resolvedHotelId = req.service?.hotelId ? String(req.service.hotelId) : undefined;
+                if (!resolvedHotelId) {
+                  const queryFn =
+                    typeof em?.query === 'function'
+                      ? em.query.bind(em)
+                      : typeof this.dataSource?.query === 'function'
+                        ? this.dataSource.query.bind(this.dataSource)
+                        : null;
+                  if (queryFn) {
+                    const [bRow] = await queryFn(
+                      'SELECT hotel_id AS hotelId FROM bookings WHERE id = ? LIMIT 1',
+                      [req.bookingId],
+                    );
+                    if (bRow?.hotelId) resolvedHotelId = String(bRow.hotelId);
+                  }
+                }
+                const whereClause: Record<string, any> = { code: codeMatch[1].toUpperCase() };
+                if (resolvedHotelId) whereClause.hotelId = resolvedHotelId;
+                lockedCamp = await promoRepo.findOne({
+                  where: whereClause,
+                  lock: { mode: 'pessimistic_write' },
+                });
               }
             }
-            const whereClause: Record<string, any> = { code: codeMatch[1].toUpperCase() };
-            if (resolvedHotelId) whereClause.hotelId = resolvedHotelId;
-            const lockedCamp = await promoRepo.findOne({
-              where: whereClause,
-              lock: { mode: 'pessimistic_write' },
-            });
             if (lockedCamp) {
               lockedCamp.budgetConsumed = Math.max(0, Number(lockedCamp.budgetConsumed || 0) - directDisc);
               lockedCamp.budgetReversed = Number(lockedCamp.budgetReversed || 0) + directDisc;
@@ -936,7 +1198,15 @@ export class ServicesService {
         types: [ServiceType.INCLUDED, ServiceType.QUOTA],
       });
 
-      // Lỗi 26: Nếu client truyền roomTypeId, xác minh phòng đó thuộc đúng khách sạn của booking
+      // P2-05: Ràng buộc quyền lợi dịch vụ theo danh sách phòng thực tế đã đặt trong booking_rooms (không tin roomTypeId tự chọn từ browser)
+      const bookedRoomRows = await this.dataSource.query(
+        'SELECT DISTINCT room_id AS roomId FROM booking_rooms WHERE booking_id = ?',
+        [bookingId],
+      );
+      const actualRoomIds = (bookedRoomRows || [])
+        .map((r: any) => Number(r.roomId))
+        .filter((n: number) => Number.isFinite(n) && n > 0);
+
       if (roomTypeId !== undefined && roomTypeId !== null) {
         const [roomRow] = await this.dataSource.query(
           'SELECT id, hotel_id AS hotelId FROM rooms WHERE id = ? LIMIT 1',
@@ -945,6 +1215,18 @@ export class ServicesService {
         if (roomRow && String(roomRow.hotelId) !== String(targetHotelId)) {
           throw new ForbiddenException('Loại phòng (roomTypeId) truyền lên không thuộc khách sạn của booking.');
         }
+        if (actualRoomIds.length > 0 && !actualRoomIds.includes(Number(roomTypeId))) {
+          throw new ForbiddenException(
+            'ROOM_NOT_IN_BOOKING: Loại phòng (roomTypeId) truyền lên không nằm trong danh sách phòng thực tế của booking.',
+          );
+        }
+      }
+
+      if (actualRoomIds.length > 0) {
+        qb.andWhere('(rs.roomTypeId IN (:...actualRoomIds) OR rs.roomTypeId IS NULL)', {
+          actualRoomIds,
+        });
+      } else if (roomTypeId !== undefined && roomTypeId !== null) {
         qb.andWhere('(rs.roomTypeId = :roomTypeId OR rs.roomTypeId IS NULL)', {
           roomTypeId,
         });

@@ -11,6 +11,7 @@ import { BookingPresenceEvent } from '../booking-presence/entities/booking-prese
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
 import { BookingAccessService } from './services/booking-access.service';
+import { BookingWritePolicy } from './services/booking-write-policy';
 import { RoomAvailabilityService } from './room-availability.service';
 import { BookingCoverageModule } from '../booking-coverage/booking-coverage.module';
 import { BookingPresenceModule } from '../booking-presence/booking-presence.module';
@@ -37,7 +38,7 @@ import { RedisModule } from '../redis/redis.module';
     RedisModule,
   ],
   controllers: [BookingsController],
-  providers: [BookingsService, BookingAccessService, RoomAvailabilityService],
-  exports: [BookingsService, BookingAccessService, RoomAvailabilityService],
+  providers: [BookingsService, BookingAccessService, BookingWritePolicy, RoomAvailabilityService],
+  exports: [BookingsService, BookingAccessService, BookingWritePolicy, RoomAvailabilityService],
 })
 export class BookingsModule {}

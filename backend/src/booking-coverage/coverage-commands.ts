@@ -6,7 +6,7 @@ import { StaffAbsenceRequest, AbsenceRequestStatus } from '../staff-availability
 import { BookingCoverageGrant, CoverageGrantStatus, CoverageTaskType } from './entities/booking-coverage-grant.entity';
 import { BookingCoverageEvent, CoverageEventType } from './entities/booking-coverage-event.entity';
 import { CreateTemporaryCoverageDto } from './dto/create-temporary-coverage.dto';
-import { requireActiveStaff, requireManager } from './coverage-policy';
+import { coverageAllows, OPERATION_TASKS, requireActiveStaff, requireManager } from './coverage-policy';
 import { GuestWorkTask } from '../guest-work/entities/guest-work-task.entity';
 import { loadAssignmentCandidates } from '../booking-assignment/candidate-loader';
 import { RoomServiceTier } from '../rooms/entities/room.entity';
@@ -42,6 +42,60 @@ export async function assertCoverageInterval(
     throw new BadRequestException('Hỗ trợ hơn 24 giờ phải liên kết đơn vắng đã duyệt; không chuyển chủ vì nghỉ dài ngày.');
   }
 }
+export async function assertNoOverlappingCoverage(
+  em: EntityManager,
+  bookingId: string,
+  start: Date,
+  end: Date,
+  mode: 'TASK_IDS' | 'TASK_TYPES' | 'BOOKING_TASKS',
+  allowedTaskTypes: string[],
+  taskIds: string[],
+  excludeGrantId?: string,
+) {
+  const existingGrants = await em
+    .getRepository(BookingCoverageGrant)
+    .createQueryBuilder('g')
+    .where('g.booking_id = :bookingId', { bookingId })
+    .andWhere("g.status IN ('ACTIVE', 'SCHEDULED', 'APPROVED_PENDING_ACCEPTANCE')")
+    .andWhere('g.start_at < :end AND g.end_at > :start', { start, end })
+    .orderBy('g.id', 'ASC')
+    .getMany();
+
+  for (const g of existingGrants) {
+    if (excludeGrantId && String(g.id) === String(excludeGrantId)) continue;
+    if (g.startAt && g.endAt && !(new Date(g.startAt) < end && start < new Date(g.endAt))) continue;
+    const gMode = g.scopeMode || 'TASK_TYPES';
+    if (mode === 'BOOKING_TASKS' || gMode === 'BOOKING_TASKS') {
+      throw new ConflictException(
+        `COVERAGE_SCOPE_CONFLICT: Quyền hỗ trợ #${g.id} đang hiệu lực hoặc chờ nhận trùng khoảng thời gian và phạm vi toàn đơn.`,
+      );
+    }
+    if (mode === 'TASK_TYPES' && gMode === 'TASK_TYPES') {
+      const gTypes = Array.isArray(g.allowedTaskTypes) ? g.allowedTaskTypes : [];
+      const hasTypeOverlap = OPERATION_TASKS.some(
+        (op) => coverageAllows(allowedTaskTypes, op) && coverageAllows(gTypes, op),
+      );
+      if (hasTypeOverlap) {
+        throw new ConflictException(
+          `COVERAGE_SCOPE_CONFLICT: Quyền hỗ trợ #${g.id} trùng khoảng thời gian và loại công việc ủy quyền.`,
+        );
+      }
+    }
+    if (mode === 'TASK_IDS' && gMode === 'TASK_IDS' && taskIds.length > 0) {
+      const existingTaskScopes = await em.query(
+        `SELECT task_id AS taskId FROM booking_coverage_task_scopes WHERE grant_id = ?`,
+        [g.id],
+      );
+      const existingSet = new Set((existingTaskScopes || []).map((r: any) => String(r.taskId)));
+      if (taskIds.some((id) => existingSet.has(String(id)))) {
+        throw new ConflictException(
+          `COVERAGE_SCOPE_CONFLICT: Quyền hỗ trợ #${g.id} đã bao gồm nhiệm vụ nằm trong danh sách TASK_IDS.`,
+        );
+      }
+    }
+  }
+}
+
 export async function createCoverage(em: EntityManager, bookingId: string,
   actor: {id: string; role: string}, dto: CreateTemporaryCoverageDto) {
   const booking = await em.findOne(Booking, { where: { id: bookingId }, lock: {mode:'pessimistic_write'} });
@@ -79,16 +133,30 @@ export async function createCoverage(em: EntityManager, bookingId: string,
   } else if (mode !== 'BOOKING_TASKS') throw new BadRequestException('scopeMode không hợp lệ.');
   const deadline = dto.completionDeadline ? new Date(dto.completionDeadline) : end;
   if (!Number.isFinite(deadline.getTime()) || deadline < end || deadline > new Date(booking.checkOutAt)) throw new BadRequestException('Hạn hoàn tất phải từ lúc hết grant đến trước/khi kết thúc kỳ lưu trú.');
+
+  // P0-03: Chặn cấp chồng lấn thời gian và phạm vi trên cùng một booking
+  await assertNoOverlappingCoverage(em, bookingId, start, end, mode, dto.allowedTaskTypes || [], taskIds);
+
+  const now = new Date();
+  const initialStatus = dto.requireDelegateAcceptance
+    ? CoverageGrantStatus.APPROVED_PENDING_ACCEPTANCE
+    : CoverageGrantStatus.ACTIVE;
+
   const grant = await em.save(BookingCoverageGrant, em.create(BookingCoverageGrant, {
     bookingId, hotelId:booking.hotelId, principalStaffId:booking.handledBy, delegateStaffId:dto.delegateStaffUserId,
     mode:'TEMPORARY', scopeMode:mode, absenceRequestId:dto.absenceRequestId || null,
     startAt:start, endAt:end, completionDeadline:deadline, allowedTaskTypes:dto.allowedTaskTypes || [],
-    status:CoverageGrantStatus.ACTIVE, createdBy:actor.id, reason:dto.reason, commandKey:dto.commandId || null, version:1,
+    status:initialStatus, createdBy:actor.id, requestedBy:actor.id, approvedBy:actor.id, approvedAt:now,
+    acceptedBy: initialStatus === CoverageGrantStatus.ACTIVE ? dto.delegateStaffUserId : null,
+    acceptedAt: initialStatus === CoverageGrantStatus.ACTIVE ? now : null,
+    acceptDeadline: new Date(Math.min(end.getTime(), Math.max(start.getTime(), now.getTime() + 30 * 60000))),
+    reason:dto.reason, commandKey:dto.commandId || null, version:1,
   }));
   for (const id of taskIds) await em.query('INSERT INTO booking_coverage_task_scopes(grant_id,task_id) VALUES (?,?)', [grant.id,id]);
   await em.save(BookingCoverageEvent, em.create(BookingCoverageEvent, {
-    grantId:grant.id, bookingId, actorId:actor.id, eventType:CoverageEventType.GRANT_CREATED,
-    newValue:{ scopeMode:mode, taskIds, completionDeadline:deadline.toISOString(), startAt:start, endAt:end }, note:dto.reason,
+    grantId:grant.id, bookingId, actorId:actor.id,
+    eventType: initialStatus === CoverageGrantStatus.APPROVED_PENDING_ACCEPTANCE ? CoverageEventType.GRANT_APPROVED : CoverageEventType.GRANT_CREATED,
+    newValue:{ scopeMode:mode, taskIds, status:initialStatus, completionDeadline:deadline.toISOString(), startAt:start, endAt:end }, note:dto.reason,
   }));
   return grant;
 }

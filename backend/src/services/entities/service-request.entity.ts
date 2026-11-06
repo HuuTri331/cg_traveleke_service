@@ -10,6 +10,7 @@ import {
 import { RoomService } from './room-service.entity';
 
 export enum ServiceRequestStatus {
+  PENDING_APPROVAL = 'PENDING_APPROVAL',
   PENDING = 'PENDING',
   ACCEPTED = 'ACCEPTED',
   ASSIGNED = 'ASSIGNED',
@@ -69,6 +70,21 @@ export class ServiceRequest {
     default: 0,
   })
   totalPrice: number;
+
+  @Column({ name: 'applied_campaign_id', type: 'bigint', unsigned: true, nullable: true })
+  appliedCampaignId?: string | null;
+
+  @Column({ name: 'campaign_version', type: 'int', unsigned: true, nullable: true })
+  campaignVersion?: number | null;
+
+  @Column({
+    name: 'original_price_snapshot',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    nullable: true,
+  })
+  originalPriceSnapshot?: number | null;
 
   // ---- SCHEDULING ----
   @Column({ type: 'text', nullable: true })

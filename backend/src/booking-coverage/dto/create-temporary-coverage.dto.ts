@@ -54,5 +54,9 @@ export class CreateTemporaryCoverageDto {
 
   @IsOptional() @IsString()
   completionDeadline?: string;
+
+  @IsOptional()
+  requireDelegateAcceptance?: boolean;
 }
+
 

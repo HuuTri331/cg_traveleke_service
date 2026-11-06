@@ -8,6 +8,7 @@ export interface StaffCandidate {
   staffRole: string; // 'EMPLOYEE' (receptionist) hoặc 'MANAGER'
   userActive: boolean;
   hotelStaffActive: boolean;
+  onDutyShift?: boolean; // P1-01: Có ca trực ACTIVE hợp lệ tại thời điểm phân công
   isAbsent: boolean; // Có availability block nào đang hiệu lực tại thời điểm xét duyệt không
   isBusyNow?: boolean; // Đang trực tiếp thực hiện tác vụ độc quyền IN_PROGRESS tại chính thời điểm T
   hasVerifiedSkill?: boolean; // Đáp ứng yêu cầu kỹ năng xác minh (nếu khách sạn cấu hình)
@@ -170,6 +171,7 @@ export function pickReceptionist(ctx: DecisionContext): AssignmentDecision {
   const eligibleCandidates = candidates.filter((c) => {
     if (!c.userActive || !c.hotelStaffActive) return false;
     if (!validReceptionistRoles.has(String(c.staffRole || '').toUpperCase())) return false;
+    if (c.onDutyShift === false) return false;
     if (c.isAbsent) return false;
     if (c.isBusyNow) return false;
     if (c.eligibleByRule === false) return false;

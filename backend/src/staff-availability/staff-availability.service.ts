@@ -327,9 +327,64 @@ export class StaffAvailabilityService {
 
               (request as any).affectedBookings = affectedBookings || [];
               (request as any).affectedTasks = affectedTasks || [];
+
+              // P0-04: Điều chỉnh các ca SCHEDULED bị trùng khoảng nghỉ và mở incident COVERAGE_GAP_CRITICAL cho booking chưa có người thay
+              await (manager as any).query(
+                `UPDATE staff_shifts
+                 SET status = 'CANCELLED',
+                     handover_note = CONCAT(COALESCE(handover_note, ''), ' | Hủy ca do duyệt đơn nghỉ phép #', ?)
+                 WHERE hotel_id = ?
+                   AND staff_user_id = ?
+                   AND status = 'SCHEDULED'
+                   AND (
+                     (planned_start_at IS NOT NULL AND planned_start_at < ? AND planned_end_at > ?)
+                     OR (planned_start_at IS NULL AND shift_date BETWEEN DATE(?) AND DATE(?))
+                   )`,
+                [
+                  request.id,
+                  request.hotelId,
+                  request.staffUserId,
+                  request.endAt,
+                  request.startAt,
+                  request.startAt,
+                  request.endAt,
+                ],
+              );
+
+              const coverageGapBookings: any[] = [];
+              for (const ab of affectedBookings || []) {
+                const activeGrants = await (manager as any).query(
+                  `SELECT id FROM booking_coverage_grants
+                   WHERE booking_id = ?
+                     AND status IN ('ACTIVE', 'SCHEDULED', 'APPROVED_PENDING_ACCEPTANCE')
+                     AND start_at < ? AND end_at > ?
+                   LIMIT 1`,
+                  [ab.id, request.endAt, request.startAt],
+                );
+                if (!Array.isArray(activeGrants) || activeGrants.length === 0) {
+                  coverageGapBookings.push(ab);
+                  await (manager as any).query(
+                    `INSERT INTO booking_assignment_incidents
+                     (booking_id, hotel_id, kind, severity, status, opened_at, due_at, current_owner_id, last_error, command_key)
+                     VALUES (?, ?, 'COVERAGE_GAP_CRITICAL', 'CRITICAL', 'OPEN', NOW(), ?, ?, ?, ?)`,
+                    [
+                      ab.id,
+                      request.hotelId,
+                      request.startAt,
+                      request.staffUserId,
+                      `Nhân viên phụ trách #${request.staffUserId} được duyệt nghỉ (#${request.id}) nhưng đơn #${ab.id} chưa có B nhận bàn giao.`,
+                      `absence:${request.id}:booking:${ab.id}`,
+                    ],
+                  );
+                }
+              }
+              (request as any).coverageGapBookings = coverageGapBookings;
+              (request as any).handoverRequiredBeforeAbsence = coverageGapBookings.length > 0;
             }
-          } catch {
-            // Không làm gián đoạn giao dịch duyệt đơn nếu truy vấn cảnh báo gặp lỗi
+          } catch (err: any) {
+            this.logger.warn(
+              `[StaffAvailability] Cảnh báo khi lập kế hoạch bàn giao cho đơn nghỉ #${request.id}: ${err?.message || err}`,
+            );
           }
         }
       } else {
@@ -773,12 +828,32 @@ export class StaffAvailabilityService {
       }
     }
 
+    const now = new Date();
     block.active = 0;
-    block.endAt = new Date();
+    block.endAt = now;
     if (note?.trim()) {
       block.reason = `${block.reason || ''} | Kết thúc sớm: ${note.trim()}`;
     }
-    return await this.availabilityBlockRepo.save(block);
+    const saved = await this.availabilityBlockRepo.save(block);
+
+    // P2-08: Khi kết thúc nghỉ sớm, không tự động giành lại booking từ B nếu B đang có grant ACTIVE;
+    // trả về danh sách grant cần thực hiện handback có kiểm soát sau khi A mở ca hợp lệ.
+    let activeDelegatedGrants: any[] = [];
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        activeDelegatedGrants = await this.dataSource.query(
+          `SELECT id, booking_id AS bookingId, delegate_staff_id AS delegateStaffId, start_at AS startAt, end_at AS endAt
+           FROM booking_coverage_grants
+           WHERE hotel_id = ? AND principal_staff_id = ? AND status = 'ACTIVE' AND start_at <= ? AND end_at > ?`,
+          [block.hotelId, block.staffUserId, now, now],
+        );
+      } catch {
+        activeDelegatedGrants = [];
+      }
+    }
+    (saved as any).requiresHandbackBeforeWrite = activeDelegatedGrants.length > 0;
+    (saved as any).activeDelegatedGrants = activeDelegatedGrants;
+    return saved;
   }
 
   async getActiveBlocksForHotel(actor: User, hotelId: string) {

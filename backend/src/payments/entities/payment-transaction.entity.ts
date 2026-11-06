@@ -182,6 +182,22 @@ export class PaymentTransaction {
   })
   rawIpnResponse!: any | null;
 
+  @Column({
+    name: 'purpose',
+    type: 'varchar',
+    length: 40,
+    default: 'INITIAL_BOOKING',
+  })
+  purpose!: string;
+
+  @Column({
+    name: 'amendment_id',
+    type: 'bigint',
+    unsigned: true,
+    nullable: true,
+  })
+  amendmentId!: string | null;
+
   @CreateDateColumn({
     name: 'created_at',
     type: 'datetime',
