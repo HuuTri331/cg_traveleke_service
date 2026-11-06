@@ -1,62 +1,24 @@
 -- ====================================================================================================
--- TRAVELEKE SYSTEM - TÀI LIỆU CƠ SỞ DỮ LIỆU CHUẨN HOÀN CHỈNH TOÀN DIỆN (CHUYÊN ĐỀ TỐT NGHIỆP)
+-- TRAVELEKE SYSTEM - TÀI LIỆU CƠ SỞ DỮ LIỆU HỢP NHẤT TOÀN DIỆN VÀ DUY NHẤT (UNIFIED MASTER DATABASE)
 -- ====================================================================================================
--- TỆP SQL HỢP NHẤT TOÀN DIỆN VÀ DUY NHẤT CHO TOÀN BỘ DỰ ÁN TRAVELEKE:
---   - Cốt lõi bản cũ: chuyendetotnghiep.sql
---   - Tính năng thanh toán & outbox: migration_vnpay_inventory_outbox.sql
---   - Sửa lỗi giữ chỗ & hủy phòng: migration_vnpay_inventory_cancellation_fix.sql
---   - Mở rộng phân quyền & quản lý: phase-2-unified-complete.sql
+-- TỆP SQL HỢP NHẤT 100% TOÀN BỘ DỰ ÁN TRAVELEKE (TẤT CẢ CÁC ĐỢT 1 -> 6 & 32 ONLINE PMS EXTENSIONS):
+--   1. Core Platform & RBAC (Roles, Permissions, Users, Refresh Tokens, Hotels, Rooms, Bookings, Services)
+--   2. Thanh toán VNPAY, Giữ chỗ tồn kho & Transactional Outbox (booking_holds, payment_transactions, outbox_events, booking_cancellation_requests)
+--   3. Quản lý Ca trực, Bàn giao ca & Phê duyệt (staff_shifts, shift_handovers, approval_requests)
+--   4. Đợt 1 & Đợt 2: Đơn xin nghỉ/đi muộn, Khóa điều phối, Phân công tự động 40/120 phút & Hiện diện No-Show/Check-in muộn
+--   5. Đợt 3 & Đợt 4: Ủy quyền hỗ trợ tạm thời (Coverage Grants & Task Scopes), Nhiệm vụ phục vụ khách (Guest Work Tasks/Events/Evidence) & Hội thoại
+--   6. Đợt 5 & Đợt 6: Đánh giá sao nhân viên, Chấm điểm KPI 100 điểm, Chiến dịch khuyến mãi (Promotions), Báo giá (Quotes) & Sổ quyền lợi (Benefit Ledger)
+--   7. Online Extensions & 32 Hospitality Gaps: Phòng vật lý (Room Units & Stay Slots), Buồng phòng (Housekeeping), Bảo trì (Blocks/Stop-Sell),
+--      Sự cố phòng (Room Incidents), Bảng giá động (Rate Plans & Calendar), Đổi lịch/hạng phòng (Booking Amendments), Sổ tiền (Folios/Entries/Settlements),
+--      Kiểm toán đêm (Night Audit), Chứng từ (Documents), Pre-check-in Online, Thông báo đa kênh (Notifications), Voucher, Đồng bộ OTA & Waitlist
 --
--- TỔNG CỘNG: 34 BẢNG DỮ LIỆU ĐẦY ĐỦ 100% + MASTER SEED DATA + TỰ ĐỘNG ĐỒNG BỘ CHO DATABASE CŨ
--- ====================================================================================================
--- MỤC LỤC DANH SÁCH 34 BẢNG ĐÃ ĐƯỢC HỢP NHẤT:
---   PHẦN 1: HỆ THỐNG PHÂN QUYỀN (RBAC), TÀI KHOẢN & PHIÊN ĐĂNG NHẬP
---      1. roles                        - Vai trò người dùng (ADMIN, EMPLOYEE, CUSTOMER)
---      2. permissions                  - 24 quyền hạn chi tiết các chức năng
---      3. role_permissions             - Bảng liên kết vai trò - quyền hạn
---      4. users                        - Tài khoản khách hàng, nhân viên, quản trị viên
---      5. users_roles                  - Bảng liên kết tài khoản - vai trò
---      6. refresh_tokens               - Quản lý xoay vòng opaque refresh token, chống lộ phiên
---   PHẦN 2: ĐỊA DANH, LOẠI HÌNH LƯU TRÚ & CƠ SỞ KHÁCH SẠN
---      7. locations                    - Quốc gia, Tỉnh/Thành phố phân cấp cha - con
---      8. hotel_types                  - Khách sạn, Resort, Villa, Homestay, Hostel
---      9. hotels                       - Chi tiết cơ sở lưu trú, xếp hạng sao, tọa độ, giờ nhận/trả phòng
---     10. hotel_images                 - Thư viện hình ảnh khách sạn (kèm cờ ảnh đại diện chính)
---     11. hotel_staff                  - Phân công nhân sự phụ trách cơ sở khách sạn
---   PHẦN 3: QUẢN LÝ PHÒNG NGHỈ & THƯ VIỆN HÌNH ẢNH PHÒNG
---     12. rooms                        - Hạng phòng, giá theo đêm, số lượng thực tế & khả dụng
---     13. room_images                  - Bộ sưu tập ảnh chi tiết cho từng loại phòng
---   PHẦN 4: KẾ HOẠCH LỘ TRÌNH & ĐƠN ĐẶT PHÒNG (BOOKINGS)
---     14. trip_plans                   - Kế hoạch du lịch cá nhân, điểm đi, điểm đến, ngân sách
---     15. bookings                     - Đơn đặt phòng (kèm checkout_idempotency_key, hash, 9 trạng thái)
---     16. booking_rooms                - Chi tiết các hạng phòng và đơn giá trong đơn đặt
---     17. booking_status_logs          - Lịch sử biến động trạng thái đơn đặt phòng
---   PHẦN 5: GIỮ CHỖ TẠM THỜI, THANH TOÁN VNPAY, OUTBOX EVENTS & HỦY PHÒNG
---     18. booking_holds                - Giữ chỗ tạm thời theo khoảng [check_in_at, check_out_at) (Unique hold)
---     19. payment_transactions         - Lịch sử giao dịch thanh toán VNPAY (txn_ref, attempt_no, IPN, refund)
---     20. outbox_events                - Transactional Outbox gửi email/socket bất đồng bộ (locked_at, locked_by)
---     21. booking_cancellation_requests - Đơn yêu cầu hủy phòng & quy trình duyệt hoàn tiền
---   PHẦN 6: DỊCH VỤ PHÒNG, GỌI DỊCH VỤ & NHẬT KÝ ĐỀN BÙ SỰ CỐ
---     22. service_categories           - 9 danh mục phân loại dịch vụ phòng
---     23. room_services                - Bảng giá dịch vụ phòng (Miễn phí & Add-on có phí)
---     24. room_service_assignments     - Gán dịch vụ phòng đi kèm theo loại phòng
---     25. service_requests             - Yêu cầu gọi dịch vụ phát sinh kèm SLA cam kết
---     26. booking_service_snapshots    - Bản lưu chụp trạng thái dịch vụ tại thời điểm chốt đơn
---     27. service_recovery_log         - Nhật ký đền bù và xử lý khiếu nại dịch vụ
---   PHẦN 7: MA TRẬN NĂNG LỰC, KỸ NĂNG NHÂN VIÊN & ĐIỀU PHỐI NHIỆM VỤ
---     28. skill_categories             - Tiêu chuẩn kỹ năng nghiệp vụ khách sạn
---     29. staff_skills                 - Hồ sơ năng lực chuyên môn, chứng chỉ và thâm niên
---     30. staff_language_skills        - Năng lực ngoại ngữ và chứng chỉ quốc tế
---     31. staff_assignments            - Lịch sử phân công giao việc theo yêu cầu dịch vụ
---     32. staff_eligibility_rules      - Bộ quy tắc tự động phân công nhân sự thông minh
---   PHẦN 8: NHẬT KÝ HỆ THỐNG & THEO DÕI HÀNH VI CHO AI
---     33. audit_logs                   - Nhật ký kiểm toán thao tác hệ thống
---     34. hotel_tracking_events        - Theo dõi sự kiện xem chi tiết/tìm kiếm để gợi ý AI
---   PHẦN 9: BỘ DỮ LIỆU MẪU MẶC ĐỊNH CHUẨN (MASTER SEEDS DATA - NẠP SẴN CHẠY NGAY)
---   PHẦN 10: TỰ ĐỘNG ĐỒNG BỘ CỘT CHO DATABASE CŨ (MIGRATION COMPATIBILITY CHECK)
+-- TỔNG CỘNG: 114 BẢNG DỮ LIỆU ĐẦY ĐỦ 100% + MASTER SEED DATA + THỦ TỤC ĐỒNG BỘ TỰ ĐỘNG CHO DATABASE CŨ
+-- NGUYÊN TẮC AN TOÀN TUYỆT ĐỐI:
+--   - Additive & Idempotent: Sử dụng CREATE TABLE IF NOT EXISTS, INSERT IGNORE / ON DUPLICATE KEY UPDATE và kiểm tra INFORMATION_SCHEMA.
+--   - Chạy an toàn tuyệt đối trên cả MySQL mới tinh lẫn MySQL đã có dữ liệu sẵn mà không gây lỗi hay mất dữ liệu.
 -- ====================================================================================================
 
--- Tùy chọn xóa và khởi tạo lại database sạch sẽ nếu người dùng có quyền DROP DATABASE:
+-- Có thể bỏ comment dòng dưới nếu muốn khởi tạo lại toàn bộ database sạch từ đầu:
 -- DROP DATABASE IF EXISTS hotel_booking_db;
 
 CREATE DATABASE IF NOT EXISTS hotel_booking_db
@@ -67,9 +29,8 @@ USE hotel_booking_db;
 
 SET NAMES utf8mb4;
 SET CHARACTER SET utf8mb4;
-
--- Tắt tạm thời kiểm tra ràng buộc khóa ngoại để đảm bảo quá trình khởi tạo cấu trúc và nạp dữ liệu diễn ra trơn tru
 SET FOREIGN_KEY_CHECKS = 0;
+
 
 -- ====================================================================================================
 -- PHẦN 1: HỆ THỐNG PHÂN QUYỀN (RBAC), TÀI KHOẢN NGƯỜI DÙNG & PHIÊN ĐĂNG NHẬP
@@ -422,6 +383,8 @@ CREATE TABLE IF NOT EXISTS `bookings` (
     `handled_by` bigint unsigned DEFAULT NULL,
     `assignment_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'AUTO',
     `assignment_note` text COLLATE utf8mb4_unicode_ci,
+    `booking_source` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'WEBSITE',
+    `created_by_staff_id` bigint unsigned DEFAULT NULL,
     `reassigned_at` datetime DEFAULT NULL,
     `reassigned_by` bigint unsigned DEFAULT NULL,
     `contact_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
@@ -446,6 +409,7 @@ CREATE TABLE IF NOT EXISTS `bookings` (
     `check_in_confirmed_by` bigint unsigned DEFAULT NULL,
     `check_out_confirmed_by` bigint unsigned DEFAULT NULL,
     `presence_version` int unsigned NOT NULL DEFAULT '1',
+    `version` int unsigned NOT NULL DEFAULT '1',
     `late_arrival_expected_at` datetime DEFAULT NULL,
     `late_arrival_note` text COLLATE utf8mb4_unicode_ci,
     `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -580,6 +544,8 @@ CREATE TABLE IF NOT EXISTS `payment_transactions` (
     `refunded_at` datetime DEFAULT NULL,
     `refund_note` text COLLATE utf8mb4_unicode_ci,
     `raw_ipn_response` json DEFAULT NULL,
+    `purpose` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'INITIAL_BOOKING',
+    `amendment_id` bigint unsigned DEFAULT NULL,
     `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
@@ -590,7 +556,7 @@ CREATE TABLE IF NOT EXISTS `payment_transactions` (
     KEY `idx_payment_transactions_created_at` (`created_at`),
     CONSTRAINT `fk_payment_transactions_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT `chk_payment_transactions_amount` CHECK ((`amount` >= 0)),
-    CONSTRAINT `chk_payment_transactions_status` CHECK ((`status` in (_latin1'CREATED',_latin1'PENDING',_latin1'PAID',_latin1'FAILED',_latin1'EXPIRED',_latin1'PAID_REQUIRES_REVIEW',_latin1'REFUND_PENDING',_latin1'REFUNDED')))
+    CONSTRAINT `chk_payment_transactions_status` CHECK ((`status` in (_utf8mb4'CREATED',_utf8mb4'PENDING',_utf8mb4'PAID',_utf8mb4'FAILED',_utf8mb4'EXPIRED',_utf8mb4'PAID_REQUIRES_REVIEW',_utf8mb4'RECONCILIATION_REQUIRED',_utf8mb4'REFUND_PENDING',_utf8mb4'REFUNDED')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------------------------------
@@ -731,6 +697,9 @@ CREATE TABLE IF NOT EXISTS `service_requests` (
     `unit_price` decimal(12,2) NOT NULL DEFAULT '0.00',
     `quantity` smallint unsigned NOT NULL DEFAULT '1',
     `total_price` decimal(12,2) NOT NULL DEFAULT '0.00',
+    `applied_campaign_id` bigint unsigned DEFAULT NULL,
+    `campaign_version` int unsigned DEFAULT NULL,
+    `original_price_snapshot` decimal(12,2) DEFAULT NULL,
     `note` text COLLATE utf8mb4_unicode_ci,
     `total_amount` decimal(12,2) NOT NULL DEFAULT '0.00',
     `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'REQUESTED' COMMENT 'REQUESTED, SCHEDULED, ACCEPTED, IN_PROGRESS, COMPLETED, CONFIRMED, REJECTED, CANCELLED',
@@ -1173,6 +1142,1564 @@ CREATE TABLE IF NOT EXISTS `booking_presence_events` (
     KEY `idx_presence_idempotency` (`idempotency_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
+-- ====================================================================================================
+-- PHẦN 8C: QUẢN LÝ CA TRỰC (STAFF SHIFTS & HANDOVERS), PHÊ DUYỆT (APPROVALS) & SỰ CỐ ĐIỀU PHỐI
+-- ====================================================================================================
+-- Mô tả: Quản lý lịch phân ca lễ tân, chấm công vào/ra ca, bàn giao ca kèm quỹ tiền mặt, phê duyệt ngoại lệ và hàng đợi sự cố điều phối.
+-- ====================================================================================================
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 43: STAFF_SHIFTS - Lịch phân ca trực, khung giờ kế hoạch, chấm công thực tế và đối soát két tiền mặt
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `staff_shifts` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `hotel_id` bigint unsigned NOT NULL,
+    `staff_user_id` bigint unsigned NOT NULL,
+    `shift_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `shift_date` date NOT NULL,
+    `planned_start_at` datetime DEFAULT NULL,
+    `planned_end_at` datetime DEFAULT NULL,
+    `hotel_timezone` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+    `start_time` datetime DEFAULT NULL,
+    `end_time` datetime DEFAULT NULL,
+    `actual_clock_in_at` datetime DEFAULT NULL,
+    `actual_clock_out_at` datetime DEFAULT NULL,
+    `attendance_confirmed_by` bigint unsigned DEFAULT NULL,
+    `version` int unsigned NOT NULL DEFAULT '1',
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'SCHEDULED' COMMENT 'SCHEDULED, ACTIVE, COMPLETED, CANCELLED',
+    `opening_cash_float` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `closing_cash_counted` decimal(15,2) DEFAULT NULL,
+    `cash_variance` decimal(15,2) DEFAULT NULL,
+    `handover_note` text COLLATE utf8mb4_unicode_ci,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY `idx_staff_shifts_hotel_staff_status` (`hotel_id`,`staff_user_id`,`status`),
+    KEY `idx_staff_shifts_hotel_date` (`hotel_id`,`shift_date`),
+    CONSTRAINT `fk_staff_shifts_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_staff_shifts_user` FOREIGN KEY (`staff_user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 44: SHIFT_HANDOVERS - Biên bản bàn giao ca trực, công việc tồn đọng và bàn giao tiền mặt giữa nhân viên
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `shift_handovers` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `shift_id` bigint unsigned NOT NULL,
+    `hotel_id` bigint unsigned NOT NULL,
+    `from_staff_id` bigint unsigned NOT NULL,
+    `to_staff_id` bigint unsigned NOT NULL,
+    `pending_tasks` text COLLATE utf8mb4_unicode_ci,
+    `cash_amount` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `special_notes` text COLLATE utf8mb4_unicode_ci,
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, ACCEPTED, REJECTED',
+    `accepted_at` datetime DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `idx_shift_handovers_shift` (`shift_id`),
+    KEY `idx_shift_handovers_hotel_status` (`hotel_id`,`status`),
+    CONSTRAINT `fk_shift_handovers_shift` FOREIGN KEY (`shift_id`) REFERENCES `staff_shifts` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 45: APPROVAL_REQUESTS - Yêu cầu phê duyệt hoàn tiền, ghi đè giá, giảm giá, miễn phí và đền bù dịch vụ
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `approval_requests` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `hotel_id` bigint unsigned NOT NULL,
+    `booking_id` bigint unsigned DEFAULT NULL,
+    `request_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'REFUND, RATE_OVERRIDE, DISCOUNT, COMPLIMENTARY, SERVICE_RECOVERY',
+    `requested_by` bigint unsigned NOT NULL,
+    `amount` decimal(15,2) NOT NULL DEFAULT '0.00',
+    `reason` text COLLATE utf8mb4_unicode_ci NOT NULL,
+    `evidence_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, APPROVED, REJECTED',
+    `reviewed_by` bigint unsigned DEFAULT NULL,
+    `reviewed_at` datetime DEFAULT NULL,
+    `review_note` text COLLATE utf8mb4_unicode_ci,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY `idx_approval_requests_hotel_status` (`hotel_id`,`status`),
+    KEY `idx_approval_requests_booking` (`booking_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 46: BOOKING_ASSIGNMENT_INCIDENTS - Hàng đợi sự cố điều phối (UNASSIGNED_CRITICAL, COVERAGE_GAP_CRITICAL)
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `booking_assignment_incidents` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `booking_id` bigint unsigned NOT NULL,
+    `hotel_id` bigint unsigned NOT NULL,
+    `kind` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `severity` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CRITICAL',
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'OPEN',
+    `opened_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `due_at` datetime DEFAULT NULL,
+    `current_owner_id` bigint unsigned DEFAULT NULL,
+    `retry_count` int unsigned NOT NULL DEFAULT '0',
+    `last_error` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `resolved_at` datetime DEFAULT NULL,
+    `command_key` varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    KEY `ix_incident_hotel_status` (`hotel_id`,`status`,`due_at`),
+    KEY `ix_incident_booking_kind` (`booking_id`,`kind`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 47: SCHEMA_MIGRATIONS - Sổ đăng ký phiên bản migration và checksum SHA-256 chống chạy trùng
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `schema_migrations` (
+    `version` varchar(180) COLLATE utf8mb4_unicode_ci NOT NULL PRIMARY KEY,
+    `checksum` char(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `applied_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ====================================================================================================
+-- PHẦN 8D: ĐỢT 3 & ĐỢT 4 - BÀN GIAO TẠM THỜI (COVERAGE), NHIỆM VỤ PHỤC VỤ KHÁCH (GUEST WORK) & HỘI THOẠI
+-- ====================================================================================================
+-- Mô tả: Ủy quyền hỗ trợ tạm thời A -> B giữ nguyên A là người chịu trách nhiệm chính, quản lý task SLA, bằng chứng và chat.
+-- ====================================================================================================
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 48: BOOKING_COVERAGE_GRANTS - Ủy quyền hỗ trợ tạm thời (A giữ handled_by, B được phép thao tác trong [start_at, end_at])
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `booking_coverage_grants` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `booking_id` bigint unsigned NOT NULL,
+    `hotel_id` bigint unsigned NOT NULL,
+    `principal_staff_id` bigint unsigned NOT NULL,
+    `delegate_staff_id` bigint unsigned NOT NULL,
+    `mode` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'TEMPORARY',
+    `start_at` datetime NOT NULL,
+    `end_at` datetime NOT NULL,
+    `status` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE' COMMENT 'REQUESTED, APPROVED_PENDING_ACCEPTANCE, SCHEDULED, ACTIVE, DECLINED, EXPIRED, REVOKED',
+    `requested_by` bigint unsigned DEFAULT NULL,
+    `approved_by` bigint unsigned DEFAULT NULL,
+    `approved_at` datetime DEFAULT NULL,
+    `accepted_by` bigint unsigned DEFAULT NULL,
+    `accepted_at` datetime DEFAULT NULL,
+    `accept_deadline` datetime DEFAULT NULL,
+    `scope_mode` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'TASK_TYPES' COMMENT 'TASK_TYPES, TASK_IDS, BOOKING_TASKS',
+    `absence_request_id` bigint unsigned DEFAULT NULL,
+    `completion_deadline` datetime DEFAULT NULL,
+    `allowed_task_types` text COLLATE utf8mb4_unicode_ci NOT NULL,
+    `created_by` bigint unsigned NOT NULL,
+    `reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `command_key` varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `version` int unsigned NOT NULL DEFAULT '1',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY `ix_coverage_booking_time` (`booking_id`,`start_at`,`end_at`),
+    KEY `ix_coverage_delegate_status` (`delegate_staff_id`,`status`),
+    CONSTRAINT `fk_coverage_absence` FOREIGN KEY (`absence_request_id`) REFERENCES `staff_absence_requests` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 49: BOOKING_COVERAGE_Events - Nhật ký sự kiện bàn giao tạm thời & chuyển giao hoàn toàn
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `booking_coverage_events` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `grant_id` bigint unsigned DEFAULT NULL,
+    `booking_id` bigint unsigned NOT NULL,
+    `event_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `actor_id` bigint unsigned DEFAULT NULL,
+    `old_value` text COLLATE utf8mb4_unicode_ci,
+    `new_value` text COLLATE utf8mb4_unicode_ci,
+    `note` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `occurred_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `ix_coverage_events_booking` (`booking_id`,`occurred_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 50: GUEST_WORK_TASKS - Nhiệm vụ phục vụ khách lưu trú gắn SLA phản hồi và SLA hoàn thành
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `guest_work_tasks` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `hotel_id` bigint unsigned NOT NULL,
+    `booking_id` bigint unsigned NOT NULL,
+    `type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `source_table` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `source_id` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `assigned_staff_id` bigint unsigned DEFAULT NULL,
+    `active_executor_id` bigint unsigned DEFAULT NULL,
+    `coverage_grant_id` bigint unsigned DEFAULT NULL,
+    `execution_lease_until` datetime DEFAULT NULL,
+    `owner_at_create` bigint unsigned DEFAULT NULL,
+    `status` varchar(25) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CREATED',
+    `priority` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'NORMAL',
+    `title` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `description` text COLLATE utf8mb4_unicode_ci,
+    `response_sla_due_at` datetime DEFAULT NULL,
+    `resolution_sla_due_at` datetime DEFAULT NULL,
+    `first_response_at` datetime DEFAULT NULL,
+    `started_at` datetime DEFAULT NULL,
+    `completed_at` datetime DEFAULT NULL,
+    `verified_at` datetime DEFAULT NULL,
+    `version` int unsigned NOT NULL DEFAULT '1',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `ux_tasks_source` (`source_table`,`source_id`),
+    KEY `ix_tasks_hotel_assignee_status` (`hotel_id`,`assigned_staff_id`,`status`),
+    KEY `ix_tasks_booking_type` (`booking_id`,`type`),
+    CONSTRAINT `fk_task_executor` FOREIGN KEY (`active_executor_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+    CONSTRAINT `fk_task_coverage` FOREIGN KEY (`coverage_grant_id`) REFERENCES `booking_coverage_grants` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 51: BOOKING_COVERAGE_TASK_SCOPES - Phạm vi nhiệm vụ cụ thể (TASK_IDS) được phép thao tác trong Coverage Grant
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `booking_coverage_task_scopes` (
+    `grant_id` bigint unsigned NOT NULL,
+    `task_id` bigint unsigned NOT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`grant_id`,`task_id`),
+    KEY `ix_coverage_scope_task` (`task_id`),
+    CONSTRAINT `fk_scope_grant` FOREIGN KEY (`grant_id`) REFERENCES `booking_coverage_grants` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_scope_task` FOREIGN KEY (`task_id`) REFERENCES `guest_work_tasks` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 52: GUEST_WORK_EVENTS - Nhật ký sự kiện thực thi nhiệm vụ phục vụ khách (append-only, phục vụ tính KPI)
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `guest_work_events` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `task_id` bigint unsigned NOT NULL,
+    `booking_id` bigint unsigned NOT NULL,
+    `hotel_id` bigint unsigned NOT NULL,
+    `actor_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'USER',
+    `actor_staff_id` bigint unsigned DEFAULT NULL,
+    `event_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `from_status` varchar(25) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `to_status` varchar(25) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `occurred_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `evidence_type` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `evidence_ref` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `idempotency_key` varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `recorded_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `ix_work_events_task` (`task_id`,`occurred_at`),
+    KEY `ix_work_events_actor` (`actor_staff_id`,`occurred_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 53: GUEST_WORK_EVIDENCE - Bằng chứng hoàn thành công việc phục vụ khách
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `guest_work_evidence` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `task_id` bigint unsigned NOT NULL,
+    `submitted_by` bigint unsigned NOT NULL,
+    `type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `storage_ref` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `verification_status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING',
+    `verified_by` bigint unsigned DEFAULT NULL,
+    `verified_at` datetime DEFAULT NULL,
+    `note` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `ix_evidence_task` (`task_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 54: GUEST_CONVERSATIONS - Kênh hội thoại hỗ trợ trực tiếp theo từng đơn đặt phòng
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `guest_conversations` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `booking_id` bigint unsigned NOT NULL,
+    `hotel_id` bigint unsigned NOT NULL,
+    `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `ux_conversation_booking` (`booking_id`),
+    KEY `ix_conversation_hotel` (`hotel_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------------------------------
+-- Bảng 55: GUEST_MESSAGES - Tin nhắn trao đổi giữa khách hàng và nhân viên phụ trách/hỗ trợ
+-- ----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `guest_messages` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `conversation_id` bigint unsigned NOT NULL,
+    `sender_user_id` bigint unsigned NOT NULL,
+    `sender_role` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CUSTOMER',
+    `body` text COLLATE utf8mb4_unicode_ci NOT NULL,
+    `client_msg_id` varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    `sent_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `ix_messages_conversation` (`conversation_id`,`sent_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ====================================================================================================
+-- PHẦN 8E: ĐỢT 5 & ĐỢT 6 - ĐÁNH GIÁ SAO NHÂN VIÊN, HỆ THỐNG KPI 100 ĐIỂM & KHUYẾN MÃI / SỔ QUYỀN LỢI
+-- ====================================================================================================
+-- =============================================================================
+-- TRAVELEKE: MIGRATION STAFF KPI & REVIEWS (ĐỢT 5)
+-- Hệ thống chấm điểm KPI 100 điểm, đánh giá sao khách hàng & điều chỉnh của Quản lý
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS `guest_staff_reviews` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `reviewer_user_id` BIGINT UNSIGNED NOT NULL,
+  `staff_user_id` BIGINT UNSIGNED NOT NULL,
+  `stage` VARCHAR(30) NOT NULL,
+  `stars` INT UNSIGNED NOT NULL,
+  `comment` TEXT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `current_revision` INT UNSIGNED NOT NULL DEFAULT 1,
+  `submitted_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE INDEX `ux_review_booking_staff_stage_user` (`booking_id`, `staff_user_id`, `stage`, `reviewer_user_id`),
+  INDEX `ix_review_staff_stage` (`staff_user_id`, `stage`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `guest_staff_review_revisions` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `review_id` BIGINT UNSIGNED NOT NULL,
+  `version` INT UNSIGNED NOT NULL,
+  `old_stars` INT UNSIGNED NOT NULL,
+  `new_stars` INT UNSIGNED NOT NULL,
+  `old_comment` TEXT NULL,
+  `new_comment` TEXT NULL,
+  `changed_by` BIGINT UNSIGNED NOT NULL,
+  `reason` VARCHAR(255) NULL,
+  `changed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `ix_revisions_review` (`review_id`, `version`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `staff_kpi_policies` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `hotel_id` BIGINT UNSIGNED NULL,
+  `policy_version` VARCHAR(20) NOT NULL DEFAULT 'v1.0',
+  `effective_from` DATETIME NOT NULL,
+  `weights_json` TEXT NOT NULL,
+  `sla_rules_json` TEXT NULL,
+  `min_sample_json` TEXT NULL,
+  `created_by` BIGINT UNSIGNED NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `staff_kpi_period_scores` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `staff_user_id` BIGINT UNSIGNED NOT NULL,
+  `period_key` VARCHAR(20) NOT NULL,
+  `policy_version` VARCHAR(20) NOT NULL DEFAULT 'v1.0',
+  `calculation_version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `total_score` DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  `coverage_ratio` DECIMAL(5,2) NOT NULL DEFAULT 100.00,
+  `sample_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+  `source_hash` VARCHAR(64) NULL,
+  `calculated_at` DATETIME NOT NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `approved_at` DATETIME NULL,
+  `review_note` VARCHAR(255) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE INDEX `ux_kpi_period_staff_calc` (`hotel_id`, `staff_user_id`, `period_key`, `calculation_version`),
+  INDEX `ix_kpi_hotel_period` (`hotel_id`, `period_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `staff_kpi_metric_scores` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `period_score_id` BIGINT UNSIGNED NOT NULL,
+  `metric_code` VARCHAR(50) NOT NULL,
+  `weight` DECIMAL(5,2) NOT NULL,
+  `eligible` TINYINT(1) NOT NULL DEFAULT 1,
+  `numerator` INT UNSIGNED NOT NULL DEFAULT 0,
+  `denominator` INT UNSIGNED NOT NULL DEFAULT 0,
+  `raw_value` DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  `score` DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  `evidence_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `no_data_reason` VARCHAR(255) NULL,
+  INDEX `ix_metric_period_score` (`period_score_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `staff_kpi_adjustments` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `staff_user_id` BIGINT UNSIGNED NOT NULL,
+  `period_key` VARCHAR(20) NOT NULL,
+  `metric_code` VARCHAR(50) NOT NULL,
+  `delta` DECIMAL(5,2) NOT NULL,
+  `evidence_ref` VARCHAR(255) NULL,
+  `reason` VARCHAR(255) NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'REQUESTED',
+  `requested_by` BIGINT UNSIGNED NOT NULL,
+  `reviewed_by` BIGINT UNSIGNED NULL,
+  `reviewed_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `ix_adjustments_staff_period` (`hotel_id`, `staff_user_id`, `period_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- =============================================================================
+-- TRAVELEKE: MIGRATION PRICING & PROMOTIONS MODULE (V1)
+-- Quản lý chiến dịch giảm giá, gói ưu đãi, báo giá từng đêm & sổ quyền lợi/cấn trừ
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS `promotion_campaigns` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `code` VARCHAR(60) NOT NULL,
+  `name` VARCHAR(200) NOT NULL,
+  `description` TEXT NULL,
+  `campaign_type` VARCHAR(40) NOT NULL DEFAULT 'STAY_DATE',
+  `status` VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
+  `charge_component_type` VARCHAR(30) NOT NULL DEFAULT 'ROOM_NIGHT',
+  `target_scope` VARCHAR(30) NOT NULL DEFAULT 'ROOM_IDS',
+  `target_room_ids_json` TEXT NULL,
+  `target_service_ids_json` TEXT NULL,
+  `stay_start_date` VARCHAR(10) NOT NULL COMMENT 'YYYY-MM-DD local hotel date inclusive',
+  `stay_end_exclusive_date` VARCHAR(10) NOT NULL COMMENT 'YYYY-MM-DD local hotel date exclusive [start, end)',
+  `bookable_start_at` DATETIME NULL,
+  `bookable_end_at` DATETIME NULL,
+  `service_start_hour` TINYINT UNSIGNED NULL,
+  `service_end_hour` TINYINT UNSIGNED NULL,
+  `discount_type` VARCHAR(30) NOT NULL DEFAULT 'FIXED_AMOUNT',
+  `discount_value` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `floor_price` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `max_discount_per_night` DECIMAL(15,2) NULL,
+  `max_discount_per_booking` DECIMAL(15,2) NULL,
+  `min_nights` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `min_rooms` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `min_guests` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `min_order_amount` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `benefit_kind` VARCHAR(40) NOT NULL DEFAULT 'ROOM_PRICE_ADJUSTMENT',
+  `existing_bookings_eligible` TINYINT(1) NOT NULL DEFAULT 1,
+  `retroactive_mode` TINYINT(1) NOT NULL DEFAULT 0,
+  `combinability_policy` VARCHAR(20) NOT NULL DEFAULT 'EXCLUSIVE',
+  `sponsor_type` VARCHAR(20) NOT NULL DEFAULT 'HOTEL',
+  `hotel_timezone` VARCHAR(50) NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+  `budget_total` DECIMAL(15,2) NULL,
+  `budget_reserved` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `budget_consumed` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `budget_reversed` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `max_redemptions` INT UNSIGNED NULL,
+  `redemptions_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `package_config_json` TEXT NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_by` BIGINT UNSIGNED NOT NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `approved_at` DATETIME NULL,
+  `published_at` DATETIME NULL,
+  `paused_reason` VARCHAR(255) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE INDEX `ux_promo_hotel_code_ver` (`hotel_id`, `code`, `version`),
+  INDEX `ix_promo_hotel_status_dates` (`hotel_id`, `status`, `stay_start_date`, `stay_end_exclusive_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_price_quotes` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `quote_code` VARCHAR(64) NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `booking_id` BIGINT UNSIGNED NULL,
+  `user_id` BIGINT UNSIGNED NULL,
+  `room_id` BIGINT UNSIGNED NOT NULL,
+  `room_quantity` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `total_guests` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `check_in_local_date` VARCHAR(10) NOT NULL,
+  `check_out_local_date` VARCHAR(10) NOT NULL,
+  `nights_count` SMALLINT UNSIGNED NOT NULL,
+  `base_total` DECIMAL(15,2) NOT NULL,
+  `discount_total` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `payable_total` DECIMAL(15,2) NOT NULL,
+  `currency` VARCHAR(10) NOT NULL DEFAULT 'VND',
+  `hotel_timezone` VARCHAR(50) NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+  `price_hash` VARCHAR(64) NOT NULL,
+  `nightly_lines_json` TEXT NOT NULL,
+  `applied_campaigns_json` TEXT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `expires_at` DATETIME NOT NULL,
+  `confirmed_at` DATETIME NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE INDEX `ux_price_quote_code` (`quote_code`),
+  INDEX `ix_price_quotes_booking` (`booking_id`),
+  INDEX `ix_price_quotes_hotel` (`hotel_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_benefit_accounts` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `campaign_id` BIGINT UNSIGNED NULL,
+  `benefit_kind` VARCHAR(40) NOT NULL DEFAULT 'ROOM_PRICE_ADJUSTMENT' COMMENT 'ROOM_PRICE_ADJUSTMENT, SERVICE_BENEFIT_CREDIT, INCLUDED_QUOTA',
+  `source_type` VARCHAR(40) NOT NULL DEFAULT 'CAMPAIGN_RETROACTIVE',
+  `status` VARCHAR(30) NOT NULL DEFAULT 'APPROVED' COMMENT 'PENDING_REVIEW, APPROVED, SETTLED, EXPIRED, CANCELLED',
+  `currency` VARCHAR(10) NOT NULL DEFAULT 'VND',
+  `granted_amount` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `redeemed_amount` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `reversed_amount` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `refunded_amount` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `available_amount` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `granted_quota` INT UNSIGNED NOT NULL DEFAULT 0,
+  `used_quota` INT UNSIGNED NOT NULL DEFAULT 0,
+  `available_quota` INT UNSIGNED NOT NULL DEFAULT 0,
+  `allowed_service_ids_json` TEXT NULL,
+  `customer_accepted_credit` TINYINT(1) NOT NULL DEFAULT 0,
+  `expires_at` DATETIME NULL,
+  `dedupe_key` VARCHAR(160) NOT NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `approved_at` DATETIME NULL,
+  `note` VARCHAR(255) NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE INDEX `ux_benefit_account_dedupe` (`dedupe_key`),
+  INDEX `ix_benefit_account_booking` (`booking_id`, `status`),
+  INDEX `ix_benefit_account_hotel` (`hotel_id`, `benefit_kind`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_benefit_ledger` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `account_id` BIGINT UNSIGNED NOT NULL,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `campaign_id` BIGINT UNSIGNED NULL,
+  `entry_type` VARCHAR(30) NOT NULL COMMENT 'GRANT, REDEEM, REVERSAL, REFUND_SETTLEMENT, EXPIRE',
+  `amount_delta` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `balance_after` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `quota_delta` INT NOT NULL DEFAULT 0,
+  `quota_after` INT UNSIGNED NOT NULL DEFAULT 0,
+  `service_request_id` BIGINT UNSIGNED NULL,
+  `reference_entry_id` BIGINT UNSIGNED NULL,
+  `performed_by` BIGINT UNSIGNED NULL,
+  `coverage_grant_id` BIGINT UNSIGNED NULL,
+  `idempotency_key` VARCHAR(160) NOT NULL,
+  `reason` VARCHAR(255) NULL,
+  `metadata_json` TEXT NULL,
+  `occurred_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE INDEX `ux_benefit_ledger_idem` (`idempotency_key`),
+  INDEX `ix_benefit_ledger_booking` (`booking_id`, `occurred_at`),
+  INDEX `ix_benefit_ledger_service_req` (`service_request_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- TRAVELEKE: MIGRATION PRICING & PROMOTIONS V2 FINANCE & CONSENT (ADDITIVE)
+-- Bảng quản lý ý định hoàn tiền thực (Refund Intents) & Bản ghi đồng ý của khách hàng (Consent Records)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS `promotion_refund_intents` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `account_id` BIGINT UNSIGNED NOT NULL,
+  `payment_id` BIGINT UNSIGNED NULL,
+  `amount` DECIMAL(15,2) NOT NULL,
+  `channel` VARCHAR(30) NOT NULL DEFAULT 'VNPAY_PROVIDER' COMMENT 'VNPAY_PROVIDER, BANK_TRANSFER_PROOF, CASH_RECEIPT',
+  `status` VARCHAR(30) NOT NULL DEFAULT 'REQUESTED' COMMENT 'REQUESTED, PROCESSING, SUCCEEDED, FAILED, UNKNOWN_RECONCILE',
+  `provider_ref` VARCHAR(120) NULL,
+  `payout_receipt_ref` VARCHAR(160) NULL,
+  `idempotency_key` VARCHAR(160) NOT NULL,
+  `requested_by` BIGINT UNSIGNED NOT NULL,
+  `verified_by` BIGINT UNSIGNED NULL,
+  `reason` VARCHAR(255) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE INDEX `ux_promo_refund_intent_idem` (`idempotency_key`),
+  INDEX `ix_promo_refund_intent_booking` (`booking_id`, `status`),
+  INDEX `ix_promo_refund_intent_account` (`account_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `benefit_consent_records` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `account_id` BIGINT UNSIGNED NOT NULL,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `guest_user_id` BIGINT UNSIGNED NOT NULL,
+  `channel` VARCHAR(30) NOT NULL DEFAULT 'CUSTOMER_APP',
+  `terms_version` VARCHAR(20) NOT NULL DEFAULT 'v1.0',
+  `evidence_ref` VARCHAR(255) NULL,
+  `consented_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `ix_benefit_consent_account` (`account_id`),
+  INDEX `ix_benefit_consent_booking` (`booking_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+
+-- ====================================================================================================
+-- PHẦN 8F: ONLINE EXTENSIONS & 32 HOSPITALITY GAPS - PHÒNG VẬT LÝ, BUỒNG PHÒNG, FOLIO, ĐỔI LỊCH, RATE PLANS, VOUCHER, PRE-CHECK-IN & THÔNG BÁO
+-- ====================================================================================================
+CREATE TABLE IF NOT EXISTS `hotel_business_settings` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `iana_timezone` VARCHAR(64) NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+  `locale` VARCHAR(16) NOT NULL DEFAULT 'vi-VN',
+  `currency` CHAR(3) NOT NULL DEFAULT 'VND',
+  `cutoff_time` TIME NOT NULL DEFAULT '04:00:00',
+  `require_room_inspection` TINYINT(1) NOT NULL DEFAULT 1,
+  `allow_guest_room_number_reveal` TINYINT(1) NOT NULL DEFAULT 0,
+  `free_early_checkin_minutes` SMALLINT UNSIGNED NOT NULL DEFAULT 60,
+  `free_late_checkout_minutes` SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_hotel_business_settings_hotel` (`hotel_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `hotel_feature_flags` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `flag_key` VARCHAR(64) NOT NULL,
+  `enabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `config_json` JSON NULL,
+  `updated_by` BIGINT UNSIGNED NULL,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_hotel_feature_flag` (`hotel_id`, `flag_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `room_units` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `room_number` VARCHAR(40) NOT NULL,
+  `floor` VARCHAR(20) NULL,
+  `floor_code` VARCHAR(40) NULL,
+  `building` VARCHAR(50) NULL,
+  `bed_config` VARCHAR(80) NULL,
+  `is_accessible` TINYINT(1) NOT NULL DEFAULT 0,
+  `is_smoking` TINYINT(1) NOT NULL DEFAULT 0,
+  `verification_status` VARCHAR(20) NOT NULL DEFAULT 'UNVERIFIED',
+  `housekeeping_state` VARCHAR(30) NOT NULL DEFAULT 'READY',
+  `operational_state` VARCHAR(20) NOT NULL DEFAULT 'IN_SERVICE',
+  `operational_status` VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+  `last_cleaned_at` DATETIME NULL,
+  `last_inspected_at` DATETIME NULL,
+  `last_inspected_by` BIGINT UNSIGNED NULL,
+  `notes` TEXT NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_room_unit_number` (`hotel_id`, `room_number`),
+  KEY `ix_room_unit_type` (`hotel_id`, `room_type_id`),
+  KEY `IDX_room_units_hotel_type_state` (`hotel_id`, `room_type_id`, `operational_status`, `housekeeping_state`),
+  CONSTRAINT `fk_unit_hotel` FOREIGN KEY (`hotel_id`) REFERENCES `hotels`(`id`),
+  CONSTRAINT `fk_unit_type` FOREIGN KEY (`room_type_id`) REFERENCES `rooms`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `room_unit_allocations` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `booking_room_id` BIGINT UNSIGNED NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `room_unit_id` BIGINT UNSIGNED NOT NULL,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'ASSIGNED',
+  `check_in_date` DATE NOT NULL,
+  `check_out_date` DATE NOT NULL,
+  `assigned_by` BIGINT UNSIGNED NOT NULL,
+  `assigned_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `checked_in_at` DATETIME NULL,
+  `released_at` DATETIME NULL,
+  `release_reason` VARCHAR(100) NULL,
+  `command_id` VARCHAR(100) NOT NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_room_unit_alloc_cmd` (`command_id`),
+  KEY `IDX_room_unit_alloc_booking` (`booking_id`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `room_unit_stay_slots` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `allocation_id` BIGINT UNSIGNED NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NULL,
+  `room_unit_id` BIGINT UNSIGNED NULL,
+  `unit_id` BIGINT UNSIGNED NULL,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `stay_date` DATE NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `allocated_by` BIGINT UNSIGNED NULL,
+  `source_command_key` VARCHAR(128) NULL,
+  `allocated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `released_at` DATETIME(3) NULL,
+  `active_unit_key` BIGINT UNSIGNED GENERATED ALWAYS AS (
+    CASE
+      WHEN `released_at` IS NULL AND `status` = 'ACTIVE' THEN COALESCE(`room_unit_id`, `unit_id`)
+      ELSE NULL
+    END
+  ) STORED,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_active_unit_per_night` (`active_unit_key`, `stay_date`),
+  KEY `ix_booking_slots` (`booking_id`, `stay_date`, `released_at`),
+  KEY `ix_hotel_slots` (`hotel_id`, `stay_date`),
+  CONSTRAINT `fk_slot_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `room_unit_allocation_events` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `allocation_id` BIGINT UNSIGNED NULL,
+  `from_unit_id` BIGINT UNSIGNED NULL,
+  `to_unit_id` BIGINT UNSIGNED NULL,
+  `from_room_type_id` BIGINT UNSIGNED NULL,
+  `to_room_type_id` BIGINT UNSIGNED NULL,
+  `event_type` VARCHAR(40) NOT NULL,
+  `move_type` VARCHAR(30) NULL,
+  `price_delta_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `reason` VARCHAR(255) NULL,
+  `actor_id` BIGINT UNSIGNED NOT NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `command_id` VARCHAR(100) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_room_unit_alloc_event_cmd` (`command_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- Part 2: Housekeeping, Maintenance Blocks, Room Incidents, Multi-Line Hold Items
+CREATE TABLE IF NOT EXISTS `housekeeping_tasks` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `unit_id` BIGINT UNSIGNED NULL,
+  `room_unit_id` BIGINT UNSIGNED NULL,
+  `booking_id` BIGINT UNSIGNED NULL,
+  `next_arrival_booking_id` BIGINT UNSIGNED NULL,
+  `kind` VARCHAR(30) NOT NULL DEFAULT 'CHECKOUT_CLEAN',
+  `task_type` VARCHAR(30) NOT NULL DEFAULT 'CHECKOUT_CLEAN',
+  `priority` VARCHAR(20) NOT NULL DEFAULT 'NORMAL',
+  `status` VARCHAR(30) NOT NULL DEFAULT 'OPEN',
+  `assigned_to` BIGINT UNSIGNED NULL,
+  `assignee_user_id` BIGINT UNSIGNED NULL,
+  `cleaned_by` BIGINT UNSIGNED NULL,
+  `inspector_id` BIGINT UNSIGNED NULL,
+  `inspector_user_id` BIGINT UNSIGNED NULL,
+  `inspected_by` BIGINT UNSIGNED NULL,
+  `due_at` DATETIME(3) NULL,
+  `sla_due_at` DATETIME NULL,
+  `started_at` DATETIME NULL,
+  `cleaned_at` DATETIME NULL,
+  `inspected_at` DATETIME NULL,
+  `checklist_json` JSON NULL,
+  `issue_note` TEXT NULL,
+  `rejection_reason` TEXT NULL,
+  `notes` TEXT NULL,
+  `source_event_key` VARCHAR(128) NOT NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_housekeeping_source_event` (`source_event_key`),
+  KEY `ix_housekeeping_hotel_work` (`hotel_id`, `status`, `due_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `housekeeping_events` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `task_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `unit_id` BIGINT UNSIGNED NOT NULL,
+  `event_type` VARCHAR(40) NOT NULL,
+  `from_status` VARCHAR(30) NULL,
+  `to_status` VARCHAR(30) NOT NULL,
+  `actor_id` BIGINT UNSIGNED NOT NULL,
+  `note` TEXT NULL,
+  `command_id` VARCHAR(100) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `IDX_housekeeping_events_task` (`task_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `room_unit_blocks` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NULL,
+  `room_unit_id` BIGINT UNSIGNED NOT NULL,
+  `block_type` VARCHAR(30) NOT NULL DEFAULT 'OUT_OF_ORDER',
+  `start_date` DATE NOT NULL,
+  `end_exclusive_date` DATE NOT NULL,
+  `reason` VARCHAR(255) NOT NULL,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
+  `requested_by` BIGINT UNSIGNED NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `released_by` BIGINT UNSIGNED NULL,
+  `released_at` DATETIME NULL,
+  `impacted_booking_ids_json` JSON NULL,
+  `source_command_key` VARCHAR(128) NULL,
+  `command_id` VARCHAR(100) NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_block_command` (`hotel_id`, `source_command_key`),
+  KEY `ix_blocks_room_dates` (`room_unit_id`, `start_date`, `end_exclusive_date`, `status`),
+  CONSTRAINT `fk_block_unit` FOREIGN KEY (`room_unit_id`) REFERENCES `room_units`(`id`),
+  CONSTRAINT `chk_room_unit_block_dates` CHECK (`end_exclusive_date` > `start_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `room_type_stop_sell_rules` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `start_date` DATE NOT NULL,
+  `end_exclusive_date` DATE NOT NULL,
+  `blocked_count` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `stop_sell` TINYINT(1) NOT NULL DEFAULT 1,
+  `reason` VARCHAR(255) NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `created_by` BIGINT UNSIGNED NOT NULL,
+  `command_id` VARCHAR(100) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_stop_sell_cmd` (`command_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `room_incidents` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `affected_unit_id` BIGINT UNSIGNED NULL,
+  `incident_type` VARCHAR(40) NOT NULL DEFAULT 'ROOM_NOT_READY',
+  `severity` VARCHAR(20) NOT NULL DEFAULT 'HIGH',
+  `status` VARCHAR(30) NOT NULL DEFAULT 'OPEN',
+  `owner_user_id` BIGINT UNSIGNED NOT NULL,
+  `manager_user_id` BIGINT UNSIGNED NULL,
+  `sla_due_at` DATETIME NOT NULL,
+  `resolution_type` VARCHAR(40) NULL,
+  `proposed_unit_id` BIGINT UNSIGNED NULL,
+  `proposed_room_type_id` BIGINT UNSIGNED NULL,
+  `compensation_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `customer_consent_at` DATETIME NULL,
+  `resolved_at` DATETIME NULL,
+  `resolved_by` BIGINT UNSIGNED NULL,
+  `source_key` VARCHAR(120) NOT NULL,
+  `notes` TEXT NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_room_incident_source_key` (`source_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Part 3: Pricing, Amendments, Folio, Night Audit, Documents, Precheckin, CRM & Optional R5
+CREATE TABLE IF NOT EXISTS `incident_actions` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `incident_id` BIGINT UNSIGNED NOT NULL,
+  `action_type` VARCHAR(40) NOT NULL,
+  `from_status` VARCHAR(30) NULL,
+  `to_status` VARCHAR(30) NOT NULL,
+  `actor_id` BIGINT UNSIGNED NOT NULL,
+  `payload_json` JSON NULL,
+  `note` TEXT NULL,
+  `command_id` VARCHAR(100) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `IDX_incident_actions_incident` (`incident_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_hold_items` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hold_id` BIGINT UNSIGNED NOT NULL,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `rate_plan_id` BIGINT UNSIGNED NULL,
+  `line_index` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `quantity` SMALLINT UNSIGNED NOT NULL,
+  `adults` SMALLINT UNSIGNED NOT NULL DEFAULT 2,
+  `children` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `unit_base_price_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `check_in_date` DATE NOT NULL,
+  `check_out_date` DATE NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'HELD',
+  `expires_at` DATETIME NOT NULL,
+  `committed_at` DATETIME NULL,
+  `released_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_booking_hold_items_line` (`booking_id`, `line_index`, `room_type_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `rate_plans` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `code` VARCHAR(50) NOT NULL,
+  `name` VARCHAR(150) NOT NULL DEFAULT 'Standard Rate',
+  `meal_plan` VARCHAR(30) NOT NULL DEFAULT 'ROOM_ONLY',
+  `refundable` TINYINT NOT NULL DEFAULT 1,
+  `is_refundable` TINYINT(1) NOT NULL DEFAULT 1,
+  `cancellation_policy_id` BIGINT UNSIGNED NULL,
+  `base_occupancy` SMALLINT UNSIGNED NOT NULL DEFAULT 2,
+  `extra_adult_fee_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `extra_child_fee_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `floor_price_vnd` DECIMAL(15,2) NOT NULL DEFAULT 100000.00,
+  `ceiling_price_vnd` DECIMAL(15,2) NULL,
+  `priority` INT NOT NULL DEFAULT 100,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_hotel_rate_code` (`hotel_id`, `code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `rate_calendar` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `rate_plan_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NULL,
+  `room_type_id` BIGINT UNSIGNED NULL,
+  `stay_date` DATE NOT NULL,
+  `base_vnd` BIGINT NOT NULL,
+  `adjustment_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `min_nights` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `minimum_nights` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `closed` TINYINT(1) NOT NULL DEFAULT 0,
+  `closed_to_arrival` TINYINT NOT NULL DEFAULT 0,
+  `closed_to_departure` TINYINT NOT NULL DEFAULT 0,
+  `season_label` VARCHAR(60) NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_rate_night` (`rate_plan_id`, `stay_date`),
+  CONSTRAINT `fk_rate_calendar_plan` FOREIGN KEY (`rate_plan_id`) REFERENCES `rate_plans`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_restrictions` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NULL,
+  `rate_plan_id` BIGINT UNSIGNED NULL,
+  `stay_date` DATE NOT NULL,
+  `min_nights` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `max_nights` SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+  `closed_to_arrival` TINYINT(1) NOT NULL DEFAULT 0,
+  `closed_to_departure` TINYINT(1) NOT NULL DEFAULT 0,
+  `stop_sell` TINYINT(1) NOT NULL DEFAULT 0,
+  `cutoff_at` TIME NULL,
+  `advance_min_hours` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `advance_max_days` SMALLINT UNSIGNED NOT NULL DEFAULT 365,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `tax_fee_rules` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `code` VARCHAR(40) NOT NULL,
+  `name` VARCHAR(120) NOT NULL,
+  `kind` VARCHAR(20) NOT NULL DEFAULT 'TAX',
+  `calc_type` VARCHAR(30) NOT NULL DEFAULT 'PERCENT',
+  `rate_or_amount` DECIMAL(15,4) NOT NULL,
+  `is_inclusive` TINYINT(1) NOT NULL DEFAULT 0,
+  `applies_to` VARCHAR(30) NOT NULL DEFAULT 'ROOM_AND_SERVICE',
+  `compound_order` TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  `effective_from` DATE NOT NULL,
+  `effective_to` DATE NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_tax_fee_hotel_code_ver` (`hotel_id`, `code`, `version`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `cancellation_policies` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `code` VARCHAR(40) NOT NULL,
+  `name` VARCHAR(150) NOT NULL,
+  `policy_type` VARCHAR(30) NOT NULL DEFAULT 'FLEXIBLE',
+  `free_cancel_cutoff_hours` SMALLINT UNSIGNED NOT NULL DEFAULT 48,
+  `late_cancel_penalty_type` VARCHAR(30) NOT NULL DEFAULT 'FIRST_NIGHT',
+  `late_cancel_penalty_value` DECIMAL(10,2) NOT NULL DEFAULT 100.00,
+  `no_show_penalty_type` VARCHAR(30) NOT NULL DEFAULT 'FIRST_NIGHT',
+  `no_show_penalty_value` DECIMAL(10,2) NOT NULL DEFAULT 100.00,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_cancellation_policy_hotel_code_ver` (`hotel_id`, `code`, `version`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_cancellation_policy_snapshots` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `policy_id` BIGINT UNSIGNED NULL,
+  `policy_version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `policy_snapshot_json` JSON NOT NULL,
+  `quote_hash` CHAR(64) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_booking_cancel_policy_snapshot` (`booking_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_amendments` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `amendment_version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `amendment_type` VARCHAR(40) NOT NULL DEFAULT 'DATE_CHANGE',
+  `status` VARCHAR(40) NOT NULL DEFAULT 'QUOTED',
+  `command_key` VARCHAR(128) NOT NULL,
+  `expected_booking_version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `previous_snapshot_json` JSON NULL,
+  `before_snapshot_json` JSON NULL,
+  `proposed_json` JSON NULL,
+  `requested_change_json` JSON NULL,
+  `old_total_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `new_total_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `delta_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `penalty_fee_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `quote_hash` CHAR(64) NOT NULL,
+  `quote_expires_at` DATETIME(3) NOT NULL,
+  `consented_at` DATETIME(3) NULL,
+  `customer_consent_at` DATETIME NULL,
+  `surcharge_payment_id` BIGINT UNSIGNED NULL,
+  `payment_txn_id` BIGINT UNSIGNED NULL,
+  `requested_by` BIGINT UNSIGNED NULL,
+  `reviewed_by` BIGINT UNSIGNED NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `committed_at` DATETIME NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_amendment_booking_command` (`booking_id`, `command_key`),
+  KEY `ix_amendment_state` (`booking_id`, `status`),
+  CONSTRAINT `fk_amendment_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `amendment_hold_items` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `amendment_id` BIGINT UNSIGNED NOT NULL,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `stay_date` DATE NOT NULL,
+  `delta_quantity` SMALLINT NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'HELD',
+  `expires_at` DATETIME NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `IDX_amendment_hold_items_amendment` (`amendment_id`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `stay_time_requests` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_unit_id` BIGINT UNSIGNED NULL,
+  `request_type` VARCHAR(30) NOT NULL,
+  `requested_time` DATETIME NOT NULL,
+  `fee_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `is_complimentary` TINYINT(1) NOT NULL DEFAULT 0,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'REQUESTED',
+  `requested_by` BIGINT UNSIGNED NOT NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `approved_at` DATETIME NULL,
+  `folio_entry_id` BIGINT UNSIGNED NULL,
+  `command_id` VARCHAR(100) NOT NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_stay_time_req_cmd` (`command_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `folios` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `folio_number` VARCHAR(40) NULL,
+  `currency` CHAR(3) NOT NULL DEFAULT 'VND',
+  `status` VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+  `is_backfilled_verified` TINYINT(1) NOT NULL DEFAULT 1,
+  `total_debit_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `total_payment_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `total_credit_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `total_refund_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `outstanding_balance_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `closed_at` DATETIME NULL,
+  `closed_by` BIGINT UNSIGNED NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_folio_booking` (`booking_id`),
+  CONSTRAINT `fk_folio_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `folio_entries` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `folio_id` BIGINT UNSIGNED NOT NULL,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NULL,
+  `entry_kind` VARCHAR(40) NOT NULL,
+  `direction` VARCHAR(10) NOT NULL DEFAULT 'DEBIT',
+  `source_type` VARCHAR(50) NOT NULL,
+  `source_id` VARCHAR(100) NOT NULL,
+  `amount_vnd` BIGINT NOT NULL,
+  `tax_amount_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `business_date` DATE NULL,
+  `reverses_entry_id` BIGINT UNSIGNED NULL,
+  `description` VARCHAR(255) NULL,
+  `idempotency_key` VARCHAR(180) NOT NULL,
+  `actor_user_id` BIGINT UNSIGNED NULL,
+  `actor_id` BIGINT UNSIGNED NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `posted_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `metadata_json` JSON NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_folio_post_once` (`idempotency_key`),
+  KEY `ix_folio_entries` (`folio_id`, `posted_at`),
+  KEY `ix_folio_source` (`source_type`, `source_id`),
+  CONSTRAINT `fk_folio_entry_parent` FOREIGN KEY (`folio_id`) REFERENCES `folios`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `folio_settlements` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `folio_id` BIGINT UNSIGNED NOT NULL,
+  `booking_id` BIGINT UNSIGNED NULL,
+  `hotel_id` BIGINT UNSIGNED NULL,
+  `settlement_kind` VARCHAR(30) NOT NULL DEFAULT 'DESK_SETTLEMENT',
+  `method` VARCHAR(30) NOT NULL DEFAULT 'VN_QR_TRANSFER',
+  `amount_vnd` BIGINT NOT NULL,
+  `provider_ref` VARCHAR(120) NULL,
+  `receipt_ref` VARCHAR(120) NULL,
+  `evidence_url` VARCHAR(500) NULL,
+  `paid_at` DATETIME(3) NULL,
+  `verified_at` DATETIME(3) NULL,
+  `verified_by` BIGINT UNSIGNED NULL,
+  `recorded_by` BIGINT UNSIGNED NULL,
+  `approved_by` BIGINT UNSIGNED NULL,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'PENDING_VERIFICATION',
+  `idempotency_key` VARCHAR(180) NULL,
+  `command_id` VARCHAR(100) NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_settlement_once` (`idempotency_key`),
+  KEY `ix_folio_settlement` (`folio_id`, `status`),
+  CONSTRAINT `fk_folio_settlement` FOREIGN KEY (`folio_id`) REFERENCES `folios`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `business_day_closures` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `business_date` DATE NOT NULL,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'OPEN',
+  `rooms_available` INT UNSIGNED NOT NULL DEFAULT 0,
+  `rooms_sold` INT UNSIGNED NOT NULL DEFAULT 0,
+  `occupancy_rate` DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+  `room_revenue_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `service_revenue_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `verified_payments_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `open_folios_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `exceptions_json` JSON NULL,
+  `snapshot_hash` CHAR(64) NULL,
+  `closed_by` BIGINT UNSIGNED NULL,
+  `closed_at` DATETIME NULL,
+  `command_id` VARCHAR(100) NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_business_day_closure_hotel_date` (`hotel_id`, `business_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_documents` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `folio_id` BIGINT UNSIGNED NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `document_number` VARCHAR(50) NOT NULL,
+  `type` VARCHAR(30) NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ISSUED',
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `amount_vnd` DECIMAL(15,2) NOT NULL,
+  `buyer_info_json` JSON NULL,
+  `source_folio_snapshot` JSON NOT NULL,
+  `storage_key` VARCHAR(255) NOT NULL,
+  `sha256` CHAR(64) NOT NULL,
+  `issued_by` BIGINT UNSIGNED NULL,
+  `issued_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `voided_at` DATETIME NULL,
+  `void_reason` VARCHAR(255) NULL,
+  `command_id` VARCHAR(100) NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_booking_doc_number` (`document_number`),
+  UNIQUE KEY `UQ_booking_doc_type_ver` (`booking_id`, `type`, `version`),
+  UNIQUE KEY `UQ_booking_doc_cmd` (`command_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `service_packages` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `code` VARCHAR(40) NOT NULL,
+  `name` VARCHAR(150) NOT NULL,
+  `description` TEXT NULL,
+  `charge_basis` VARCHAR(30) NOT NULL DEFAULT 'PER_STAY',
+  `package_price_vnd` DECIMAL(15,2) NOT NULL,
+  `daily_capacity` SMALLINT UNSIGNED NULL,
+  `available_from_hour` TINYINT UNSIGNED NULL,
+  `available_to_hour` TINYINT UNSIGNED NULL,
+  `included_services_json` JSON NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_service_package_hotel_code` (`hotel_id`, `code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `precheckin_submissions` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NULL,
+  `submitted_by` BIGINT UNSIGNED NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `current_version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'SUBMITTED',
+  `expected_arrival_at` DATETIME(3) NULL,
+  `eta` DATETIME NULL,
+  `arrival_transport` VARCHAR(50) NULL,
+  `bed_preference` VARCHAR(80) NULL,
+  `special_requests` TEXT NULL,
+  `guest_data_json` JSON NULL,
+  `guest_data_minimal_json` JSON NULL,
+  `reviewed_by` BIGINT UNSIGNED NULL,
+  `reviewed_at` DATETIME NULL,
+  `review_note` TEXT NULL,
+  `command_id` VARCHAR(100) NULL,
+  `submitted_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_precheckin_version` (`booking_id`, `version`),
+  CONSTRAINT `fk_precheckin_booking` FOREIGN KEY (`booking_id`) REFERENCES `bookings`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `precheckin_tokens` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `token_hash` CHAR(64) NOT NULL,
+  `expires_at` DATETIME NOT NULL,
+  `used_at` DATETIME NULL,
+  `revoked_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_precheckin_token_hash` (`token_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_guest_occupants` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_line_id` BIGINT UNSIGNED NULL,
+  `unit_id` BIGINT UNSIGNED NULL,
+  `contact_role` VARCHAR(20) NOT NULL DEFAULT 'OCCUPANT',
+  `full_name` VARCHAR(150) NOT NULL,
+  `is_adult` TINYINT(1) NOT NULL DEFAULT 1,
+  `child_age` TINYINT UNSIGNED NULL,
+  `phone` VARCHAR(25) NULL,
+  `lead_guest` TINYINT(1) NOT NULL DEFAULT 0,
+  `verified_at` DATETIME NULL,
+  `verified_by` BIGINT UNSIGNED NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `notification_intents` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `booking_id` BIGINT UNSIGNED NULL,
+  `source_event_id` VARCHAR(128) NOT NULL,
+  `template_key` VARCHAR(80) NOT NULL,
+  `template_version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `channel` VARCHAR(20) NOT NULL,
+  `recipient_key` VARCHAR(160) NOT NULL,
+  `payload_json` JSON NOT NULL,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'QUEUED',
+  `attempt_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `retry_count` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `next_attempt_at` DATETIME(3) NULL,
+  `next_retry_at` DATETIME NULL,
+  `last_error` TEXT NULL,
+  `delivered_at` DATETIME NULL,
+  `command_key` VARCHAR(180) NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_notification_intent` (`source_event_id`, `template_key`, `channel`, `recipient_key`),
+  KEY `ix_notification_due` (`status`, `next_attempt_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `notification_deliveries` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `intent_id` BIGINT UNSIGNED NOT NULL,
+  `attempt_no` TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  `status` VARCHAR(20) NOT NULL,
+  `provider_ref` VARCHAR(120) NULL,
+  `error_code` VARCHAR(60) NULL,
+  `error_message` VARCHAR(255) NULL,
+  `delivered_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `hotel_stay_reviews` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `reviewer_user_id` BIGINT UNSIGNED NOT NULL,
+  `overall_rating` TINYINT UNSIGNED NOT NULL,
+  `cleanliness_rating` TINYINT UNSIGNED NOT NULL,
+  `room_quality_rating` TINYINT UNSIGNED NOT NULL,
+  `service_rating` TINYINT UNSIGNED NOT NULL,
+  `location_rating` TINYINT UNSIGNED NOT NULL,
+  `comment` TEXT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'PUBLISHED',
+  `manager_response` TEXT NULL,
+  `responded_by` BIGINT UNSIGNED NULL,
+  `responded_at` DATETIME NULL,
+  `moderation_reason` VARCHAR(255) NULL,
+  `feedback_case_status` VARCHAR(30) NULL,
+  `feedback_owner_id` BIGINT UNSIGNED NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_stay_review_booking_user` (`booking_id`, `reviewer_user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `guest_preferences` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `preferred_bed_type` VARCHAR(50) NULL,
+  `preferred_floor` VARCHAR(30) NULL,
+  `quiet_room` TINYINT(1) NOT NULL DEFAULT 0,
+  `dietary_notes` VARCHAR(255) NULL,
+  `preference_consent` TINYINT(1) NOT NULL DEFAULT 0,
+  `marketing_consent` TINYINT(1) NOT NULL DEFAULT 0,
+  `consent_updated_at` DATETIME NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_guest_preferences_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `guest_data_requests` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `request_type` VARCHAR(30) NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'COMPLETED',
+  `notes` TEXT NULL,
+  `processed_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `voucher_codes` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NULL,
+  `campaign_id` BIGINT UNSIGNED NULL,
+  `code` VARCHAR(50) NOT NULL,
+  `name` VARCHAR(150) NOT NULL DEFAULT '',
+  `discount_type` VARCHAR(20) NOT NULL DEFAULT 'FIXED_AMOUNT',
+  `discount_value` DECIMAL(15,2) NOT NULL,
+  `max_discount_vnd` DECIMAL(15,2) NULL,
+  `min_spend_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `min_nights` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `max_uses_total` INT UNSIGNED NOT NULL DEFAULT 100,
+  `total_quota` INT UNSIGNED NOT NULL DEFAULT 100,
+  `used_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `redeemed_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `max_uses_per_user` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `per_customer_limit` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `allow_stack_with_campaign` TINYINT(1) NOT NULL DEFAULT 0,
+  `valid_from` DATETIME NOT NULL,
+  `valid_to` DATETIME NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_voucher_codes_code` (`code`),
+  UNIQUE KEY `UQ_voucher_hotel_code` (`hotel_id`, `code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `voucher_reservations` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `voucher_id` BIGINT UNSIGNED NULL,
+  `voucher_code_id` BIGINT UNSIGNED NULL,
+  `quote_id` BIGINT UNSIGNED NULL,
+  `booking_id` BIGINT UNSIGNED NULL,
+  `user_id` BIGINT UNSIGNED NULL,
+  `customer_id` BIGINT UNSIGNED NULL,
+  `code` VARCHAR(50) NOT NULL DEFAULT '',
+  `discount_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `discount_amount_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'RESERVED',
+  `command_key` VARCHAR(128) NULL,
+  `expires_at` DATETIME(3) NOT NULL,
+  `consumed_at` DATETIME NULL,
+  `released_at` DATETIME NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `ix_voucher_res_quote` (`quote_id`, `code`),
+  KEY `ix_voucher_res_booking` (`booking_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `hotel_listing_versions` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+  `checkin_policy` TEXT NOT NULL,
+  `child_policy` TEXT NOT NULL,
+  `pet_policy` VARCHAR(255) NOT NULL DEFAULT 'NO_PETS',
+  `smoking_policy` VARCHAR(255) NOT NULL DEFAULT 'NON_SMOKING',
+  `cancellation_summary` TEXT NOT NULL,
+  `amenities_json` JSON NOT NULL,
+  `quality_score` TINYINT UNSIGNED NOT NULL DEFAULT 100,
+  `published_by` BIGINT UNSIGNED NULL,
+  `published_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_hotel_listing_ver` (`hotel_id`, `version`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Part 4: R5 Optional Tables (Strictly OFF by default via FeatureFlagsService)
+CREATE TABLE IF NOT EXISTS `payment_schedules` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `installment_no` TINYINT UNSIGNED NOT NULL,
+  `purpose` VARCHAR(30) NOT NULL DEFAULT 'DEPOSIT',
+  `amount_vnd` DECIMAL(15,2) NOT NULL,
+  `due_at` DATETIME NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+  `payment_txn_id` BIGINT UNSIGNED NULL,
+  `paid_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_payment_schedule_installment` (`booking_id`, `installment_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `security_deposits` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `held_amount_vnd` DECIMAL(15,2) NOT NULL,
+  `deducted_amount_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `refunded_amount_vnd` DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'HELD_IN_ESCROW',
+  `damage_reason` TEXT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_security_deposits_booking` (`booking_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `channel_connections` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `channel_code` VARCHAR(40) NOT NULL,
+  `feed_url` VARCHAR(500) NULL,
+  `export_token_hash` CHAR(64) NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'INACTIVE',
+  `last_synced_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_channel_conn_export_token` (`export_token_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `external_reservations` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `connection_id` BIGINT UNSIGNED NOT NULL,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `channel_code` VARCHAR(40) NOT NULL,
+  `external_reservation_id` VARCHAR(150) NOT NULL,
+  `start_date` DATE NOT NULL,
+  `end_exclusive_date` DATE NOT NULL,
+  `quantity` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_external_reservation_uid` (`channel_code`, `external_reservation_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `guest_booking_access_tokens` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `email` VARCHAR(255) NOT NULL,
+  `token_hash` CHAR(64) NOT NULL,
+  `scopes_json` JSON NOT NULL,
+  `expires_at` DATETIME NOT NULL,
+  `claimed_by_user_id` BIGINT UNSIGNED NULL,
+  `revoked_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_guest_access_token_hash` (`token_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `waitlist_entries` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `hotel_id` BIGINT UNSIGNED NOT NULL,
+  `room_type_id` BIGINT UNSIGNED NOT NULL,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `start_date` DATE NOT NULL,
+  `end_exclusive_date` DATE NOT NULL,
+  `quantity` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `max_price_per_night_vnd` DECIMAL(15,2) NULL,
+  `consent` TINYINT(1) NOT NULL DEFAULT 1,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'WAITING',
+  `notified_at` DATETIME NULL,
+  `offer_expires_at` DATETIME NULL,
+  `expires_at` DATETIME NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `room_unit_allocation_commands` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `command_key` VARCHAR(128) NOT NULL,
+  `actor_user_id` BIGINT UNSIGNED NOT NULL,
+  `request_hash` CHAR(64) NOT NULL,
+  `result_json` JSON NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_booking_allocation_command` (`booking_id`, `command_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_active_amendments` (
+  `booking_id` BIGINT UNSIGNED NOT NULL,
+  `amendment_id` BIGINT UNSIGNED NOT NULL,
+  `lease_until` DATETIME(3) NOT NULL,
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`booking_id`),
+  UNIQUE KEY `uq_active_amendment_id` (`amendment_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+
+
+
+
+
+
+
 -- ====================================================================================================
 -- PHẦN 9: BỘ DỮ LIỆU MẪU MẶC ĐỊNH CHUẨN (MASTER SEEDS DATA - NẠP SẴN HOẠT ĐỘNG NGAY)
 -- ====================================================================================================
@@ -1409,123 +2936,301 @@ ON DUPLICATE KEY UPDATE
     escalation_role = VALUES(escalation_role),
     status = VALUES(status);
 
+
+-- 9.17 Seed Chính Sách Chấm Điểm KPI Mặc Định (Staff KPI Policy v1.0)
+INSERT INTO staff_kpi_policies (hotel_id, policy_version, effective_from, weights_json, sla_rules_json, min_sample_json, status)
+SELECT NULL, 'v1.0', '2026-01-01 00:00:00',
+       '{"CHECKIN_ON_TIME":20,"CHECKOUT_ON_TIME":15,"SERVICE_SLA":25,"GUEST_REVIEW":25,"EVIDENCE_COMPLIANCE":15}',
+       '{"PRE_ARRIVAL_RESPONSE_MIN":30,"SERVICE_RESPONSE_MIN":15,"SERVICE_RESOLUTION_MIN":45}',
+       '{"MIN_TASKS":3,"MIN_REVIEWS":1}',
+       'ACTIVE'
+FROM DUAL
+WHERE NOT EXISTS (SELECT 1 FROM staff_kpi_policies WHERE hotel_id IS NULL AND policy_version = 'v1.0');
+
+-- 9.18 Seed Cấu Hình Vận Hành Khách Sạn Mặc Định (Hotel Business Settings) Cho Tất Cả Khách Sạn
+INSERT IGNORE INTO hotel_business_settings (
+    hotel_id, iana_timezone, locale, currency, cutoff_time,
+    require_room_inspection, allow_guest_room_number_reveal,
+    free_early_checkin_minutes, free_late_checkout_minutes, version
+)
+SELECT h.id, 'Asia/Ho_Chi_Minh', 'vi-VN', 'VND', '04:00:00', 1, 0, 60, 30, 1
+FROM hotels h;
+
+-- 9.19 Seed Chính Sách Hủy Phòng Mặc Định (Cancellation Policies) Cho Tất Cả Khách Sạn
+INSERT IGNORE INTO cancellation_policies (
+    hotel_id, code, name, policy_type, free_cancel_cutoff_hours,
+    late_cancel_penalty_type, late_cancel_penalty_value,
+    no_show_penalty_type, no_show_penalty_value, status, version
+)
+SELECT h.id, 'FLEX_48H', 'Hủy miễn phí trước 48 giờ nhận phòng', 'FLEXIBLE', 48,
+       'FIRST_NIGHT', 100.00, 'FIRST_NIGHT', 100.00, 'ACTIVE', 1
+FROM hotels h;
+
+-- 9.20 Seed Quy Tắc Thuế GTGT (VAT) & Phí Phục Vụ Chuẩn Cho Tất Cả Khách Sạn
+INSERT IGNORE INTO tax_fee_rules (
+    hotel_id, code, name, kind, calc_type, rate_or_amount,
+    is_inclusive, applies_to, compound_order, effective_from, status, version
+)
+SELECT h.id, 'SERVICE_CHARGE_5', 'Phí phục vụ 5%', 'FEE', 'PERCENT', 5.0000,
+       1, 'ROOM_AND_SERVICE', 1, '2026-01-01', 'ACTIVE', 1
+FROM hotels h;
+
+INSERT IGNORE INTO tax_fee_rules (
+    hotel_id, code, name, kind, calc_type, rate_or_amount,
+    is_inclusive, applies_to, compound_order, effective_from, status, version
+)
+SELECT h.id, 'VAT_8', 'Thuế GTGT (VAT 8%)', 'TAX', 'PERCENT', 8.0000,
+       1, 'ROOM_AND_SERVICE', 2, '2026-01-01', 'ACTIVE', 1
+FROM hotels h;
+
+-- 9.21 Seed Khóa Điều Phối Phân Công (Hotel Assignment Dispatch Locks) Cho Tất Cả Khách Sạn
+INSERT IGNORE INTO hotel_assignment_dispatch_locks (hotel_id, version, updated_at)
+SELECT h.id, 0, NOW() FROM hotels h;
+
+
 -- ====================================================================================================
--- PHẦN 10: TỰ ĐỘNG ĐỒNG BỘ CỘT & RÀNG BUỘC CHO DATABASE CŨ (MIGRATION COMPATIBILITY CHECK)
+-- PHẦN 10: TỰ ĐỘNG ĐỒNG BỘ CỘT, CHỈ MỤC & RÀNG BUỘC CHO DATABASE CŨ (IDEMPOTENT SCHEMA UPGRADE)
 -- ====================================================================================================
--- Stored Procedure này kiểm tra và tự động bổ sung mọi cột, chỉ mục, ràng buộc mới nếu tệp này được chạy
--- trên một database đã tồn tại từ trước mà không cần phải drop database cũ.
+-- Stored Procedure này tự động kiểm tra từng cột/chỉ mục/ràng buộc qua INFORMATION_SCHEMA và bổ sung
+-- an toàn nếu chạy trên Database đã tồn tại từ trước (Additive Only - Không làm mất dữ liệu cũ).
 -- ====================================================================================================
 
 DROP PROCEDURE IF EXISTS SyncExistingDatabaseColumns;
 DELIMITER $$
 CREATE PROCEDURE SyncExistingDatabaseColumns()
 BEGIN
-    DECLARE col_cnt INT DEFAULT 0;
-
-    -- 1. Bảng bookings: kiểm tra các cột phân công nhân viên
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'assignment_type';
-    IF col_cnt = 0 THEN
-        ALTER TABLE bookings ADD COLUMN assignment_type VARCHAR(20) NOT NULL DEFAULT 'AUTO' COMMENT 'AUTO hoặc MANUAL' AFTER handled_by;
+    -- 1. Bảng users: cột address
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'address') THEN
+        ALTER TABLE `users` ADD COLUMN `address` VARCHAR(255) NULL AFTER `phone`;
     END IF;
 
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'assignment_note';
-    IF col_cnt = 0 THEN
-        ALTER TABLE bookings ADD COLUMN assignment_note TEXT NULL COMMENT 'Lý do hoặc ghi chú phân công' AFTER assignment_type;
-    END IF;
-
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'reassigned_at';
-    IF col_cnt = 0 THEN
-        ALTER TABLE bookings ADD COLUMN reassigned_at DATETIME NULL COMMENT 'Thời điểm đổi người phụ trách' AFTER assignment_note;
-    END IF;
-
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'reassigned_by';
-    IF col_cnt = 0 THEN
-        ALTER TABLE bookings ADD COLUMN reassigned_by BIGINT UNSIGNED NULL COMMENT 'Admin/Manager thực hiện đổi' AFTER reassigned_at;
-    END IF;
-
-    -- 2. Bảng bookings: kiểm tra các cột Idempotency khóa thanh toán
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'checkout_idempotency_key';
-    IF col_cnt = 0 THEN
-        ALTER TABLE bookings ADD COLUMN checkout_idempotency_key VARCHAR(100) NULL AFTER updated_at;
-        ALTER TABLE bookings ADD UNIQUE KEY uq_checkout_idempotency (checkout_idempotency_key);
-    END IF;
-
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'checkout_request_hash';
-    IF col_cnt = 0 THEN
-        ALTER TABLE bookings ADD COLUMN checkout_request_hash CHAR(64) NULL AFTER checkout_idempotency_key;
-    END IF;
-
-    -- 3. Bảng users: kiểm tra cột address
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'address';
-    IF col_cnt = 0 THEN
-        ALTER TABLE users ADD COLUMN address VARCHAR(255) NULL AFTER phone;
-    END IF;
-
-    -- 4. Bảng room_services: kiểm tra room_type_id và max_quantity
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_services' AND COLUMN_NAME = 'room_type_id';
-    IF col_cnt = 0 THEN
-        ALTER TABLE room_services ADD COLUMN room_type_id BIGINT UNSIGNED NULL AFTER hotel_id;
-    END IF;
-
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_services' AND COLUMN_NAME = 'max_quantity';
-    IF col_cnt = 0 THEN
-        ALTER TABLE room_services ADD COLUMN max_quantity SMALLINT UNSIGNED NULL AFTER quota_per_night;
-    END IF;
-
-    -- 5. Bảng outbox_events: kiểm tra locked_at và locked_by
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'outbox_events' AND COLUMN_NAME = 'locked_at';
-    IF col_cnt = 0 THEN
-        ALTER TABLE outbox_events ADD COLUMN locked_at DATETIME NULL;
-        ALTER TABLE outbox_events ADD COLUMN locked_by VARCHAR(100) NULL;
-        ALTER TABLE outbox_events ADD INDEX idx_outbox_claim (status, available_at, locked_at);
-    END IF;
-
-    -- 6. Bảng booking_holds: đảm bảo unique key uq_booking_holds_booking
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_holds' AND CONSTRAINT_NAME = 'uq_booking_holds_booking';
-    IF col_cnt = 0 THEN
-        ALTER TABLE booking_holds ADD CONSTRAINT uq_booking_holds_booking UNIQUE (booking_id);
-    END IF;
-
-    -- 7. Bảng rooms: kiểm tra service_tier (Đợt 1)
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'rooms' AND COLUMN_NAME = 'service_tier';
-    IF col_cnt = 0 THEN
+    -- 2. Bảng rooms: cột service_tier
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'rooms' AND COLUMN_NAME = 'service_tier') THEN
         ALTER TABLE `rooms` ADD COLUMN `service_tier` VARCHAR(20) NOT NULL DEFAULT 'STANDARD' AFTER `description`;
     END IF;
 
-    -- 8. Bảng booking_status_logs: actor_type và nới lỏng changed_by nullable (Đợt 1)
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_status_logs' AND COLUMN_NAME = 'actor_type';
-    IF col_cnt = 0 THEN
+    -- 3. Bảng room_services: cột room_type_id và max_quantity
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_services' AND COLUMN_NAME = 'room_type_id') THEN
+        ALTER TABLE `room_services` ADD COLUMN `room_type_id` BIGINT UNSIGNED NULL AFTER `hotel_id`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_services' AND COLUMN_NAME = 'max_quantity') THEN
+        ALTER TABLE `room_services` ADD COLUMN `max_quantity` SMALLINT UNSIGNED NULL AFTER `quota_per_night`;
+    END IF;
+
+    -- 4. Bảng service_requests: các cột chiến dịch khuyến mãi & snapshot giá gốc
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'service_requests' AND COLUMN_NAME = 'applied_campaign_id') THEN
+        ALTER TABLE `service_requests` ADD COLUMN `applied_campaign_id` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'service_requests' AND COLUMN_NAME = 'campaign_version') THEN
+        ALTER TABLE `service_requests` ADD COLUMN `campaign_version` INT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'service_requests' AND COLUMN_NAME = 'original_price_snapshot') THEN
+        ALTER TABLE `service_requests` ADD COLUMN `original_price_snapshot` DECIMAL(12,2) NULL;
+    END IF;
+
+    -- 5. Bảng outbox_events: cột locked_at và locked_by
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'outbox_events' AND COLUMN_NAME = 'locked_at') THEN
+        ALTER TABLE `outbox_events` ADD COLUMN `locked_at` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'outbox_events' AND COLUMN_NAME = 'locked_by') THEN
+        ALTER TABLE `outbox_events` ADD COLUMN `locked_by` VARCHAR(100) NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'outbox_events' AND INDEX_NAME = 'idx_outbox_claim') THEN
+        ALTER TABLE `outbox_events` ADD INDEX `idx_outbox_claim` (`status`, `available_at`, `locked_at`);
+    END IF;
+
+    -- 6. Bảng booking_status_logs: cột actor_type và cho phép changed_by NULL
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_status_logs' AND COLUMN_NAME = 'actor_type') THEN
         ALTER TABLE `booking_status_logs` ADD COLUMN `actor_type` VARCHAR(20) NOT NULL DEFAULT 'USER' AFTER `changed_by`;
     END IF;
     ALTER TABLE `booking_status_logs` MODIFY COLUMN `changed_by` BIGINT UNSIGNED NULL;
 
-    -- 9. Bảng bookings: các mốc thời gian hiện diện, No-Show và late arrival (Đợt 2)
-    SELECT COUNT(*) INTO col_cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'actual_check_in_at';
-    IF col_cnt = 0 THEN
-        ALTER TABLE `bookings`
-            ADD COLUMN `actual_check_in_at` DATETIME NULL AFTER `check_in_at`,
-            ADD COLUMN `actual_check_out_at` DATETIME NULL AFTER `check_out_at`,
-            ADD COLUMN `no_show_at` DATETIME NULL AFTER `actual_check_out_at`,
-            ADD COLUMN `no_show_grace_minutes` SMALLINT UNSIGNED NOT NULL DEFAULT 360 AFTER `no_show_at`,
-            ADD COLUMN `no_show_closed_at` DATETIME NULL AFTER `no_show_grace_minutes`,
-            ADD COLUMN `late_check_in_recovered_at` DATETIME NULL AFTER `no_show_closed_at`,
-            ADD COLUMN `check_in_confirmed_by` BIGINT UNSIGNED NULL AFTER `late_check_in_recovered_at`,
-            ADD COLUMN `check_out_confirmed_by` BIGINT UNSIGNED NULL AFTER `check_in_confirmed_by`,
-            ADD COLUMN `presence_version` INT UNSIGNED NOT NULL DEFAULT 1 AFTER `check_out_confirmed_by`,
-            ADD COLUMN `late_arrival_expected_at` DATETIME NULL AFTER `presence_version`,
-            ADD COLUMN `late_arrival_note` TEXT NULL AFTER `late_arrival_expected_at`;
+    -- 7. Bảng bookings: toàn bộ cột phân công, hiện diện No-Show, nguồn đặt phòng, version & idempotency
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'assignment_type') THEN
+        ALTER TABLE `bookings` ADD COLUMN `assignment_type` VARCHAR(20) NOT NULL DEFAULT 'AUTO' AFTER `handled_by`;
     END IF;
-
-    -- 10. Bảng bookings: kiểm tra và tạo chỉ mục scheduler và hotel_status
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'assignment_note') THEN
+        ALTER TABLE `bookings` ADD COLUMN `assignment_note` TEXT NULL AFTER `assignment_type`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'booking_source') THEN
+        ALTER TABLE `bookings` ADD COLUMN `booking_source` VARCHAR(30) NOT NULL DEFAULT 'WEBSITE' AFTER `assignment_note`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'created_by_staff_id') THEN
+        ALTER TABLE `bookings` ADD COLUMN `created_by_staff_id` BIGINT UNSIGNED NULL AFTER `booking_source`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'reassigned_at') THEN
+        ALTER TABLE `bookings` ADD COLUMN `reassigned_at` DATETIME NULL AFTER `created_by_staff_id`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'reassigned_by') THEN
+        ALTER TABLE `bookings` ADD COLUMN `reassigned_by` BIGINT UNSIGNED NULL AFTER `reassigned_at`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'actual_check_in_at') THEN
+        ALTER TABLE `bookings` ADD COLUMN `actual_check_in_at` DATETIME NULL AFTER `cancelled_at`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'actual_check_out_at') THEN
+        ALTER TABLE `bookings` ADD COLUMN `actual_check_out_at` DATETIME NULL AFTER `actual_check_in_at`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'no_show_at') THEN
+        ALTER TABLE `bookings` ADD COLUMN `no_show_at` DATETIME NULL AFTER `actual_check_out_at`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'no_show_grace_minutes') THEN
+        ALTER TABLE `bookings` ADD COLUMN `no_show_grace_minutes` SMALLINT UNSIGNED NOT NULL DEFAULT 360 AFTER `no_show_at`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'no_show_closed_at') THEN
+        ALTER TABLE `bookings` ADD COLUMN `no_show_closed_at` DATETIME NULL AFTER `no_show_grace_minutes`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'late_check_in_recovered_at') THEN
+        ALTER TABLE `bookings` ADD COLUMN `late_check_in_recovered_at` DATETIME NULL AFTER `no_show_closed_at`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'check_in_confirmed_by') THEN
+        ALTER TABLE `bookings` ADD COLUMN `check_in_confirmed_by` BIGINT UNSIGNED NULL AFTER `late_check_in_recovered_at`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'check_out_confirmed_by') THEN
+        ALTER TABLE `bookings` ADD COLUMN `check_out_confirmed_by` BIGINT UNSIGNED NULL AFTER `check_in_confirmed_by`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'presence_version') THEN
+        ALTER TABLE `bookings` ADD COLUMN `presence_version` INT UNSIGNED NOT NULL DEFAULT 1 AFTER `check_out_confirmed_by`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'version') THEN
+        ALTER TABLE `bookings` ADD COLUMN `version` INT UNSIGNED NOT NULL DEFAULT 1 AFTER `presence_version`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'late_arrival_expected_at') THEN
+        ALTER TABLE `bookings` ADD COLUMN `late_arrival_expected_at` DATETIME NULL AFTER `version`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'late_arrival_note') THEN
+        ALTER TABLE `bookings` ADD COLUMN `late_arrival_note` TEXT NULL AFTER `late_arrival_expected_at`;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'checkout_idempotency_key') THEN
+        ALTER TABLE `bookings` ADD COLUMN `checkout_idempotency_key` VARCHAR(100) NULL;
+        ALTER TABLE `bookings` ADD UNIQUE KEY `uq_checkout_idempotency` (`checkout_idempotency_key`);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'checkout_request_hash') THEN
+        ALTER TABLE `bookings` ADD COLUMN `checkout_request_hash` CHAR(64) NULL;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND INDEX_NAME = 'idx_bookings_presence_scheduler') THEN
         ALTER TABLE `bookings` ADD INDEX `idx_bookings_presence_scheduler` (`status`, `check_in_at`, `check_out_at`);
     END IF;
-
     IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND INDEX_NAME = 'idx_bookings_hotel_status') THEN
         ALTER TABLE `bookings` ADD INDEX `idx_bookings_hotel_status` (`hotel_id`, `status`);
     END IF;
 
-    -- 11. Cập nhật check constraint trạng thái nhận NO_SHOW và CLOSED_NO_SHOW
+    -- 8. Bảng payment_transactions: cột purpose & amendment_id
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payment_transactions' AND COLUMN_NAME = 'purpose') THEN
+        ALTER TABLE `payment_transactions` ADD COLUMN `purpose` VARCHAR(40) NOT NULL DEFAULT 'INITIAL_BOOKING';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payment_transactions' AND COLUMN_NAME = 'amendment_id') THEN
+        ALTER TABLE `payment_transactions` ADD COLUMN `amendment_id` BIGINT UNSIGNED NULL;
+    END IF;
+
+    -- 9. Bảng staff_shifts: các cột planned window & attendance
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_shifts' AND COLUMN_NAME = 'planned_start_at') THEN
+        ALTER TABLE `staff_shifts` ADD COLUMN `planned_start_at` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_shifts' AND COLUMN_NAME = 'planned_end_at') THEN
+        ALTER TABLE `staff_shifts` ADD COLUMN `planned_end_at` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_shifts' AND COLUMN_NAME = 'hotel_timezone') THEN
+        ALTER TABLE `staff_shifts` ADD COLUMN `hotel_timezone` VARCHAR(64) NOT NULL DEFAULT 'Asia/Ho_Chi_Minh';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_shifts' AND COLUMN_NAME = 'actual_clock_in_at') THEN
+        ALTER TABLE `staff_shifts` ADD COLUMN `actual_clock_in_at` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_shifts' AND COLUMN_NAME = 'actual_clock_out_at') THEN
+        ALTER TABLE `staff_shifts` ADD COLUMN `actual_clock_out_at` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_shifts' AND COLUMN_NAME = 'attendance_confirmed_by') THEN
+        ALTER TABLE `staff_shifts` ADD COLUMN `attendance_confirmed_by` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_shifts' AND COLUMN_NAME = 'version') THEN
+        ALTER TABLE `staff_shifts` ADD COLUMN `version` INT UNSIGNED NOT NULL DEFAULT 1;
+    END IF;
+
+    -- 10. Bảng booking_coverage_grants & guest_work_tasks: các cột ủy quyền & thực thi
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'requested_by') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `requested_by` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'approved_by') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `approved_by` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'approved_at') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `approved_at` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'accepted_by') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `accepted_by` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'accepted_at') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `accepted_at` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'accept_deadline') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `accept_deadline` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'scope_mode') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `scope_mode` VARCHAR(20) NOT NULL DEFAULT 'TASK_TYPES';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'absence_request_id') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `absence_request_id` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'booking_coverage_grants' AND COLUMN_NAME = 'completion_deadline') THEN
+        ALTER TABLE `booking_coverage_grants` ADD COLUMN `completion_deadline` DATETIME NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'guest_work_tasks' AND COLUMN_NAME = 'active_executor_id') THEN
+        ALTER TABLE `guest_work_tasks` ADD COLUMN `active_executor_id` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'guest_work_tasks' AND COLUMN_NAME = 'coverage_grant_id') THEN
+        ALTER TABLE `guest_work_tasks` ADD COLUMN `coverage_grant_id` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'guest_work_tasks' AND COLUMN_NAME = 'execution_lease_until') THEN
+        ALTER TABLE `guest_work_tasks` ADD COLUMN `execution_lease_until` DATETIME NULL;
+    END IF;
+
+    -- 11. Bảng Online Extensions (room_units, room_unit_stay_slots, folios, folio_entries, folio_settlements)
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_units' AND COLUMN_NAME = 'floor_code') THEN
+        ALTER TABLE `room_units` ADD COLUMN `floor_code` VARCHAR(40) NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_units' AND COLUMN_NAME = 'verification_status') THEN
+        ALTER TABLE `room_units` ADD COLUMN `verification_status` VARCHAR(20) NOT NULL DEFAULT 'UNVERIFIED';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_units' AND COLUMN_NAME = 'operational_state') THEN
+        ALTER TABLE `room_units` ADD COLUMN `operational_state` VARCHAR(20) NOT NULL DEFAULT 'IN_SERVICE';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_unit_stay_slots' AND COLUMN_NAME = 'room_unit_id') THEN
+        ALTER TABLE `room_unit_stay_slots` ADD COLUMN `room_unit_id` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_unit_stay_slots' AND COLUMN_NAME = 'allocated_by') THEN
+        ALTER TABLE `room_unit_stay_slots` ADD COLUMN `allocated_by` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_unit_stay_slots' AND COLUMN_NAME = 'source_command_key') THEN
+        ALTER TABLE `room_unit_stay_slots` ADD COLUMN `source_command_key` VARCHAR(128) NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_unit_stay_slots' AND COLUMN_NAME = 'allocated_at') THEN
+        ALTER TABLE `room_unit_stay_slots` ADD COLUMN `allocated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room_unit_stay_slots' AND COLUMN_NAME = 'released_at') THEN
+        ALTER TABLE `room_unit_stay_slots` ADD COLUMN `released_at` DATETIME(3) NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'folios' AND COLUMN_NAME = 'is_backfilled_verified') THEN
+        ALTER TABLE `folios` ADD COLUMN `is_backfilled_verified` TINYINT(1) NOT NULL DEFAULT 1;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'folio_entries' AND COLUMN_NAME = 'actor_user_id') THEN
+        ALTER TABLE `folio_entries` ADD COLUMN `actor_user_id` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'folio_entries' AND COLUMN_NAME = 'metadata_json') THEN
+        ALTER TABLE `folio_entries` ADD COLUMN `metadata_json` JSON NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'folio_settlements' AND COLUMN_NAME = 'settlement_kind') THEN
+        ALTER TABLE `folio_settlements` ADD COLUMN `settlement_kind` VARCHAR(30) NOT NULL DEFAULT 'DESK_SETTLEMENT';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'folio_settlements' AND COLUMN_NAME = 'receipt_ref') THEN
+        ALTER TABLE `folio_settlements` ADD COLUMN `receipt_ref` VARCHAR(120) NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'folio_settlements' AND COLUMN_NAME = 'verified_by') THEN
+        ALTER TABLE `folio_settlements` ADD COLUMN `verified_by` BIGINT UNSIGNED NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'folio_settlements' AND COLUMN_NAME = 'idempotency_key') THEN
+        ALTER TABLE `folio_settlements` ADD COLUMN `idempotency_key` VARCHAR(180) NULL;
+    END IF;
+
+    -- 12. Cập nhật Check Constraints trạng thái cho bookings, booking_status_logs & payment_transactions
     IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND CONSTRAINT_NAME = 'chk_bookings_status') THEN
         ALTER TABLE `bookings` DROP CHECK `chk_bookings_status`;
     END IF;
@@ -1544,9 +3249,11 @@ BEGIN
     ALTER TABLE `booking_status_logs` ADD CONSTRAINT `chk_booking_status_logs_old_status`
         CHECK (`old_status` IS NULL OR `old_status` IN ('PAYMENT_PENDING','PENDING','CONFIRMED','REJECTED','CHECKED_IN','COMPLETED','CANCELLED','PAYMENT_EXPIRED','PAYMENT_REVIEW','NO_SHOW','CLOSED_NO_SHOW'));
 
-    -- 12. Seed dispatch locks cho các khách sạn hiện có
-    INSERT IGNORE INTO `hotel_assignment_dispatch_locks` (`hotel_id`, `version`, `updated_at`)
-    SELECT `id`, 0, NOW() FROM `hotels`;
+    IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payment_transactions' AND CONSTRAINT_NAME = 'chk_payment_transactions_status') THEN
+        ALTER TABLE `payment_transactions` DROP CHECK `chk_payment_transactions_status`;
+    END IF;
+    ALTER TABLE `payment_transactions` ADD CONSTRAINT `chk_payment_transactions_status`
+        CHECK (`status` IN ('CREATED','PENDING','PAID','FAILED','EXPIRED','PAID_REQUIRES_REVIEW','RECONCILIATION_REQUIRED','REFUND_PENDING','REFUNDED'));
 END$$
 DELIMITER ;
 
@@ -1555,6 +3262,27 @@ DROP PROCEDURE IF EXISTS SyncExistingDatabaseColumns;
 
 -- Bật lại kiểm tra foreign key sau khi hoàn tất toàn bộ cấu trúc và dữ liệu
 SET FOREIGN_KEY_CHECKS = 1;
+
+-- ====================================================================================================
+-- PHẦN 11: TRUY VẤN ĐỐI SOÁT CHỈ ĐỌC TRƯỚC PHÁT HÀNH (READ-ONLY PRE-RELEASE RECONCILIATION CHECKS)
+-- ====================================================================================================
+-- Các truy vấn dưới đây để ở dạng comment tham chiếu dùng cho Quản trị viên đối soát chỉ đọc (Section 10.3):
+-- 1. Booking đã PAID có hold COMMITTED nhưng chưa có người phụ trách:
+--    SELECT DISTINCT b.id, b.booking_code, b.hotel_id, b.handled_by FROM bookings b
+--    JOIN payment_transactions p ON p.booking_id = b.id AND p.status = 'PAID'
+--    JOIN booking_holds h ON h.booking_id = b.id AND h.status = 'COMMITTED'
+--    WHERE b.status IN ('PENDING', 'CONFIRMED', 'CHECKED_IN') AND b.handled_by IS NULL;
+-- 2. Booking PAID chưa có Folio:
+--    SELECT DISTINCT b.id, b.booking_code FROM bookings b
+--    JOIN payment_transactions p ON p.booking_id = b.id AND p.status = 'PAID'
+--    LEFT JOIN folios f ON f.booking_id = b.id WHERE f.id IS NULL;
+-- 3. Kiểm tra không có xung đột UNIT x DATE active trong room_unit_stay_slots:
+--    SELECT active_unit_key, stay_date, COUNT(*) AS n FROM room_unit_stay_slots
+--    WHERE released_at IS NULL GROUP BY active_unit_key, stay_date HAVING COUNT(*) > 1;
+-- 4. Đối soát số lượng phòng vật lý (room_units) so với tồn kho thương mại (rooms.total_rooms):
+--    SELECT r.hotel_id, r.id AS room_type_id, r.name, r.total_rooms AS commercial_count, COUNT(u.id) AS declared_physical_units
+--    FROM rooms r LEFT JOIN room_units u ON u.room_type_id = r.id AND u.hotel_id = r.hotel_id
+--    WHERE r.deleted_at IS NULL GROUP BY r.hotel_id, r.id, r.name, r.total_rooms HAVING COUNT(u.id) <> r.total_rooms;
 
 -- ====================================================================================================
 -- KIỂM TRA BÁO CÁO TỔNG QUAN TẤT CẢ CÁC BẢNG SAU KHI THỰC THI THÀNH CÔNG

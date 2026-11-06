@@ -1,7 +1,4 @@
 // Restartable additive migration for 32 open-source hospitality gaps & online extensions v1.
-const { readFileSync } = require('node:fs');
-const { resolve } = require('node:path');
-
 module.exports = async function up(db) {
   async function column(table, name, definition) {
     const [tables] = await db.execute(
@@ -21,13 +18,6 @@ module.exports = async function up(db) {
   await column('payment_transactions', 'purpose', "VARCHAR(40) NOT NULL DEFAULT 'INITIAL_BOOKING'");
   await column('payment_transactions', 'amendment_id', 'BIGINT UNSIGNED NULL');
 
-  // Execute expand-only SQL files for 32 gaps & online extensions
-  for (const sqlFile of ['migration_open_source_32_gaps.sql', 'migration_online_extensions_v1.sql']) {
-    const sqlPath = resolve(__dirname, '../../../database', sqlFile);
-    const sqlContent = readFileSync(sqlPath, 'utf8');
-    await db.query(sqlContent);
-  }
-
   // Ensure additive columns on newly created or pre-existing extension tables
   await column('room_units', 'floor_code', 'VARCHAR(40) NULL');
   await column('room_units', 'verification_status', "VARCHAR(20) NOT NULL DEFAULT 'UNVERIFIED'");
@@ -45,3 +35,4 @@ module.exports = async function up(db) {
   await column('folio_settlements', 'verified_by', 'BIGINT UNSIGNED NULL');
   await column('folio_settlements', 'idempotency_key', 'VARCHAR(180) NULL');
 };
+
