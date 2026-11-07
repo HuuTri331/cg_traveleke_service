@@ -162,8 +162,9 @@ export class PromotionsController {
   @Roles('ADMIN', 'EMPLOYEE', 'CUSTOMER')
   async calculateServiceQuote(
     @Body() dto: QuoteServiceItemDto,
+    @CurrentUser() user?: { id: string; role: string },
   ) {
-    return await this.promotionsService.quoteServiceItem(dto);
+    return await this.promotionsService.quoteServiceItem(dto, user);
   }
 
   @Post('booking/:bookingId/evaluate-benefits')

@@ -8,9 +8,47 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import {
+  IsBoolean,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { HousekeepingTaskStatus } from './entities/housekeeping-task.entity';
 import { HousekeepingService } from './housekeeping.service';
+
+export class HousekeepingCommandDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  commandId?: string;
+}
+
+export class CompleteHousekeepingTaskDto extends HousekeepingCommandDto {
+  @IsOptional()
+  @IsObject()
+  checklistJson?: Record<string, any>;
+}
+
+export class InspectHousekeepingTaskDto extends HousekeepingCommandDto {
+  @IsBoolean()
+  approved!: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+export class ReportHousekeepingIssueDto extends HousekeepingCommandDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  issueNote!: string;
+}
 
 @Controller()
 @UseGuards(JwtAuthGuard)
@@ -40,7 +78,7 @@ export class HousekeepingController {
   @Post('housekeeping/tasks/:id/start')
   async startTask(
     @Param('id') taskId: string,
-    @Body() body: { commandId?: string },
+    @Body() body: HousekeepingCommandDto,
     @Req() req: any,
   ) {
     return this.housekeepingService.startTask(
@@ -53,7 +91,7 @@ export class HousekeepingController {
   @Post('housekeeping/tasks/:id/complete')
   async completeTask(
     @Param('id') taskId: string,
-    @Body() body: { checklistJson?: Record<string, any>; commandId?: string },
+    @Body() body: CompleteHousekeepingTaskDto,
     @Req() req: any,
   ) {
     return this.housekeepingService.completeTask(
@@ -67,7 +105,7 @@ export class HousekeepingController {
   @Post('housekeeping/tasks/:id/inspect')
   async inspectTask(
     @Param('id') taskId: string,
-    @Body() body: { approved: boolean; note?: string; commandId?: string },
+    @Body() body: InspectHousekeepingTaskDto,
     @Req() req: any,
   ) {
     return this.housekeepingService.inspectTask(
@@ -82,7 +120,7 @@ export class HousekeepingController {
   @Post('housekeeping/tasks/:id/report-issue')
   async reportIssue(
     @Param('id') taskId: string,
-    @Body() body: { issueNote: string; commandId?: string },
+    @Body() body: ReportHousekeepingIssueDto,
     @Req() req: any,
   ) {
     return this.housekeepingService.reportIssue(

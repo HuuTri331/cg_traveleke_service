@@ -9,7 +9,11 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { StayTimeService } from '../stay-extras/stay-time.service';
 import { BookingAmendmentsService } from './booking-amendments.service';
-import type { RequestBookingAmendmentDto } from './booking-amendments.service';
+import {
+  QuoteBookingAmendmentBodyDto,
+  RequestBookingAmendmentBodyDto,
+  StayTimeRequestBodyDto,
+} from './dto/booking-amendments.dto';
 
 @Controller()
 @UseGuards(JwtAuthGuard)
@@ -29,7 +33,7 @@ export class BookingAmendmentsController {
   @Post('bookings/:id/amendments/quote')
   async quoteAmendment(
     @Param('id') bookingId: string,
-    @Body() dto: Omit<RequestBookingAmendmentDto, 'commandKey'>,
+    @Body() dto: QuoteBookingAmendmentBodyDto,
     @Req() req: any,
   ) {
     return this.amendmentsService.quoteAmendment(
@@ -42,7 +46,7 @@ export class BookingAmendmentsController {
   @Post('bookings/:id/amendments')
   async createAmendment(
     @Param('id') bookingId: string,
-    @Body() dto: RequestBookingAmendmentDto,
+    @Body() dto: RequestBookingAmendmentBodyDto,
     @Req() req: any,
   ) {
     return this.amendmentsService.createAmendment(
@@ -63,14 +67,7 @@ export class BookingAmendmentsController {
   @Post('bookings/:id/stay-time-requests')
   async requestStayTime(
     @Param('id') bookingId: string,
-    @Body()
-    body: {
-      requestType: 'EARLY_CHECKIN' | 'LATE_CHECKOUT' | 'EXTRA_NIGHT';
-      requestedTime: string;
-      feeVnd?: number;
-      isComplimentary?: boolean;
-      commandId: string;
-    },
+    @Body() body: StayTimeRequestBodyDto,
     @Req() req: any,
   ) {
     return this.stayTimeService.requestStayTimeExtension(

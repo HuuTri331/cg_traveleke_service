@@ -6,6 +6,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import Redis from 'ioredis';
@@ -20,15 +21,17 @@ import { TOKEN_BUCKET_SCRIPT } from './scripts/token-bucket.script';
 @Injectable()
 export class RateLimiterGuard implements CanActivate {
   private readonly logger = new Logger(RateLimiterGuard.name);
+  private readonly emergencyIpWindows = new Map<string, number[]>();
 
   constructor(
-    private readonly reflector: Reflector,
+    @Optional() private readonly reflector?: Reflector,
+    @Optional()
     @Inject(REDIS_CLIENT)
-    private readonly redis: Redis,
+    private readonly redis?: Redis,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const options = this.reflector.getAllAndOverride<RateLimitOptions>(
+    const options = this.reflector?.getAllAndOverride<RateLimitOptions>(
       RATE_LIMIT_METADATA,
       [context.getHandler(), context.getClass()],
     );
@@ -50,7 +53,22 @@ export class RateLimiterGuard implements CanActivate {
     const handlerName = context.getHandler().name;
     const route = `${controllerName}:${handlerName}`;
 
+    const trustProxy = process.env.TRUST_PROXY === 'true';
+    let rawIp =
+      (trustProxy
+        ? (request.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+        : undefined) ||
+      request.ip ||
+      request.socket?.remoteAddress ||
+      'unknown';
+    if (rawIp.startsWith('::ffff:')) {
+      rawIp = rawIp.replace('::ffff:', '');
+    }
+
     try {
+      if (!this.redis) {
+        throw new Error('Redis client not available');
+      }
       /*
        * ----------------------------------------------------
        * TẦNG 1: SLIDING WINDOW LOG THEO IP (Redis Sorted Set)
@@ -59,21 +77,6 @@ export class RateLimiterGuard implements CanActivate {
        */
       if (options.slidingWindow) {
         const { limit, windowMs } = options.slidingWindow;
-
-        // Trích xuất IP an toàn (hỗ trợ reverse proxy / load balancer)
-        let rawIp =
-          (request.headers['x-forwarded-for'] as string)
-            ?.split(',')[0]
-            ?.trim() ||
-          request.ip ||
-          request.socket?.remoteAddress ||
-          'unknown';
-
-        // Làm sạch IPv6 prefix
-        if (rawIp.startsWith('::ffff:')) {
-          rawIp = rawIp.replace('::ffff:', '');
-        }
-
         const key = `rl:ip:${rawIp}:${route}`;
         const now = Date.now();
         const requestId = `${now}:${randomUUID()}`;
@@ -178,12 +181,34 @@ export class RateLimiterGuard implements CanActivate {
         throw error;
       }
 
-      // FAIL-OPEN STRATEGY:
-      // Nếu Redis offline, connection timeout hoặc gặp sự cố mạng,
-      // ghi nhận log cảnh báo và cho phép request đi tiếp thay vì làm crash hệ thống API.
+      // EMERGENCY IN-MEMORY FALLBACK:
+      // Nếu Redis offline, dùng bộ đếm khẩn cấp trong RAM để chặn flood/spam nhưng không làm sập request hợp lệ đầu tiên.
       this.logger.warn(
-        `RateLimiterGuard encountered Redis error: ${error?.message || error}. Operating in FAIL-OPEN mode.`,
+        `RateLimiterGuard encountered Redis error: ${error?.message || error}. Using in-memory emergency rate limiter.`,
       );
+      if (options.slidingWindow) {
+        const { limit, windowMs } = options.slidingWindow;
+        const key = `mem:ip:${rawIp}:${route}`;
+        const now = Date.now();
+        const timestamps = (this.emergencyIpWindows.get(key) || []).filter(
+          (ts) => now - ts < windowMs,
+        );
+        if (timestamps.length >= limit) {
+          const retryAfterSeconds = Math.ceil(windowMs / 1000);
+          response?.setHeader?.('Retry-After', retryAfterSeconds);
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.TOO_MANY_REQUESTS,
+              error: 'Too Many Requests',
+              message: 'Too many requests from this IP (emergency limiter). Please try again later.',
+              retryAfter: retryAfterSeconds,
+            },
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
+        timestamps.push(now);
+        this.emergencyIpWindows.set(key, timestamps);
+      }
       return true;
     }
   }

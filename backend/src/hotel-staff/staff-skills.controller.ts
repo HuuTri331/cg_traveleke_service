@@ -66,7 +66,11 @@ export class StaffSkillsController {
   // ============================================================
 
   @Get('user/:userId')
-  getSkillsByUser(@Param('userId', ParseIntPipe) userId: number) {
+  async getSkillsByUser(
+    @Param('userId', ParseIntPipe) userId: number,
+    @CurrentUser() user: User,
+  ) {
+    await this.staffSkillsService.assertCanViewSkills(user, userId);
     return this.staffSkillsService.getSkillsByUser(userId);
   }
 
@@ -109,11 +113,13 @@ export class StaffSkillsController {
     @Query('skillCode') skillCode: string,
     @Query('level') level: string,
     @Query('hotelId') hotelId?: string,
+    @CurrentUser() user?: User,
   ) {
     return this.staffSkillsService.suggestStaffForService(
       skillCode,
       Number(level) || 1,
       hotelId ? Number(hotelId) : undefined,
+      user,
     );
   }
 
@@ -122,7 +128,11 @@ export class StaffSkillsController {
   // ============================================================
 
   @Get('user/:userId/languages')
-  getLanguagesByUser(@Param('userId', ParseIntPipe) userId: number) {
+  async getLanguagesByUser(
+    @Param('userId', ParseIntPipe) userId: number,
+    @CurrentUser() user: User,
+  ) {
+    await this.staffSkillsService.assertCanViewSkills(user, userId);
     return this.staffSkillsService.getLanguagesByUser(userId);
   }
 
@@ -157,7 +167,13 @@ export class StaffSkillsController {
   }
 
   @Post('check-eligibility')
-  checkEligibility(@Body() body: CheckEligibilityDto) {
+  async checkEligibility(
+    @Body() body: CheckEligibilityDto,
+    @CurrentUser() user?: User,
+  ) {
+    if (user) {
+      await this.staffSkillsService.assertCanViewSkills(user, body.userId);
+    }
     return this.staffSkillsService.checkEligibility(
       body.userId,
       body.caseComplexity,
@@ -170,7 +186,13 @@ export class StaffSkillsController {
   // ============================================================
 
   @Get('stats')
-  getStats() {
-    return this.staffSkillsService.getSkillStats();
+  getStats(
+    @Query('hotelId') hotelId?: string,
+    @CurrentUser() user?: User,
+  ) {
+    return this.staffSkillsService.getSkillStats(
+      hotelId ? Number(hotelId) : undefined,
+      user,
+    );
   }
 }

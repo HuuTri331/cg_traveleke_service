@@ -380,9 +380,35 @@ export class PromotionsService {
     };
   }
 
-  async quoteServiceItem(params: QuoteServiceItemDto & { hotelId?: string; baseUnitPrice?: number; usageAt?: Date | string }) {
+  async quoteServiceItem(
+    params: QuoteServiceItemDto & {
+      hotelId?: string;
+      bookingId?: string;
+      baseUnitPrice?: number;
+      usageAt?: Date | string;
+    },
+    actor?: { id: string; role: string },
+  ) {
     if ((params as any).baseUnitPrice !== undefined) {
       throw new BadRequestException('Không chấp nhận đơn giá dịch vụ (baseUnitPrice) tự khai từ phía client.');
+    }
+    if (params.bookingId && actor) {
+      const booking = await this.bookingRepo.findOne({ where: { id: String(params.bookingId) } });
+      if (!booking) {
+        throw new NotFoundException(`Không tìm thấy đơn đặt phòng #${params.bookingId}`);
+      }
+      if (actor.role === 'CUSTOMER' && String(booking.userId) !== String(actor.id)) {
+        throw new ForbiddenException('BOLA_FORBIDDEN: Bạn không có quyền báo giá dịch vụ trên đơn đặt phòng của khách khác.');
+      }
+      if (actor.role === 'EMPLOYEE' && typeof this.dataSource?.query === 'function') {
+        const staffRows = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [booking.hotelId, actor.id],
+        );
+        if (!Array.isArray(staffRows) || staffRows.length === 0) {
+          throw new ForbiddenException('CROSS_HOTEL_FORBIDDEN: Nhân sự không thuộc khách sạn của đơn đặt phòng này.');
+        }
+      }
     }
     let authoritativeHotelId = '';
     let authoritativeBasePrice: number | undefined;

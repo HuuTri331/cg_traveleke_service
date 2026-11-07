@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -67,7 +68,7 @@ export class PrecheckinService {
       }),
     );
 
-    return { bookingId: String(booking.id), opaqueToken, tokenHash, expiresAt };
+    return { bookingId: String(booking.id), opaqueToken, expiresAt };
   }
 
   async submitByToken(
@@ -86,6 +87,11 @@ export class PrecheckinService {
     if (!tokenRow || tokenRow.revokedAt) {
       throw new ForbiddenException('PRECHECKIN_TOKEN_INVALID: Mã liên kết Pre-check-in không hợp lệ hoặc đã bị thu hồi.');
     }
+    if (tokenRow.usedAt) {
+      throw new ConflictException(
+        'PRECHECKIN_TOKEN_ALREADY_USED: Mã liên kết Pre-check-in chỉ được phép sử dụng 1 lần.',
+      );
+    }
     if (new Date(tokenRow.expiresAt).getTime() <= Date.now()) {
       throw new ForbiddenException('PRECHECKIN_TOKEN_EXPIRED: Mã liên kết Pre-check-in đã hết hạn.');
     }
@@ -95,14 +101,23 @@ export class PrecheckinService {
     });
     if (!booking) throw new NotFoundException('Booking không tồn tại.');
 
-    if (dto.eta) {
-      const etaDate = new Date(dto.eta);
-      if (etaDate.getTime() >= new Date(booking.checkOutAt).getTime()) {
+    let parsedEta: Date | undefined;
+    if (dto.eta !== undefined && dto.eta !== null) {
+      parsedEta = new Date(dto.eta);
+      if (Number.isNaN(parsedEta.getTime())) {
+        throw new BadRequestException('INVALID_ETA: Thời gian dự kiến đến (ETA) không hợp lệ.');
+      }
+      if (parsedEta.getTime() >= new Date(booking.checkOutAt).getTime()) {
         throw new BadRequestException('ETA_AFTER_CHECKOUT: Giờ dự kiến đến (ETA) không được sau thời điểm trả phòng.');
       }
     }
 
     let sub = await this.submissionRepo.findOne({ where: { bookingId: String(booking.id) } });
+    if (sub && sub.status === 'REVIEWED') {
+      throw new ConflictException(
+        'PRECHECKIN_ALREADY_REVIEWED: Hồ sơ Pre-check-in đã được Lễ tân phê duyệt, không thể ghi đè bằng liên kết cũ.',
+      );
+    }
     if (!sub) {
       sub = this.submissionRepo.create({
         bookingId: String(booking.id),
@@ -114,7 +129,7 @@ export class PrecheckinService {
     }
 
     sub.status = 'SUBMITTED';
-    sub.eta = dto.eta ? new Date(dto.eta) : sub.eta;
+    sub.eta = parsedEta ?? sub.eta;
     sub.arrivalTransport = dto.arrivalTransport ?? sub.arrivalTransport;
     sub.bedPreference = dto.bedPreference ?? sub.bedPreference;
     sub.specialRequests = dto.specialRequests ?? sub.specialRequests;
@@ -189,7 +204,7 @@ export class PrecheckinService {
       );
     }
 
-    const list = dto.occupants || [];
+    const list = Array.isArray(dto.occupants) ? dto.occupants : [];
     if (list.length === 0) {
       throw new BadRequestException('Danh sách khách lưu trú không được rỗng.');
     }
@@ -200,25 +215,48 @@ export class PrecheckinService {
       );
     }
 
-    await this.occupantRepo.delete({ bookingId: String(booking.id) });
-    const saved: BookingGuestOccupant[] = [];
-    for (const item of list) {
-      saved.push(
-        await this.occupantRepo.save(
-          this.occupantRepo.create({
-            bookingId: String(booking.id),
-            hotelId: String(booking.hotelId),
-            contactRole: item.contactRole || (item.leadGuest ? 'LEAD_GUEST' : 'OCCUPANT'),
-            fullName: item.fullName.trim(),
-            isAdult: item.isAdult ?? true,
-            childAge: item.childAge ?? null,
-            phone: item.phone || null,
-            leadGuest: Boolean(item.leadGuest),
-            version: (dto.expectedVersion || 0) + 1,
-          }),
-        ),
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+      if (!item || typeof item.fullName !== 'string' || !item.fullName.trim()) {
+        throw new BadRequestException(`Khách lưu trú ở vị trí #${i + 1} có họ tên (fullName) không hợp lệ.`);
+      }
+      if (
+        item.childAge !== undefined &&
+        item.childAge !== null &&
+        (typeof item.childAge !== 'number' || !Number.isInteger(item.childAge) || item.childAge < 0 || item.childAge > 17)
+      ) {
+        throw new BadRequestException(`Khách lưu trú ở vị trí #${i + 1} có tuổi trẻ em (childAge) không hợp lệ.`);
+      }
+    }
+
+    const persistOccupants = async (repo: Repository<BookingGuestOccupant>) => {
+      await repo.delete({ bookingId: String(booking.id) });
+      const saved: BookingGuestOccupant[] = [];
+      for (const item of list) {
+        saved.push(
+          await repo.save(
+            repo.create({
+              bookingId: String(booking.id),
+              hotelId: String(booking.hotelId),
+              contactRole: item.contactRole || (item.leadGuest ? 'LEAD_GUEST' : 'OCCUPANT'),
+              fullName: item.fullName.trim(),
+              isAdult: item.isAdult ?? true,
+              childAge: item.childAge ?? null,
+              phone: item.phone || null,
+              leadGuest: Boolean(item.leadGuest),
+              version: (dto.expectedVersion || 0) + 1,
+            }),
+          ),
+        );
+      }
+      return saved;
+    };
+
+    if (typeof this.dataSource?.transaction === 'function') {
+      return this.dataSource.transaction(async (em) =>
+        persistOccupants(em.getRepository(BookingGuestOccupant)),
       );
     }
-    return saved;
+    return persistOccupants(this.occupantRepo);
   }
 }

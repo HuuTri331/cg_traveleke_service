@@ -23,15 +23,25 @@ import * as fs from 'fs';
 import { AuthService } from './auth.service';
 import { EmailSecurityService } from './email-security.service';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { ValidateEmailDto } from './dto/validate-email.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
+
+export class RefreshOrLogoutBodyDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  refreshToken?: string;
+}
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../users/entities/user.entity';
 import { RateLimiterGuard } from '../rate-limit/rate-limiter.guard';
 import { RateLimit } from '../rate-limit/rate-limit.decorator';
+
+const ALLOWED_AVATAR_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
 const avatarMulterOptions = {
   storage: diskStorage({
@@ -41,16 +51,18 @@ const avatarMulterOptions = {
       cb(null, dir);
     },
     filename: (_req: any, file: any, cb: any) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `avatar-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+      const rawExt = path.extname(file.originalname || '').toLowerCase();
+      const safeExt = ALLOWED_AVATAR_EXTENSIONS.has(rawExt) ? rawExt : '.jpg';
+      cb(null, `avatar-${Date.now()}-${Math.round(Math.random() * 1e9)}${safeExt}`);
     },
   }),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req: any, file: any, cb: any) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
-    if (!allowed.includes(file.mimetype)) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (!allowed.includes(file.mimetype) || !ALLOWED_AVATAR_EXTENSIONS.has(ext)) {
       return cb(
-        new BadRequestException('Chỉ chấp nhận ảnh JPG, PNG, WEBP.'),
+        new BadRequestException('Chỉ chấp nhận ảnh JPG, PNG, WEBP hợp lệ.'),
         false,
       );
     }
@@ -68,17 +80,21 @@ export class AuthController {
   ) {}
 
   /**
-   * Lấy địa chỉ IP của Client để quản lý vi phạm và chống spam
+   * Lấy địa chỉ IP của Client để quản lý vi phạm và chống spam.
+   * E09 (SEC-15): Chỉ tin tưởng X-Forwarded-For khi đứng sau reverse proxy được cấu hình (TRUST_PROXY=true).
    */
   private getClientIp(req: Request): string {
-    const forwarded = req.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string') {
-      return forwarded.split(',')[0].trim();
+    if (process.env.TRUST_PROXY === 'true') {
+      const forwarded = req.headers['x-forwarded-for'];
+      if (typeof forwarded === 'string') {
+        return forwarded.split(',')[0].trim();
+      }
+      if (Array.isArray(forwarded)) {
+        return forwarded[0].trim();
+      }
     }
-    if (Array.isArray(forwarded)) {
-      return forwarded[0].trim();
-    }
-    return req.ip || req.socket.remoteAddress || '127.0.0.1';
+    const rawIp = req.ip || req.socket?.remoteAddress || '127.0.0.1';
+    return rawIp.startsWith('::ffff:') ? rawIp.replace('::ffff:', '') : rawIp;
   }
 
   /**
@@ -237,21 +253,29 @@ export class AuthController {
       userAgent,
     });
 
-    // Thiết lập HttpOnly Cookie cho Refresh Token
+    // Thiết lập HttpOnly Cookie cho Refresh Token (tách biệt theo audience Staff vs Customer để tránh xung đột tab)
     if (token.refresh_token) {
-      res.cookie('traveleke_refresh_token', token.refresh_token, {
+      const cookieOpts = {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        sameSite: 'lax' as const,
         path: '/',
         maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      };
+      const scopedCookieName =
+        token.user?.role === 'CUSTOMER'
+          ? 'traveleke_customer_refresh_token'
+          : 'traveleke_staff_refresh_token';
+      res.cookie(scopedCookieName, token.refresh_token, cookieOpts);
+      res.cookie('traveleke_refresh_token', token.refresh_token, cookieOpts);
     }
+
+    const { refresh_token: _omittedRefreshToken, ...safeLoginData } = token;
 
     return {
       success: true,
       message: 'Đăng nhập thành công.',
-      data: token,
+      data: safeLoginData,
     };
   }
 
@@ -269,15 +293,27 @@ export class AuthController {
     },
   })
   async refresh(
-    @Body() dto: { refreshToken?: string },
+    @Body() dto: RefreshOrLogoutBodyDto,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const clientIp = this.getClientIp(req);
     const userAgent = req.headers['user-agent'] as string | undefined;
+    const authContext = String(req.headers['x-auth-context'] || '').toLowerCase();
+
+    const scopedCookie =
+      authContext === 'customer'
+        ? this.extractCookie(req, 'traveleke_customer_refresh_token')
+        : authContext === 'staff'
+          ? this.extractCookie(req, 'traveleke_staff_refresh_token')
+          : undefined;
 
     const rawToken =
-      dto?.refreshToken || this.extractCookie(req, 'traveleke_refresh_token');
+      dto?.refreshToken ||
+      scopedCookie ||
+      this.extractCookie(req, 'traveleke_refresh_token') ||
+      this.extractCookie(req, 'traveleke_customer_refresh_token') ||
+      this.extractCookie(req, 'traveleke_staff_refresh_token');
 
     const result = await this.authService.rotateRefreshToken(rawToken || '', {
       ipAddress: clientIp,
@@ -286,19 +322,27 @@ export class AuthController {
 
     // Gán lại cookie Refresh Token mới đã được xoay vòng (Rotate)
     if (result.refresh_token) {
-      res.cookie('traveleke_refresh_token', result.refresh_token, {
+      const cookieOpts = {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        sameSite: 'lax' as const,
         path: '/',
         maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      };
+      const scopedCookieName =
+        result.user?.role === 'CUSTOMER'
+          ? 'traveleke_customer_refresh_token'
+          : 'traveleke_staff_refresh_token';
+      res.cookie(scopedCookieName, result.refresh_token, cookieOpts);
+      res.cookie('traveleke_refresh_token', result.refresh_token, cookieOpts);
     }
+
+    const { refresh_token: _omittedRotatedToken, ...safeRefreshData } = result;
 
     return {
       success: true,
       message: 'Làm mới phiên đăng nhập thành công.',
-      data: result,
+      data: safeRefreshData,
     };
   }
 
@@ -324,16 +368,36 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(
-    @Body() dto: { refreshToken?: string },
+    @Body() dto: RefreshOrLogoutBodyDto,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
+    const authContext = String(req.headers['x-auth-context'] || '').toLowerCase();
+    const scopedCookie =
+      authContext === 'customer'
+        ? this.extractCookie(req, 'traveleke_customer_refresh_token')
+        : authContext === 'staff'
+          ? this.extractCookie(req, 'traveleke_staff_refresh_token')
+          : undefined;
     const rawToken =
-      dto?.refreshToken || this.extractCookie(req, 'traveleke_refresh_token');
+      dto?.refreshToken ||
+      scopedCookie ||
+      this.extractCookie(req, 'traveleke_refresh_token');
+    const { sessionId, userId } = this.authService.extractSessionFromBearer(
+      req.headers.authorization as string | undefined,
+    );
 
-    await this.authService.logout(rawToken);
+    await this.authService.logout(rawToken, sessionId, userId);
 
     // Xóa HttpOnly Cookie trên Client
+    if (authContext === 'customer') {
+      res.clearCookie('traveleke_customer_refresh_token', { path: '/' });
+    } else if (authContext === 'staff') {
+      res.clearCookie('traveleke_staff_refresh_token', { path: '/' });
+    } else {
+      res.clearCookie('traveleke_customer_refresh_token', { path: '/' });
+      res.clearCookie('traveleke_staff_refresh_token', { path: '/' });
+    }
     res.clearCookie('traveleke_refresh_token', { path: '/' });
 
     return {

@@ -1,11 +1,13 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { In, Repository } from 'typeorm';
 
 import { AssignRoleDto } from './dto/assign-role.dto';
@@ -44,7 +46,84 @@ export class UsersService {
    * Lấy danh sách tất cả khách hàng (role = 'CUSTOMER') — ADMIN & EMPLOYEE
    * Lọc trực tiếp ở tầng CSDL sử dụng Index `idx_users_role`, tối ưu hiệu năng và bộ nhớ.
    */
-  async findAllCustomers() {
+  async findAllCustomers(
+    actor?: User | { id: string; role: string },
+    options?: { hotelId?: string; search?: string; page?: number; limit?: number },
+  ) {
+    const safeLimit = Math.min(Math.max(Number(options?.limit || 100), 1), 100);
+    const safePage = Math.max(Number(options?.page || 1), 1);
+    const offset = (safePage - 1) * safeLimit;
+    const searchTerm = options?.search?.trim().toLowerCase();
+
+    if (actor && actor.role === 'EMPLOYEE') {
+      if (options?.hotelId) {
+        const staffCheck = await this.usersRepository.manager.query(
+          `SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [actor.id, String(options.hotelId)],
+        );
+        if (!Array.isArray(staffCheck) || staffCheck.length === 0) {
+          throw new ForbiddenException(
+            'CROSS_HOTEL_FORBIDDEN: Nhân viên không được phép truy vấn danh sách khách hàng của khách sạn khác.',
+          );
+        }
+      }
+
+      const params: any[] = [actor.id];
+      let hotelFilterSql = '';
+      if (options?.hotelId) {
+        hotelFilterSql = ' AND b.hotel_id = ?';
+        params.push(String(options.hotelId));
+      }
+
+      const rows = await this.usersRepository.manager.query(
+        `SELECT DISTINCT
+           u.id,
+           u.full_name AS fullName,
+           u.email,
+           u.phone,
+           u.gender,
+           u.avatar_url AS avatarUrl,
+           u.role,
+           u.status,
+           u.email_verified_at AS emailVerifiedAt,
+           u.last_login_at AS lastLoginAt,
+           u.created_at AS createdAt,
+           u.updated_at AS updatedAt
+         FROM users u
+         INNER JOIN bookings b ON b.user_id = u.id
+         INNER JOIN hotel_staff hs ON hs.hotel_id = b.hotel_id
+           AND hs.staff_user_id = ?
+           AND hs.status = 'ACTIVE'
+         WHERE u.role = 'CUSTOMER' AND u.deleted_at IS NULL${hotelFilterSql}
+         ORDER BY u.created_at DESC`,
+        params,
+      );
+      const filteredRows = (Array.isArray(rows) ? rows : []).filter((u: any) => {
+        if (!searchTerm) return true;
+        return (
+          String(u.fullName || '').toLowerCase().includes(searchTerm) ||
+          String(u.email || '').toLowerCase().includes(searchTerm) ||
+          String(u.phone || '').toLowerCase().includes(searchTerm)
+        );
+      });
+      return filteredRows.slice(offset, offset + safeLimit).map((u: any) => ({
+        id: String(u.id),
+        fullName: u.fullName,
+        email: u.email,
+        phone: u.phone,
+        address: null,
+        gender: u.gender,
+        dateOfBirth: null,
+        avatarUrl: u.avatarUrl,
+        role: u.role,
+        status: u.status,
+        isEmailVerified: Boolean(u.emailVerifiedAt),
+        lastLoginAt: u.lastLoginAt,
+        createdAt: u.createdAt,
+        updatedAt: u.updatedAt,
+      }));
+    }
+
     const users = await this.usersRepository.find({
       where: { role: 'CUSTOMER' },
       order: { createdAt: 'DESC' },
@@ -68,13 +147,19 @@ export class UsersService {
   }
 
   /**
-   * Cập nhật trạng thái tài khoản khách hàng (chỉ ADMIN & EMPLOYEE)
+   * Cập nhật trạng thái tài khoản khách hàng toàn sàn (chỉ ADMIN)
    */
   async updateCustomerStatus(
     id: string,
     dto: UpdateStatusDto,
     requestUserId?: string,
+    actor?: User | { id: string; role: string },
   ) {
+    if (actor && actor.role !== 'ADMIN') {
+      throw new ForbiddenException(
+        'Chỉ Quản trị viên hệ thống (ADMIN) mới có quyền khóa/mở khóa tài khoản khách hàng toàn sàn.',
+      );
+    }
     const user = await this.usersRepository.findOne({ where: { id } });
     if (!user || user.role !== 'CUSTOMER') {
       throw new NotFoundException(`Không tìm thấy khách hàng với ID ${id}.`);
@@ -129,7 +214,7 @@ export class UsersService {
 
     // P2-06: Xóa mật khẩu mặc định dùng chung '123456789'; nếu không truyền mật khẩu thì sinh mật khẩu/token ngẫu nhiên mật mã học một lần
     const generatedOneTimeSecret = !dto.password?.trim()
-      ? `Inv!${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).toUpperCase()}#9a`
+      ? `Inv!${crypto.randomBytes(16).toString('base64url')}#9a`
       : null;
     const rawPassword = dto.password?.trim()
       ? dto.password.trim()

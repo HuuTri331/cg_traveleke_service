@@ -9,8 +9,27 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import {
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { PaymentsService } from './payments.service';
 import { CheckoutSessionDto } from './dto/checkout-session.dto';
+
+export class RequestPaymentRefundDto {
+  @IsNumber()
+  @Min(1)
+  amount!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
@@ -123,7 +142,7 @@ export class PaymentsController {
   @Roles('ADMIN')
   requestRefund(
     @Param('bookingId') bookingId: string,
-    @Body() body: { amount: number; reason: string },
+    @Body() body: RequestPaymentRefundDto,
     @CurrentUser() user: User,
   ) {
     return this.paymentsService.requestRefund(

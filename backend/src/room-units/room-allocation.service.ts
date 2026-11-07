@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   Optional,
@@ -82,6 +83,62 @@ export class RoomAllocationService {
       },
       order: { id: 'ASC' },
     });
+  }
+
+  async getBookingAllocationsForActor(
+    bookingId: string,
+    actor: { id: string; role: string },
+  ): Promise<any[]> {
+    const booking = await this.dataSource.getRepository(Booking).findOne({
+      where: { id: String(bookingId) },
+    });
+    if (!booking) throw new NotFoundException(`Booking #${bookingId} không tồn tại.`);
+
+    const role = String(actor?.role || '').toUpperCase();
+    if (role === 'CUSTOMER' || role === 'USER') {
+      if (String(booking.userId) !== String(actor.id)) {
+        throw new ForbiddenException(
+          'BOLA_FORBIDDEN: Bạn không có quyền xem thông tin phân phòng của khách hàng khác.',
+        );
+      }
+    } else if (role === 'EMPLOYEE' || role === 'STAFF' || role === 'MANAGER') {
+      if (typeof this.dataSource?.query === 'function') {
+        const staffRows = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [booking.hotelId, actor.id],
+        );
+        if (!Array.isArray(staffRows) || staffRows.length === 0) {
+          throw new ForbiddenException(
+            'CROSS_HOTEL_FORBIDDEN: Nhân sự không thuộc khách sạn của đơn đặt phòng này.',
+          );
+        }
+      }
+    } else if (role !== 'ADMIN') {
+      throw new ForbiddenException('Không có quyền xem thông tin phân phòng.');
+    }
+
+    const allocations = await this.getBookingAllocations(bookingId);
+    if (role === 'CUSTOMER' || role === 'USER') {
+      const settings = await this.propertySettings.getHotelSettings(booking.hotelId);
+      const isCheckedInOrCompleted =
+        booking.status === BookingStatus.CHECKED_IN ||
+        booking.status === BookingStatus.COMPLETED;
+      if (!isCheckedInOrCompleted && !settings.allowGuestRoomNumberReveal) {
+        return allocations.map((a) => ({
+          id: a.id,
+          bookingId: a.bookingId,
+          hotelId: a.hotelId,
+          roomTypeId: a.roomTypeId,
+          roomUnitId: null,
+          roomNumber: null,
+          status: a.status,
+          checkInDate: a.checkInDate,
+          checkOutDate: a.checkOutDate,
+          redactedBeforeCheckIn: true,
+        }));
+      }
+    }
+    return allocations;
   }
 
   async getCandidates(bookingId: string, actor: { id: string; role: string }) {

@@ -171,6 +171,26 @@ export class StaffSkillsService {
     return Array.isArray(rows) && rows.length > 0;
   }
 
+  async assertCanViewSkills(actor: User | { id: string | number; role: string }, targetUserId: number): Promise<void> {
+    if (!actor || actor.role === 'ADMIN') return;
+    if (Number(actor.id) === Number(targetUserId)) return;
+
+    const sharedHotelRows = await this.dataSource.query(
+      `SELECT a.id
+       FROM hotel_staff a
+       INNER JOIN hotel_staff b ON b.hotel_id = a.hotel_id
+       WHERE a.staff_user_id = ? AND a.status = 'ACTIVE'
+         AND b.staff_user_id = ? AND b.status = 'ACTIVE'
+       LIMIT 1`,
+      [actor.id, targetUserId],
+    );
+    if (!Array.isArray(sharedHotelRows) || sharedHotelRows.length === 0) {
+      throw new ForbiddenException(
+        'CROSS_HOTEL_SKILL_ACCESS_DENIED: Bạn không thuộc cùng khách sạn để xem hồ sơ kỹ năng của nhân sự này.',
+      );
+    }
+  }
+
   /**
    * Phân quyền sửa hồ sơ năng lực:
    * - Nhân viên tự sửa hồ sơ của CHÍNH MÌNH (self-declaration)
@@ -231,23 +251,70 @@ export class StaffSkillsService {
     skillCategoryCode: string,
     requiredLevel: number,
     hotelId?: number,
+    actor?: User | { id: string | number; role: string },
   ): Promise<
     Array<{
       userId: number;
       staffName: string;
-      staffEmail: string;
+      staffEmail?: string | null;
       level: number;
       yearsExp: number | null;
       certificate: string | null;
       matchScore: number;
     }>
   > {
+    const sanitizeRows = (rows: any[]) =>
+      (Array.isArray(rows) ? rows : []).map((r) => {
+        const copy = { ...r };
+        if (actor && actor.role !== 'ADMIN') {
+          delete copy.staffEmail;
+        }
+        return copy;
+      });
+
+    if (actor && actor.role !== 'ADMIN') {
+      if (hotelId) {
+        const memberRows = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [hotelId, actor.id],
+        );
+        if (!Array.isArray(memberRows) || memberRows.length === 0) {
+          throw new ForbiddenException(
+            'CROSS_HOTEL_SKILL_ACCESS_DENIED: Bạn không có quyền tra cứu gợi ý nhân sự của khách sạn khác.',
+          );
+        }
+      } else {
+        const results = await this.dataSource.query(
+          `
+          SELECT DISTINCT
+            u.id AS userId,
+            u.full_name AS staffName,
+            ss.level,
+            ss.years_exp AS yearsExp,
+            ss.certificate,
+            sc.name AS skillName,
+            (ss.level * 10 + IFNULL(ss.years_exp, 0)) AS matchScore
+          FROM staff_skills ss
+          INNER JOIN users u ON u.id = ss.user_id AND u.status = 'ACTIVE'
+          INNER JOIN skill_categories sc ON sc.id = ss.skill_id AND sc.code = ?
+          INNER JOIN hotel_staff hs_target ON hs_target.staff_user_id = u.id AND hs_target.status = 'ACTIVE'
+          INNER JOIN hotel_staff hs_actor ON hs_actor.hotel_id = hs_target.hotel_id
+            AND hs_actor.staff_user_id = ? AND hs_actor.status = 'ACTIVE'
+          WHERE ss.level >= ?
+          ORDER BY matchScore DESC
+          LIMIT 10
+          `,
+          [skillCategoryCode, actor.id, requiredLevel],
+        );
+        return sanitizeRows(results);
+      }
+    }
+
     const results = await this.dataSource.query(
       `
       SELECT
         u.id AS userId,
         u.full_name AS staffName,
-        u.email AS staffEmail,
         ss.level,
         ss.years_exp AS yearsExp,
         ss.certificate,
@@ -266,7 +333,7 @@ export class StaffSkillsService {
         : [skillCategoryCode, requiredLevel],
     );
 
-    return results;
+    return sanitizeRows(results);
   }
 
   // ============================================================
@@ -462,7 +529,10 @@ export class StaffSkillsService {
   // STATISTICS (mở rộng)
   // ============================================================
 
-  async getSkillStats(): Promise<{
+  async getSkillStats(
+    hotelId?: number,
+    actor?: User | { id: string | number; role: string },
+  ): Promise<{
     totalSkillCategories: number;
     staffWithSkills: number;
     averageSkillLevel: number;
@@ -470,8 +540,92 @@ export class StaffSkillsService {
     staffWithLanguages: number;
     expiringSoonCertificates: number;
   }> {
+    let scopedHotelId = hotelId;
+    if (actor && actor.role !== 'ADMIN') {
+      if (scopedHotelId) {
+        const memberRows = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [scopedHotelId, actor.id],
+        );
+        if (!Array.isArray(memberRows) || memberRows.length === 0) {
+          throw new ForbiddenException(
+            'CROSS_HOTEL_SKILL_ACCESS_DENIED: Bạn không có quyền xem thống kê kỹ năng của khách sạn khác.',
+          );
+        }
+      } else {
+        const actorHotelRows = await this.dataSource.query(
+          `SELECT hotel_id AS hotelId FROM hotel_staff WHERE staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [actor.id],
+        );
+        if (!Array.isArray(actorHotelRows) || actorHotelRows.length === 0) {
+          throw new ForbiddenException(
+            'CROSS_HOTEL_SKILL_ACCESS_DENIED: Nhân viên chưa được phân công khách sạn ACTIVE.',
+          );
+        }
+        scopedHotelId = Number(actorHotelRows[0].hotelId);
+      }
+    }
+
     const thirtyDaysLater = new Date();
     thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
+    const expiryDateStr = thirtyDaysLater.toISOString().split('T')[0];
+
+    if (scopedHotelId) {
+      const [
+        totalSkillCategories,
+        staffWithSkillsRows,
+        avgRows,
+        topSkillRows,
+        langRows,
+        expiringRows,
+      ] = await Promise.all([
+        this.skillCategoryRepo.count({ where: { status: 'ACTIVE' } }),
+        this.dataSource.query(
+          `SELECT COUNT(DISTINCT ss.user_id) AS cnt
+           FROM staff_skills ss
+           INNER JOIN hotel_staff hs ON hs.staff_user_id = ss.user_id AND hs.hotel_id = ? AND hs.status = 'ACTIVE'`,
+          [scopedHotelId],
+        ),
+        this.dataSource.query(
+          `SELECT AVG(ss.level) AS avg_level
+           FROM staff_skills ss
+           INNER JOIN hotel_staff hs ON hs.staff_user_id = ss.user_id AND hs.hotel_id = ? AND hs.status = 'ACTIVE'`,
+          [scopedHotelId],
+        ),
+        this.dataSource.query(
+          `SELECT sc.name, COUNT(ss.id) AS cnt
+           FROM staff_skills ss
+           INNER JOIN skill_categories sc ON sc.id = ss.skill_id
+           INNER JOIN hotel_staff hs ON hs.staff_user_id = ss.user_id AND hs.hotel_id = ? AND hs.status = 'ACTIVE'
+           GROUP BY sc.id ORDER BY cnt DESC LIMIT 1`,
+          [scopedHotelId],
+        ),
+        this.dataSource.query(
+          `SELECT COUNT(DISTINCT sls.user_id) AS cnt
+           FROM staff_language_skills sls
+           INNER JOIN hotel_staff hs ON hs.staff_user_id = sls.user_id AND hs.hotel_id = ? AND hs.status = 'ACTIVE'`,
+          [scopedHotelId],
+        ),
+        this.dataSource.query(
+          `SELECT COUNT(*) AS cnt
+           FROM staff_skills ss
+           INNER JOIN hotel_staff hs ON hs.staff_user_id = ss.user_id AND hs.hotel_id = ? AND hs.status = 'ACTIVE'
+           WHERE ss.certificate_expiry IS NOT NULL AND ss.certificate_expiry <= ?`,
+          [scopedHotelId, expiryDateStr],
+        ),
+      ]);
+
+      return {
+        totalSkillCategories,
+        staffWithSkills: Number(staffWithSkillsRows[0]?.cnt ?? 0),
+        averageSkillLevel: parseFloat(
+          (Number(avgRows[0]?.avg_level) || 0).toFixed(1),
+        ),
+        topSkill: topSkillRows[0]?.name ?? null,
+        staffWithLanguages: Number(langRows[0]?.cnt ?? 0),
+        expiringSoonCertificates: Number(expiringRows[0]?.cnt ?? 0),
+      };
+    }
 
     const [
       totalSkillCategories,
@@ -497,7 +651,7 @@ export class StaffSkillsService {
       ),
       this.dataSource.query(
         'SELECT COUNT(*) AS cnt FROM staff_skills WHERE certificate_expiry IS NOT NULL AND certificate_expiry <= ?',
-        [thirtyDaysLater.toISOString().split('T')[0]],
+        [expiryDateStr],
       ),
     ]);
 

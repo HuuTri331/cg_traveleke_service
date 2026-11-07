@@ -72,28 +72,28 @@ export class DocumentGeneratorService {
     if (!booking) throw new NotFoundException(`Booking #${bookingId} không tồn tại.`);
     await this.verifyAccess(booking, actor);
 
-    const folioData = await this.folioService.getBookingFolio(booking.id);
+    const folio = await this.folioService.getOrCreateFolio(booking.id, booking.hotelId);
     const existingDocsOfType = await this.docRepo.find({
       where: { bookingId: String(booking.id), type: dto.type },
       order: { version: 'DESC' },
     });
     const nextVersion = existingDocsOfType.length > 0 ? Number(existingDocsOfType[0].version) + 1 : 1;
     const amountVnd = Math.round(
-      Number(dto.amountVnd ?? folioData.folio.totalPaymentVnd ?? booking.estimatedTotal ?? 0),
+      Number(dto.amountVnd ?? folio.totalPaymentVnd ?? booking.estimatedTotal ?? 0),
     );
 
     const snapshotPayload = {
       bookingId: booking.id,
-      folioId: folioData.folio.id,
+      folioId: folio.id,
       type: dto.type,
       version: nextVersion,
       amountVnd,
       folioBalances: {
-        totalDebitVnd: folioData.folio.totalDebitVnd,
-        totalPaymentVnd: folioData.folio.totalPaymentVnd,
-        totalCreditVnd: folioData.folio.totalCreditVnd,
-        totalRefundVnd: folioData.folio.totalRefundVnd,
-        outstandingBalanceVnd: folioData.folio.outstandingBalanceVnd,
+        totalDebitVnd: folio.totalDebitVnd,
+        totalPaymentVnd: folio.totalPaymentVnd,
+        totalCreditVnd: folio.totalCreditVnd,
+        totalRefundVnd: folio.totalRefundVnd,
+        outstandingBalanceVnd: folio.outstandingBalanceVnd,
       },
       disclaimer: 'Chứng từ biên nhận / bảng kê nội bộ Traveleke (không thay thế Hóa đơn GTGT điện tử cơ quan thuế).',
     };
@@ -104,7 +104,7 @@ export class DocumentGeneratorService {
     return this.docRepo.save(
       this.docRepo.create({
         bookingId: String(booking.id),
-        folioId: String(folioData.folio.id),
+        folioId: String(folio.id),
         hotelId: String(booking.hotelId),
         documentNumber: docNumber,
         type: dto.type,

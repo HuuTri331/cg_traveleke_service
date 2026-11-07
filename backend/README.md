@@ -181,3 +181,12 @@ tk :nhanvientraveloka@gmail.com
 mk :123456789
 rồi khi đó cuối cùng mới 
 npm run start:dev
+
+https://github.com/anthropics/skills/tree/main/skills/frontend-design
+https://github.com/nextlevelbuilder/ui-ux-pro-max-skill
+https://github.com/emilkowalski/skills
+https://github.com/garrytan/gstack
+
+https://github.com/LottieFiles/motion-design-skill
+https://github.com/haidrrrry/claude-remotion-skill
+https://github.com/motiondivision/motion

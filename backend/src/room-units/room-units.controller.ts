@@ -14,11 +14,16 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { AllocateRoomUnitsDto } from './dto/allocate-room-units.dto';
+import {
+  CommitRoomMoveDto,
+  CreateRoomUnitBodyDto,
+  PreviewRoomMoveDto,
+  UpdateRoomUnitStateDto,
+  VerifyRoomUnitDto,
+} from './dto/room-units.dto';
 import { RoomAllocationService } from './room-allocation.service';
 import { RoomMoveService } from './room-move.service';
-import type { RoomMoveRequestDto } from './room-move.service';
 import { RoomUnitsService } from './room-units.service';
-import type { CreateRoomUnitDto } from './room-units.service';
 
 @Controller('bookings')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -52,7 +57,7 @@ export class RoomUnitBookingController {
 }
 
 @Controller()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class RoomUnitsController {
   constructor(
     private readonly roomUnitsService: RoomUnitsService,
@@ -63,11 +68,12 @@ export class RoomUnitsController {
   private extractActor(req: any) {
     return {
       id: String(req.user?.sub || req.user?.id),
-      role: String(req.user?.role || 'STAFF'),
+      role: String(req.user?.role || 'CUSTOMER'),
     };
   }
 
   @Get('hotels/:hotelId/room-units')
+  @Roles('ADMIN', 'EMPLOYEE')
   async listRoomUnits(
     @Param('hotelId') hotelId: string,
     @Query('roomTypeId') roomTypeId?: string,
@@ -83,9 +89,10 @@ export class RoomUnitsController {
   }
 
   @Post('hotels/:hotelId/room-units')
+  @Roles('ADMIN', 'EMPLOYEE')
   async createRoomUnit(
     @Param('hotelId') hotelId: string,
-    @Body() dto: Omit<CreateRoomUnitDto, 'hotelId'>,
+    @Body() dto: CreateRoomUnitBodyDto,
     @Req() req: any,
   ) {
     return this.roomUnitsService.createRoomUnit(
@@ -94,47 +101,74 @@ export class RoomUnitsController {
     );
   }
 
+  @Post('room-units/:unitId/verify')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async verifyRoomUnit(
+    @Param('unitId') unitId: string,
+    @Body() body: VerifyRoomUnitDto,
+    @Req() req: any,
+  ) {
+    return this.roomUnitsService.verifyRoomUnit(
+      unitId,
+      this.extractActor(req),
+      body?.note,
+    );
+  }
+
+  @Post('hotels/:hotelId/room-units/:unitId/verify')
+  @Roles('ADMIN', 'EMPLOYEE')
+  async verifyHotelRoomUnit(
+    @Param('unitId') unitId: string,
+    @Body() body: VerifyRoomUnitDto,
+    @Req() req: any,
+  ) {
+    return this.roomUnitsService.verifyRoomUnit(
+      unitId,
+      this.extractActor(req),
+      body?.note,
+    );
+  }
+
   @Patch('room-units/:unitId/state')
+  @Roles('ADMIN', 'EMPLOYEE')
   async updateUnitState(
     @Param('unitId') unitId: string,
-    @Body() body: { operationalStatus?: any; housekeepingState?: any; notes?: string },
+    @Body() body: UpdateRoomUnitStateDto,
     @Req() req: any,
   ) {
     return this.roomUnitsService.updateUnitState(unitId, body, this.extractActor(req));
   }
 
   @Get('bookings/:id/room-unit-candidates')
+  @Roles('ADMIN', 'EMPLOYEE')
   async getCandidates(@Param('id') id: string, @Req() req: any) {
     return this.roomAllocationService.getCandidates(id, this.extractActor(req));
   }
 
   @Get('bookings/:id/room-unit-allocations')
-  async getAllocations(@Param('id') id: string) {
-    return this.roomAllocationService.getBookingAllocations(id);
-  }
-
-  @Post('bookings/:id/room-unit-allocations')
-  async allocateRoomUnits(
-    @Param('id') id: string,
-    @Body() body: AllocateRoomUnitsDto,
-    @Req() req: any,
-  ) {
-    return this.roomAllocationService.allocate(id, body, this.extractActor(req));
+  @Roles('ADMIN', 'EMPLOYEE', 'CUSTOMER')
+  async getAllocations(@Param('id') id: string, @Req() req: any) {
+    return this.roomAllocationService.getBookingAllocationsForActor(
+      id,
+      this.extractActor(req),
+    );
   }
 
   @Post('bookings/:id/room-moves/preview')
+  @Roles('ADMIN', 'EMPLOYEE')
   async previewMove(
     @Param('id') id: string,
-    @Body() body: Omit<RoomMoveRequestDto, 'commandId'>,
+    @Body() body: PreviewRoomMoveDto,
     @Req() req: any,
   ) {
     return this.roomMoveService.previewMove(id, body, this.extractActor(req));
   }
 
   @Post('bookings/:id/room-moves/commit')
+  @Roles('ADMIN', 'EMPLOYEE')
   async commitMove(
     @Param('id') id: string,
-    @Body() body: RoomMoveRequestDto,
+    @Body() body: CommitRoomMoveDto,
     @Req() req: any,
   ) {
     return this.roomMoveService.commitMove(id, body, this.extractActor(req));

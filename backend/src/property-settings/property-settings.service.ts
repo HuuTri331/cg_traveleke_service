@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Optional,
@@ -24,6 +25,8 @@ export interface UpdateHotelBusinessSettingDto {
   allowGuestRoomNumberReveal?: boolean;
   freeEarlyCheckinMinutes?: number;
   freeLateCheckoutMinutes?: number;
+  expectedVersion?: number;
+  version?: number;
 }
 
 @Injectable()
@@ -46,6 +49,39 @@ export class PropertySettingsService {
     if (!Array.isArray(rows) || rows.length === 0) {
       throw new ForbiddenException('Chỉ Quản lý khách sạn hoặc ADMIN mới được thay đổi cấu hình khách sạn.');
     }
+  }
+
+  async assertStaffAccess(hotelId: string | number, actor: { id: string; role: string }): Promise<void> {
+    const role = String(actor?.role || '').toUpperCase();
+    if (role === 'ADMIN') return;
+    if (role === 'CUSTOMER' || role === 'USER') {
+      throw new ForbiddenException('Khách hàng không có quyền truy cập cấu hình vận hành nội bộ của khách sạn.');
+    }
+    if (!this.dataSource || typeof this.dataSource.query !== 'function') return;
+    const rows = await this.dataSource.query(
+      `SELECT id FROM hotel_staff WHERE staff_user_id = ? AND hotel_id = ? AND status = 'ACTIVE' LIMIT 1`,
+      [actor.id, String(hotelId)],
+    );
+    if (!Array.isArray(rows) || rows.length === 0) {
+      throw new ForbiddenException('CROSS_HOTEL_FORBIDDEN: Nhân sự không thuộc biên chế khách sạn này.');
+    }
+  }
+
+  async getHotelSettingsForActor(hotelId: string | number, actor: { id: string; role: string }) {
+    await this.assertStaffAccess(hotelId, actor);
+    return this.getHotelSettings(hotelId);
+  }
+
+  async getPublicHotelPolicy(hotelId: string | number) {
+    const internal = await this.getHotelSettings(hotelId);
+    return {
+      hotelId: String(internal.hotelId),
+      ianaTimezone: internal.ianaTimezone,
+      locale: internal.locale,
+      currency: internal.currency,
+      standardCheckInTime: '14:00',
+      standardCheckOutTime: '12:00',
+    };
   }
 
   async getHotelSettings(hotelId: string | number) {
@@ -104,6 +140,16 @@ export class PropertySettingsService {
       throw new BadRequestException('Giai đoạn hiện tại chỉ hỗ trợ tiền tệ thanh toán VND (không hỗ trợ FX tự động).');
     }
     const current = await this.getHotelSettings(key);
+    const callerVersion = dto.expectedVersion ?? dto.version;
+    if (
+      callerVersion !== undefined &&
+      callerVersion !== null &&
+      Number(callerVersion) !== Number(current.version)
+    ) {
+      throw new ConflictException(
+        `PROPERTY_SETTINGS_VERSION_CONFLICT: Cấu hình khách sạn #${key} đã thay đổi (expected=${callerVersion}, actual=${current.version}).`,
+      );
+    }
     const ianaTimezone = dto.ianaTimezone
       ? this.propertyClock.validateTimezone(dto.ianaTimezone)
       : current.ianaTimezone;
@@ -124,6 +170,39 @@ export class PropertySettingsService {
       freeLateCheckoutMinutes: dto.freeLateCheckoutMinutes ?? current.freeLateCheckoutMinutes,
       version: current.version + 1,
     };
+    if (this.dataSource && typeof this.dataSource.query === 'function') {
+      await this.dataSource.query(
+        `INSERT INTO hotel_business_settings (
+           hotel_id, iana_timezone, locale, currency, cutoff_time,
+           require_room_inspection, allow_guest_room_number_reveal,
+           free_early_checkin_minutes, free_late_checkout_minutes, version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           iana_timezone = VALUES(iana_timezone),
+           locale = VALUES(locale),
+           currency = VALUES(currency),
+           cutoff_time = VALUES(cutoff_time),
+           require_room_inspection = VALUES(require_room_inspection),
+           allow_guest_room_number_reveal = VALUES(allow_guest_room_number_reveal),
+           free_early_checkin_minutes = VALUES(free_early_checkin_minutes),
+           free_late_checkout_minutes = VALUES(free_late_checkout_minutes),
+           version = version + 1`,
+        [
+          key,
+          updated.ianaTimezone,
+          updated.locale,
+          updated.currency,
+          updated.cutoffTime,
+          updated.requireRoomInspection ? 1 : 0,
+          updated.allowGuestRoomNumberReveal ? 1 : 0,
+          updated.freeEarlyCheckinMinutes,
+          updated.freeLateCheckoutMinutes,
+          updated.version,
+        ],
+      );
+      this.inMemorySettings.delete(key);
+      return this.getHotelSettings(key);
+    }
     this.inMemorySettings.set(key, updated);
     return updated;
   }

@@ -530,18 +530,47 @@ export class AuthService implements OnModuleInit {
     }
 
     // ============================================================
-    // ATOMIC TOKEN ROTATION TRONG DATABASE TRANSACTION
+    // ATOMIC TOKEN ROTATION TRONG DATABASE TRANSACTION (PESSIMISTIC LOCK)
     // ============================================================
     const result = await runWithDeadlockRetry(
       this.dataSource,
       async (manager) => {
         const repo = manager.getRepository(RefreshToken);
+        const lockedToken = await repo
+          .createQueryBuilder('rt')
+          .setLock('pessimistic_write')
+          .where('rt.id = :id', { id: tokenRecord.id })
+          .getOne();
 
-        // 1. Đánh dấu token cũ là USED
-        await repo.update(tokenRecord.id, {
-          status: RefreshTokenStatus.USED,
-          usedAt: now,
-        });
+        if (!lockedToken || lockedToken.status !== RefreshTokenStatus.ACTIVE) {
+          await repo.update(
+            { familyId: tokenRecord.familyId },
+            { status: RefreshTokenStatus.REVOKED, revokedAt: new Date() },
+          );
+          throw new UnauthorizedException(
+            'Phiên làm việc đã được làm mới ở tiến trình khác hoặc bị thu hồi.',
+          );
+        }
+
+        // 1. Đánh dấu token cũ là USED (conditional update chống race condition E19)
+        lockedToken.status = RefreshTokenStatus.USED;
+        tokenRecord.status = RefreshTokenStatus.USED;
+        const updateRes: any = await repo.update(
+          { id: tokenRecord.id, status: RefreshTokenStatus.ACTIVE } as any,
+          {
+            status: RefreshTokenStatus.USED,
+            usedAt: now,
+          },
+        );
+        if (updateRes && typeof updateRes.affected === 'number' && updateRes.affected === 0) {
+          await repo.update(
+            { familyId: tokenRecord.familyId },
+            { status: RefreshTokenStatus.REVOKED, revokedAt: new Date() },
+          );
+          throw new UnauthorizedException(
+            'Phiên làm việc đã được làm mới ở tiến trình khác hoặc bị thu hồi.',
+          );
+        }
 
         // 2. Tạo successor Refresh Token mới thuộc cùng Family
         const newRawRefreshToken = crypto.randomBytes(48).toString('base64url');
@@ -601,6 +630,27 @@ export class AuthService implements OnModuleInit {
     return result;
   }
 
+  extractSessionFromBearer(authHeader?: string): { sessionId?: string; userId?: string } {
+    if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) {
+      return {};
+    }
+    const rawAccess = authHeader.slice(7).trim();
+    if (!rawAccess) return {};
+    try {
+      const secret = this.configService.get<string>('JWT_SECRET') || process.env.JWT_SECRET;
+      const decoded: any = this.jwtService.verify(rawAccess, {
+        secret,
+        ignoreExpiration: true,
+      });
+      return {
+        sessionId: decoded?.sessionId ? String(decoded.sessionId) : undefined,
+        userId: decoded?.sub ? String(decoded.sub) : undefined,
+      };
+    } catch {
+      return {};
+    }
+  }
+
   /**
    * Đăng xuất và thu hồi phiên làm việc (Revoke Session & Token Family)
    */
@@ -616,7 +666,8 @@ export class AuthService implements OnModuleInit {
           { status: RefreshTokenStatus.REVOKED, revokedAt: new Date() },
         );
       }
-    } else if (sessionId) {
+    }
+    if (sessionId) {
       await this.refreshTokenRepository.update(
         { sessionId },
         { status: RefreshTokenStatus.REVOKED, revokedAt: new Date() },

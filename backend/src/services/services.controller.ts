@@ -23,6 +23,9 @@ import {
   UpdateRoomServiceDto,
   CreateServiceRequestDto,
   UpdateServiceRequestDto,
+  UpdateServiceRequestStatusBodyDto,
+  AssignServiceRequestBodyDto,
+  CreateBookingSnapshotsBodyDto,
   CreateServiceRecoveryLogDto,
   ApproveRecoveryDto,
 } from './dto/services.dto';
@@ -228,13 +231,7 @@ export class ServicesController {
   @Roles('ADMIN', 'EMPLOYEE')
   updateRequestStatus(
     @Param('id', ParseIntPipe) id: number,
-    @Body()
-    body: {
-      status: ServiceRequestStatus;
-      assignedTo?: number;
-      failureReason?: string;
-      note?: string;
-    },
+    @Body() body: UpdateServiceRequestStatusBodyDto,
     @CurrentUser() user: User,
   ) {
     return this.servicesService.updateServiceRequestStatus(
@@ -254,7 +251,7 @@ export class ServicesController {
   @Roles('ADMIN', 'EMPLOYEE')
   assignServiceRequest(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { assignedTo: number; note?: string },
+    @Body() body: AssignServiceRequestBodyDto,
     @CurrentUser() user: User,
   ) {
     return this.servicesService.assignServiceRequest(id, Number(body.assignedTo), user, body.note);
@@ -269,7 +266,7 @@ export class ServicesController {
   @Roles('ADMIN', 'EMPLOYEE')
   @HttpCode(HttpStatus.CREATED)
   createBookingSnapshots(
-    @Body() body: { bookingId: number; roomTypeId?: number; hotelId?: number },
+    @Body() body: CreateBookingSnapshotsBodyDto,
     @CurrentUser() user: User,
   ) {
     return this.servicesService.createBookingSnapshots(

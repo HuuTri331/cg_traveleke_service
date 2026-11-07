@@ -21,11 +21,10 @@
 -- Có thể bỏ comment dòng dưới nếu muốn khởi tạo lại toàn bộ database sạch từ đầu:
 -- DROP DATABASE IF EXISTS hotel_booking_db;
 
-CREATE DATABASE IF NOT EXISTS hotel_booking_db
-    CHARACTER SET utf8mb4
-    COLLATE utf8mb4_unicode_ci;
-
-USE hotel_booking_db;
+-- Lưu ý (SEC-16 / BUG-DB-01): Không ép cứng USE hotel_booking_db trong migration runner.
+-- Mọi bảng sẽ được tạo trên đúng schema đã kết nối qua biến môi trường DB_DATABASE.
+-- CREATE DATABASE IF NOT EXISTS hotel_booking_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+-- USE hotel_booking_db;
 
 SET NAMES utf8mb4;
 SET CHARACTER SET utf8mb4;

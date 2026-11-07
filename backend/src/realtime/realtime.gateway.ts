@@ -65,7 +65,7 @@ export class RealtimeGateway
     this.logger.log('🚀 [RealtimeGateway] WebSocket server initialized successfully.');
 
     // Handshake Authentication Middleware theo chuẩn bài viết
-    server.use((socket: Socket, next) => {
+    server.use(async (socket: Socket, next) => {
       try {
         const token =
           socket.handshake.auth?.token ||
@@ -80,6 +80,36 @@ export class RealtimeGateway
             '';
 
           const payload = this.jwtService.verify(token, { secret });
+          if (this.dataSource && typeof this.dataSource.query === 'function') {
+            const userId = payload.sub || payload.id;
+            if (userId) {
+              const userRows = await this.dataSource.query(
+                `SELECT status, deleted_at AS deletedAt FROM users WHERE id = ? LIMIT 1`,
+                [userId],
+              );
+              if (
+                !Array.isArray(userRows) ||
+                userRows.length === 0 ||
+                userRows[0].status !== 'ACTIVE' ||
+                userRows[0].deletedAt
+              ) {
+                return next(new Error('Authentication error: user inactive or blocked'));
+              }
+            }
+            if (payload.sessionId) {
+              const sessionRows = await this.dataSource.query(
+                `SELECT status FROM refresh_tokens WHERE session_id = ? LIMIT 10`,
+                [payload.sessionId],
+              );
+              if (
+                Array.isArray(sessionRows) &&
+                sessionRows.length > 0 &&
+                !sessionRows.some((r: any) => r.status === 'ACTIVE')
+              ) {
+                return next(new Error('Authentication error: session revoked'));
+              }
+            }
+          }
           socket.data.user = payload;
           this.logger.log(
             `🔐 [Handshake] Authenticated socket ${socket.id} (user: ${payload.sub || payload.id}, role: ${payload.role})`,
@@ -91,7 +121,7 @@ export class RealtimeGateway
       } catch (err: any) {
         this.logger.warn(`⚠️ [Handshake] Auth failed for socket ${socket.id}: ${err.message}`);
         // Nếu có token gửi lên nhưng token bị sai hoặc hết hạn -> từ chối connection ngay tại handshake
-        if (socket.handshake.auth?.token) {
+        if (socket.handshake.auth?.token || socket.handshake.headers?.authorization) {
           return next(new Error('Authentication error: invalid or expired token'));
         }
         socket.data.user = null;
@@ -111,6 +141,49 @@ export class RealtimeGateway
     this.logger.log(`❌ Client disconnected: ${client.id}`);
   }
 
+  async verifySocketSessionActive(client: Socket): Promise<boolean> {
+    const user = client.data?.user;
+    if (!user) return false;
+    if (!this.dataSource || typeof this.dataSource.query !== 'function') return true;
+    const userId = user.sub || user.id;
+    if (userId) {
+      const userRows = await this.dataSource.query(
+        `SELECT status, deleted_at AS deletedAt FROM users WHERE id = ? LIMIT 1`,
+        [userId],
+      );
+      if (
+        !Array.isArray(userRows) ||
+        userRows.length === 0 ||
+        userRows[0].status !== 'ACTIVE' ||
+        userRows[0].deletedAt
+      ) {
+        client.disconnect(true);
+        return false;
+      }
+    }
+    if (user.sessionId) {
+      const sessionRows = await this.dataSource.query(
+        `SELECT status FROM refresh_tokens WHERE session_id = ? LIMIT 10`,
+        [user.sessionId],
+      );
+      if (
+        Array.isArray(sessionRows) &&
+        sessionRows.length > 0 &&
+        !sessionRows.some((r: any) => r.status === 'ACTIVE')
+      ) {
+        client.disconnect(true);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  disconnectUserSockets(userId: string | number) {
+    if (!this.server) return;
+    const room = `user:${userId}`;
+    this.server.in(room).disconnectSockets(true);
+  }
+
   // ============================================================
   // ROOM SUBSCRIPTION HANDLERS
   // ============================================================
@@ -127,8 +200,8 @@ export class RealtimeGateway
     if (!data?.hotelId) return;
 
     const user = client.data?.user;
-    if (!user) {
-      this.logger.warn(`⛔ [Security] Anonymous subscribe:hotel denied from socket ${client.id}`);
+    if (!user || !(await this.verifySocketSessionActive(client))) {
+      this.logger.warn(`⛔ [Security] Anonymous/revoked subscribe:hotel denied from socket ${client.id}`);
       return { event: 'error', message: 'Unauthorized: Authentication required' };
     }
 
@@ -179,7 +252,7 @@ export class RealtimeGateway
   handleSubscribeUser(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId: string | number },
-  ) {
+  ): any {
     if (!data?.userId) return;
 
     const user = client.data?.user;
@@ -188,21 +261,35 @@ export class RealtimeGateway
       return { event: 'error', message: 'Unauthorized: Authentication required' };
     }
 
-    const targetUserId = String(data.userId);
-    const authUserId = String(user?.sub || user?.id || '');
+    const completeSubscribeUser = () => {
+      const targetUserId = String(data.userId);
+      const authUserId = String(user?.sub || user?.id || '');
 
-    // Nếu không phải ADMIN, không được phép nghe lén phòng của user khác
-    if (user.role !== 'ADMIN' && authUserId && targetUserId !== authUserId) {
-      this.logger.warn(
-        `⛔ [Security] User ${authUserId} attempted to spy on room of user ${targetUserId}`,
-      );
-      return { event: 'error', message: 'Forbidden: Cannot subscribe to another user room' };
+      // Nếu không phải ADMIN, không được phép nghe lén phòng của user khác
+      if (user.role !== 'ADMIN' && authUserId && targetUserId !== authUserId) {
+        this.logger.warn(
+          `⛔ [Security] User ${authUserId} attempted to spy on room of user ${targetUserId}`,
+        );
+        return { event: 'error', message: 'Forbidden: Cannot subscribe to another user room' };
+      }
+
+      const room = `user:${data.userId}`;
+      client.join(room);
+      this.logger.log(`Client ${client.id} joined personal room ${room}`);
+      return { event: 'subscribed', room };
+    };
+
+    if (this.dataSource && typeof this.dataSource.query === 'function') {
+      return this.verifySocketSessionActive(client).then((active) => {
+        if (!active) {
+          this.logger.warn(`⛔ [Security] Revoked/blocked subscribe:user denied from socket ${client.id}`);
+          return { event: 'error', message: 'Unauthorized: Authentication required' };
+        }
+        return completeSubscribeUser();
+      });
     }
 
-    const room = `user:${data.userId}`;
-    client.join(room);
-    this.logger.log(`Client ${client.id} joined personal room ${room}`);
-    return { event: 'subscribed', room };
+    return completeSubscribeUser();
   }
 
   @SubscribeMessage('unsubscribe:user')
@@ -222,24 +309,38 @@ export class RealtimeGateway
    * Channel format: staff:notifications
    */
   @SubscribeMessage('subscribe:staff')
-  handleSubscribeStaff(@ConnectedSocket() client: Socket) {
+  handleSubscribeStaff(@ConnectedSocket() client: Socket): any {
     const user = client.data?.user;
     if (!user) {
       this.logger.warn(`⛔ [Security] Anonymous subscribe:staff denied from socket ${client.id}`);
       return { event: 'error', message: 'Unauthorized: Authentication required' };
     }
 
-    if (user.role !== 'ADMIN' && user.role !== 'EMPLOYEE') {
-      this.logger.warn(
-        `⛔ [Security] Unauthorized subscribe:staff from socket ${client.id} (role: ${user.role})`,
-      );
-      return { event: 'error', message: 'Forbidden: Staff access required' };
+    const completeSubscribeStaff = () => {
+      if (user.role !== 'ADMIN') {
+        this.logger.warn(
+          `⛔ [Security] Non-admin subscribe:staff denied from socket ${client.id} (role: ${user.role})`,
+        );
+        return { event: 'error', message: 'Forbidden: Staff access required' };
+      }
+
+      const room = 'staff:notifications';
+      client.join(room);
+      this.logger.log(`Client ${client.id} joined staff channel ${room}`);
+      return { event: 'subscribed', room };
+    };
+
+    if (this.dataSource && typeof this.dataSource.query === 'function') {
+      return this.verifySocketSessionActive(client).then((active) => {
+        if (!active) {
+          this.logger.warn(`⛔ [Security] Revoked/blocked subscribe:staff denied from socket ${client.id}`);
+          return { event: 'error', message: 'Unauthorized: Authentication required' };
+        }
+        return completeSubscribeStaff();
+      });
     }
 
-    const room = 'staff:notifications';
-    client.join(room);
-    this.logger.log(`Client ${client.id} joined staff channel ${room}`);
-    return { event: 'subscribed', room };
+    return completeSubscribeStaff();
   }
 
   // ============================================================
@@ -312,16 +413,36 @@ export class RealtimeGateway
   }
 
   /**
-   * Phát thông báo chung toàn hệ thống
+   * Phát thông báo chung toàn hệ thống (hoặc theo phạm vi hotel/user/private)
    */
   emitSystemNotification(
-    payload: SystemNotificationPayload,
+    payload: SystemNotificationPayload & {
+      scope?: 'PUBLIC' | 'HOTEL' | 'PRIVATE';
+      hotelId?: string | number;
+      userId?: string | number;
+    },
     targetRoom?: string,
   ) {
     if (!this.server) return;
 
+    const explicitHotelId = payload.hotelId ?? (payload.data as any)?.hotelId;
+    const explicitUserId = payload.userId ?? (payload.data as any)?.userId;
+    const scope = payload.scope ?? (explicitUserId ? 'PRIVATE' : explicitHotelId ? 'HOTEL' : 'PUBLIC');
+
     if (targetRoom) {
       this.server.to(targetRoom).emit(REALTIME_EVENTS.SYSTEM_NOTIFICATION, payload);
+    } else if (explicitUserId) {
+      this.server.to(`user:${explicitUserId}`).emit(REALTIME_EVENTS.SYSTEM_NOTIFICATION, payload);
+    } else if (explicitHotelId) {
+      this.server
+        .to(`hotel:${explicitHotelId}`)
+        .to('staff:notifications')
+        .emit(REALTIME_EVENTS.SYSTEM_NOTIFICATION, payload);
+    } else if (scope === 'PRIVATE' || scope === 'HOTEL') {
+      this.logger.warn(
+        `[Realtime] Blocked unscoped ${scope} system.notification without targetRoom/hotelId/userId: ${payload.title}`,
+      );
+      return;
     } else {
       this.server.emit(REALTIME_EVENTS.SYSTEM_NOTIFICATION, payload);
     }
@@ -337,9 +458,13 @@ export class RealtimeGateway
     bookingCode: string;
     status: string;
     userId?: string;
+    hotelId?: string;
   }) {
     if (!this.server) return;
     let emitter = this.server.to('staff:notifications');
+    if (payload.hotelId) {
+      emitter = emitter.to(`hotel:${payload.hotelId}`);
+    }
     if (payload.userId) {
       emitter = emitter.to(`user:${payload.userId}`);
     }
@@ -404,8 +529,13 @@ export class RealtimeGateway
    */
   emitRefundStatusChanged(payload: any) {
     if (!this.server) return;
-    this.server
-      .to('staff:notifications')
-      .emit(REALTIME_EVENTS.REFUND_STATUS_CHANGED, payload);
+    let emitter = this.server.to('staff:notifications');
+    if (payload?.hotelId) {
+      emitter = emitter.to(`hotel:${payload.hotelId}`);
+    }
+    if (payload?.userId) {
+      emitter = emitter.to(`user:${payload.userId}`);
+    }
+    emitter.emit(REALTIME_EVENTS.REFUND_STATUS_CHANGED, payload);
   }
 }

@@ -25,7 +25,10 @@ export class VoucherService {
     userId: string;
     now?: Date;
   }) {
-    const normalizedCode = (params.code || '').trim().toUpperCase();
+    if (typeof params.code !== 'string') {
+      throw new BadRequestException('Mã voucher phải là chuỗi ký tự hợp lệ.');
+    }
+    const normalizedCode = params.code.trim().toUpperCase();
     if (!normalizedCode) throw new BadRequestException('Mã voucher không được để trống.');
     const now = params.now || new Date();
 

@@ -5,11 +5,15 @@ import { BookingCoverageGrant } from './entities/booking-coverage-grant.entity';
 export const SERVICE_TASKS = ['SERVICE_REQUEST', 'SERVICE_RESPONSE'];
 export const OPERATION_TASKS = [
   'PRE_ARRIVAL_CONTACT',
+  'PRECHECKIN',
+  'OCCUPANT_UPDATE',
   'CHECK_IN',
   'CHECK_OUT',
   'ROOM_ASSIGN',
   'ASSIGN_ROOM',
   'MOVE_ROOM',
+  'ROOM_MOVE',
+  'ROOM_INCIDENT',
   'MESSAGE',
   'SERVICE_REQUEST',
   'SERVICE_RESPONSE',
@@ -17,7 +21,9 @@ export const OPERATION_TASKS = [
   'AMEND_BOOKING',
   'ARRIVAL_SUPPORT',
   'FOLIO_SETTLEMENT',
+  'FOLIO_ADJUSTMENT',
   'STAY_TIME_REQUEST',
+  'STAY_TIME_EXTENSION',
   'COMPLAINT_HANDLE',
   'WRITE_BOOKING_STATUS',
 ];
@@ -25,14 +31,38 @@ export function coverageAllows(scopes: string[], taskType: string): boolean {
   if (!OPERATION_TASKS.includes(taskType)) return false;
   if (scopes.includes('BOOKING_TASKS') || scopes.includes(taskType)) return true;
   if (
-    (taskType === 'ROOM_ASSIGN' || taskType === 'ASSIGN_ROOM' || taskType === 'MOVE_ROOM') &&
-    (scopes.includes('ROOM_ASSIGN') || scopes.includes('ASSIGN_ROOM'))
+    ['ROOM_ASSIGN', 'ASSIGN_ROOM', 'MOVE_ROOM', 'ROOM_MOVE'].includes(taskType) &&
+    (scopes.includes('ROOM_ASSIGN') || scopes.includes('ASSIGN_ROOM') || scopes.includes('MOVE_ROOM') || scopes.includes('ROOM_MOVE'))
   ) {
     return true;
   }
   if (
-    (taskType === 'AMENDMENT_REQUEST' || taskType === 'AMEND_BOOKING') &&
+    ['AMENDMENT_REQUEST', 'AMEND_BOOKING'].includes(taskType) &&
     (scopes.includes('AMENDMENT_REQUEST') || scopes.includes('AMEND_BOOKING'))
+  ) {
+    return true;
+  }
+  if (
+    ['STAY_TIME_REQUEST', 'STAY_TIME_EXTENSION'].includes(taskType) &&
+    (scopes.includes('STAY_TIME_REQUEST') || scopes.includes('STAY_TIME_EXTENSION'))
+  ) {
+    return true;
+  }
+  if (
+    ['ROOM_INCIDENT', 'COMPLAINT_HANDLE'].includes(taskType) &&
+    (scopes.includes('ROOM_INCIDENT') || scopes.includes('COMPLAINT_HANDLE'))
+  ) {
+    return true;
+  }
+  if (
+    ['PRECHECKIN', 'OCCUPANT_UPDATE', 'PRE_ARRIVAL_CONTACT', 'ARRIVAL_SUPPORT'].includes(taskType) &&
+    (scopes.includes('PRECHECKIN') || scopes.includes('OCCUPANT_UPDATE') || scopes.includes('PRE_ARRIVAL_CONTACT') || scopes.includes('ARRIVAL_SUPPORT'))
+  ) {
+    return true;
+  }
+  if (
+    ['FOLIO_SETTLEMENT', 'FOLIO_ADJUSTMENT'].includes(taskType) &&
+    (scopes.includes('FOLIO_SETTLEMENT') || scopes.includes('FOLIO_ADJUSTMENT'))
   ) {
     return true;
   }
@@ -69,6 +99,9 @@ export async function findCoverage(
     .andWhere("g.status = 'ACTIVE' AND g.start_at <= :at AND g.end_at > :at", {at})
     .orderBy('g.id', 'ASC').getMany();
   for (const g of grants) {
+    if ('acceptedAt' in g && g.acceptedAt === null && ('acceptedBy' in g ? g.acceptedBy === null : true)) {
+      continue;
+    }
     if (g.scopeMode === 'BOOKING_TASKS' && OPERATION_TASKS.includes(taskType)) return g;
     if ((g.scopeMode || 'TASK_TYPES') === 'TASK_TYPES' && coverageAllows(g.allowedTaskTypes || [], taskType)) return g;
     if (g.scopeMode === 'TASK_IDS' && taskId) {

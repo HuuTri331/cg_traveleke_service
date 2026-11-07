@@ -7,8 +7,21 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { NightAuditService } from './night-audit.service';
+
+export class CloseNightAuditDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(20)
+  date!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  commandId!: string;
+}
 
 @Controller('hotels/:id/night-audit')
 @UseGuards(JwtAuthGuard)
@@ -38,7 +51,7 @@ export class NightAuditController {
   @Post('close')
   async close(
     @Param('id') hotelId: string,
-    @Body() body: { date: string; commandId: string },
+    @Body() body: CloseNightAuditDto,
     @Req() req: any,
   ) {
     return this.nightAuditService.closeNightAudit(

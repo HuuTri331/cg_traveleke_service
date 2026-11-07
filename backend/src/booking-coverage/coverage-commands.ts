@@ -138,17 +138,15 @@ export async function createCoverage(em: EntityManager, bookingId: string,
   await assertNoOverlappingCoverage(em, bookingId, start, end, mode, dto.allowedTaskTypes || [], taskIds);
 
   const now = new Date();
-  const initialStatus = dto.requireDelegateAcceptance
-    ? CoverageGrantStatus.APPROVED_PENDING_ACCEPTANCE
-    : CoverageGrantStatus.ACTIVE;
+  const initialStatus = CoverageGrantStatus.APPROVED_PENDING_ACCEPTANCE;
 
   const grant = await em.save(BookingCoverageGrant, em.create(BookingCoverageGrant, {
     bookingId, hotelId:booking.hotelId, principalStaffId:booking.handledBy, delegateStaffId:dto.delegateStaffUserId,
     mode:'TEMPORARY', scopeMode:mode, absenceRequestId:dto.absenceRequestId || null,
     startAt:start, endAt:end, completionDeadline:deadline, allowedTaskTypes:dto.allowedTaskTypes || [],
     status:initialStatus, createdBy:actor.id, requestedBy:actor.id, approvedBy:actor.id, approvedAt:now,
-    acceptedBy: initialStatus === CoverageGrantStatus.ACTIVE ? dto.delegateStaffUserId : null,
-    acceptedAt: initialStatus === CoverageGrantStatus.ACTIVE ? now : null,
+    acceptedBy: null,
+    acceptedAt: null,
     acceptDeadline: new Date(Math.min(end.getTime(), Math.max(start.getTime(), now.getTime() + 30 * 60000))),
     reason:dto.reason, commandKey:dto.commandId || null, version:1,
   }));

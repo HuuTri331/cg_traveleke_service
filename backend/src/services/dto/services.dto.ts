@@ -272,6 +272,45 @@ export class UpdateServiceRequestDto {
   recoveryCost?: number;
 }
 
+export class UpdateServiceRequestStatusBodyDto {
+  @IsEnum(ServiceRequestStatus)
+  status!: ServiceRequestStatus;
+
+  @IsOptional()
+  @IsInt()
+  assignedTo?: number;
+
+  @IsOptional()
+  @IsString()
+  failureReason?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class AssignServiceRequestBodyDto {
+  @IsInt()
+  assignedTo!: number;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class CreateBookingSnapshotsBodyDto {
+  @IsInt()
+  bookingId!: number;
+
+  @IsOptional()
+  @IsInt()
+  roomTypeId?: number;
+
+  @IsOptional()
+  @IsInt()
+  hotelId?: number;
+}
+
 // ============================================================
 // BOOKING SERVICE SNAPSHOT
 // ============================================================

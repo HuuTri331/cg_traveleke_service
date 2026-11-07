@@ -6,9 +6,60 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import {
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RoomBlocksService } from './room-blocks.service';
-import type { CreateRoomBlockDto } from './room-blocks.service';
+
+export class PreviewRoomBlockBodyDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  roomTypeId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  unitId?: string;
+
+  @IsOptional()
+  @IsIn(['OUT_OF_ORDER', 'OUT_OF_SERVICE', 'STOP_SELL'])
+  blockType?: 'OUT_OF_ORDER' | 'OUT_OF_SERVICE' | 'STOP_SELL';
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(32)
+  startDate!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(32)
+  endDate!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  blockedQuantity?: number;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason!: string;
+}
+
+export class CreateRoomBlockBodyDto extends PreviewRoomBlockBodyDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  commandId!: string;
+}
 
 @Controller()
 @UseGuards(JwtAuthGuard)
@@ -25,12 +76,12 @@ export class RoomBlocksController {
   @Post('hotels/:id/room-blocks/preview')
   async previewBlock(
     @Param('id') hotelId: string,
-    @Body() dto: Omit<CreateRoomBlockDto, 'commandId'>,
+    @Body() dto: PreviewRoomBlockDtoOrAlias,
     @Req() req: any,
   ) {
     return this.roomBlocksService.previewBlock(
       hotelId,
-      dto,
+      dto as any,
       this.extractActor(req),
     );
   }
@@ -38,12 +89,12 @@ export class RoomBlocksController {
   @Post('hotels/:id/room-blocks')
   async createBlock(
     @Param('id') hotelId: string,
-    @Body() dto: CreateRoomBlockDto,
+    @Body() dto: CreateRoomBlockBodyDto,
     @Req() req: any,
   ) {
     return this.roomBlocksService.createBlock(
       hotelId,
-      dto,
+      dto as any,
       this.extractActor(req),
     );
   }
@@ -53,3 +104,4 @@ export class RoomBlocksController {
     return this.roomBlocksService.releaseBlock(blockId, this.extractActor(req));
   }
 }
+type PreviewRoomBlockDtoOrAlias = PreviewRoomBlockBodyDto;

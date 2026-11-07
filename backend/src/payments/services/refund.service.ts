@@ -42,7 +42,55 @@ export class RefundService {
     return this.verifiedOutcomes.get(requestKey) || null;
   }
 
-  private rememberOutcome(
+  private async loadPersistedOutcome(mode: string, requestKey: string) {
+    const cached =
+      this.verifiedOutcomes.get(`${mode}:${requestKey}`) ||
+      this.verifiedOutcomes.get(requestKey);
+    if (cached) return cached;
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        const rows = await this.dataSource.query(
+          `SELECT outcome_status AS outcomeStatus, provider_ref AS providerRef,
+                  is_simulated AS isSimulated, error_message AS errorMessage,
+                  payload_json AS payloadJson
+           FROM payment_refund_outcomes
+           WHERE request_key = ? AND provider_mode = ?
+           LIMIT 1`,
+          [requestKey, mode],
+        );
+        if (Array.isArray(rows) && rows.length > 0) {
+          const row = rows[0];
+          const restored = {
+            success:
+              row.outcomeStatus !== 'FAILED' &&
+              row.outcomeStatus !== 'UNKNOWN_RECONCILE',
+            outcomeStatus: row.outcomeStatus,
+            providerRef: row.providerRef || undefined,
+            isSimulated: Boolean(Number(row.isSimulated)),
+            error: row.errorMessage || undefined,
+            data:
+              typeof row.payloadJson === 'string'
+                ? (() => {
+                    try {
+                      return JSON.parse(row.payloadJson);
+                    } catch {
+                      return undefined;
+                    }
+                  })()
+                : row.payloadJson,
+          };
+          this.verifiedOutcomes.set(`${mode}:${requestKey}`, restored);
+          this.verifiedOutcomes.set(requestKey, restored);
+          return restored;
+        }
+      } catch {
+        // Bảng có thể chưa khởi tạo ở môi trường mock thuần
+      }
+    }
+    return null;
+  }
+
+  private async rememberOutcome(
     requestKey: string,
     mode: string,
     outcome: {
@@ -62,6 +110,47 @@ export class RefundService {
   ) {
     this.verifiedOutcomes.set(`${mode}:${requestKey}`, outcome);
     this.verifiedOutcomes.set(requestKey, outcome);
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        await this.dataSource.query(`
+          CREATE TABLE IF NOT EXISTS payment_refund_outcomes (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            request_key VARCHAR(160) NOT NULL,
+            provider_mode VARCHAR(40) NOT NULL,
+            outcome_status VARCHAR(40) NOT NULL,
+            provider_ref VARCHAR(160) NULL,
+            is_simulated TINYINT(1) NOT NULL DEFAULT 0,
+            error_message TEXT NULL,
+            payload_json JSON NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_refund_outcome_key (request_key, provider_mode)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+        await this.dataSource.query(
+          `INSERT INTO payment_refund_outcomes (
+             request_key, provider_mode, outcome_status, provider_ref,
+             is_simulated, error_message, payload_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             outcome_status = VALUES(outcome_status),
+             provider_ref = VALUES(provider_ref),
+             error_message = VALUES(error_message),
+             payload_json = VALUES(payload_json)`,
+          [
+            requestKey,
+            mode,
+            outcome.outcomeStatus || (outcome.success ? 'SANDBOX_SETTLED' : 'FAILED'),
+            outcome.providerRef || null,
+            outcome.isSimulated ? 1 : 0,
+            outcome.error || null,
+            outcome.data ? JSON.stringify(outcome.data) : null,
+          ],
+        );
+      } catch {
+        // Fallback giữ trong RAM nếu mock query không hỗ trợ DDL
+      }
+    }
     return outcome;
   }
 
@@ -100,9 +189,9 @@ export class RefundService {
         : this.getProviderMode();
     const requestKey = params.idempotencyKey || `${params.txnRef}:${Math.round(Number(params.amount || 0))}`;
 
-    // FIX-03: Nếu đã có kết quả xác minh từ lần gọi provider trước đó cho cùng (mode, requestKey),
-    // trả lại kết quả đã lưu thay vì phát lệnh hoàn tiền lần 2 tới cổng VNPay.
-    const cachedOutcome = this.verifiedOutcomes.get(`${mode}:${requestKey}`);
+    // FIX-03 & E14 (LOW-02): Kiểm tra kết quả đã lưu trong RAM hoặc DB (payment_refund_outcomes)
+    // để không gọi lại VNPay Refund sau khi server restart nếu đang ở trạng thái UNKNOWN_RECONCILE hoặc đã thành công.
+    const cachedOutcome = await this.loadPersistedOutcome(mode, requestKey);
     if (cachedOutcome && (cachedOutcome.success || cachedOutcome.outcomeStatus === 'UNKNOWN_RECONCILE')) {
       this.logger.log(
         `[RefundService] Tái sử dụng kết quả Refund đã xác minh cho idempotencyKey=${requestKey} (${cachedOutcome.outcomeStatus}), không gọi lại provider.`,

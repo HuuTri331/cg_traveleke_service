@@ -60,7 +60,7 @@ export class RoomUnit {
     name: 'verification_status',
     type: 'varchar',
     length: 20,
-    default: 'VERIFIED',
+    default: 'UNVERIFIED',
   })
   verificationStatus?: string;
 

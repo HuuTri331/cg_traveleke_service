@@ -21,6 +21,30 @@ async function bootstrap() {
   app.useLogger(observabilityLogger);
 
   const configService = app.get(ConfigService);
+  if (process.env.TRUST_PROXY === 'true') {
+    app.set('trust proxy', 1);
+  }
+  app.useBodyParser('json', { limit: '1mb' });
+  app.useBodyParser('urlencoded', { extended: true, limit: '1mb' });
+  app.disable('x-powered-by');
+  app.use((req: any, res: any, next: any) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+    if (typeof req?.url === 'string' && req.url.startsWith('/uploads/')) {
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+      );
+    } else {
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+      );
+    }
+    next();
+  });
 
   // Cung cấp thư mục tĩnh /uploads để xem và tải ảnh
   app.useStaticAssets(path.join(process.cwd(), 'uploads'), {

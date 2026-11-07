@@ -28,7 +28,10 @@ export class BookingCoverageController {
     @CurrentUser() actor: { id: string; role: string },
     @Body() dto: CreateTemporaryCoverageDto,
   ) {
-    return await this.coverageService.createTemporary(bookingId, actor, dto);
+    return await this.coverageService.requestCoverage(bookingId, actor, {
+      ...dto,
+      requireDelegateAcceptance: true,
+    });
   }
 
   @Post(':bookingId/requests')

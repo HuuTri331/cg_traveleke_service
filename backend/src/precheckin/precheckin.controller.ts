@@ -8,6 +8,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import {
+  ReviewPrecheckinDto,
+  SubmitPrecheckinByTokenDto,
+  UpsertOccupantsDto,
+} from './dto/precheckin.dto';
 import { PrecheckinService } from './precheckin.service';
 
 @Controller()
@@ -30,7 +35,7 @@ export class PrecheckinController {
   @Post('precheckin/:opaqueToken/submit')
   async submitByToken(
     @Param('opaqueToken') opaqueToken: string,
-    @Body() body: any,
+    @Body() body: SubmitPrecheckinByTokenDto,
   ) {
     return this.precheckinService.submitByToken(opaqueToken, body);
   }
@@ -39,7 +44,7 @@ export class PrecheckinController {
   @UseGuards(JwtAuthGuard)
   async review(
     @Param('id') bookingId: string,
-    @Body() body: { approved: boolean; note?: string },
+    @Body() body: ReviewPrecheckinDto,
     @Req() req: any,
   ) {
     return this.precheckinService.reviewPrecheckin(bookingId, body, this.extractActor(req));
@@ -49,7 +54,7 @@ export class PrecheckinController {
   @UseGuards(JwtAuthGuard)
   async upsertOccupants(
     @Param('id') bookingId: string,
-    @Body() body: any,
+    @Body() body: UpsertOccupantsDto,
     @Req() req: any,
   ) {
     return this.precheckinService.upsertOccupants(bookingId, body, this.extractActor(req));

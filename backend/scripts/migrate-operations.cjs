@@ -6,14 +6,21 @@ const { createHash } = require('node:crypto');
 
 const files = ['migration_unified_complete.sql'];
 
+function stripHardcodedDatabaseSwitch(rawSql) {
+  return rawSql
+    .replace(/^\s*CREATE\s+DATABASE\s+IF\s+NOT\s+EXISTS\s+`?hotel_booking_db`?[\s\S]*?;\s*$/gim, '')
+    .replace(/^\s*USE\s+`?[a-zA-Z0-9_]+`?\s*;\s*$/gim, '');
+}
+
 async function executeUnifiedSql(db, rawSql) {
+  const sanitizedSql = stripHardcodedDatabaseSwitch(rawSql);
   const delimStart = 'DELIMITER $$';
   const delimEnd = 'DELIMITER ;';
-  if (!rawSql.includes(delimStart)) {
-    await db.query(rawSql);
+  if (!sanitizedSql.includes(delimStart)) {
+    await db.query(sanitizedSql);
     return;
   }
-  const [beforeProc, rest] = rawSql.split(delimStart);
+  const [beforeProc, rest] = sanitizedSql.split(delimStart);
   const [procBlock, afterProc] = rest.split(delimEnd);
   if (beforeProc && beforeProc.trim()) {
     await db.query(beforeProc);
@@ -28,9 +35,16 @@ async function executeUnifiedSql(db, rawSql) {
 }
 
 async function migrate(config) {
+  if (!config || !config.database) {
+    throw new Error('Target database (config.database / DB_DATABASE) is required for migration.');
+  }
   const db = await mysql.createConnection({ ...config, multipleStatements: true });
   let locked = false;
   try {
+    const [[dbCheckBefore]] = await db.query('SELECT DATABASE() AS currentDb');
+    if (dbCheckBefore.currentDb !== config.database) {
+      throw new Error(`Database mismatch before migration: expected ${config.database}, got ${dbCheckBefore.currentDb}`);
+    }
     const [[lock]] = await db.query("SELECT GET_LOCK('traveleke_operations_migrations', 10) AS acquired");
     if (Number(lock.acquired) !== 1) throw new Error('Migration lock unavailable');
     locked = true;

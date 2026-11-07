@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsNumber,
   IsEnum,
+  IsBoolean,
   ArrayMinSize,
 } from 'class-validator';
 import { CoverageTaskType } from '../entities/booking-coverage-grant.entity';
@@ -56,6 +57,7 @@ export class CreateTemporaryCoverageDto {
   completionDeadline?: string;
 
   @IsOptional()
+  @IsBoolean()
   requireDelegateAcceptance?: boolean;
 }
 

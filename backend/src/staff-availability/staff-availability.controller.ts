@@ -15,6 +15,7 @@ import { User } from '../users/entities/user.entity';
 import { StaffAvailabilityService } from './staff-availability.service';
 import { CreateAbsenceRequestDto } from './dto/create-absence-request.dto';
 import { DecideAbsenceRequestDto } from './dto/decide-absence-request.dto';
+import { CreateEmergencyUnavailableDto } from './dto/emergency-unavailable.dto';
 import { WithdrawAbsenceRequestDto } from './dto/withdraw-absence-request.dto';
 import { AbsenceRequestStatus } from './entities/staff-absence-request.entity';
 
@@ -185,14 +186,7 @@ export class StaffAvailabilityController {
   @Post('emergency-unavailable')
   async createEmergencyUnavailable(
     @CurrentUser() user: User,
-    @Body()
-    dto: {
-      hotelId: string;
-      staffUserId: string;
-      startAt?: string;
-      endAt: string;
-      reason: string;
-    },
+    @Body() dto: CreateEmergencyUnavailableDto,
   ) {
     const data = await this.staffAvailabilityService.createEmergencyUnavailable(user, dto);
     return {

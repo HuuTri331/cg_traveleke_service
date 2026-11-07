@@ -113,10 +113,16 @@ export async function loadAssignmentCandidates(
       [hotelId, s.staffUserId, now, now, hotelId, s.staffUserId, now, now, hotelId,
         hotelId, s.staffUserId, s.staffUserId, hotelId, s.staffUserId, s.staffUserId,
         hotelId, s.staffUserId, hotelId, s.staffUserId]);
-    const hasScheduleInHotel = facts?.hotelHasShiftSchedule !== undefined ? Boolean(Number(facts.hotelHasShiftSchedule)) : false;
-    const onDutyShift = facts?.onDutyShift !== undefined
-      ? (hasScheduleInHotel ? Boolean(Number(facts.onDutyShift)) : true)
-      : true;
+    const hasScheduleInHotel =
+      facts?.hotelHasShiftSchedule !== undefined
+        ? Boolean(Number(facts.hotelHasShiftSchedule))
+        : true;
+    const onDutyShift =
+      facts?.onDutyShift !== undefined
+        ? hasScheduleInHotel
+          ? Boolean(Number(facts.onDutyShift))
+          : true
+        : true;
     return { ...s, staffUserId: String(s.staffUserId), userActive: true, hotelStaffActive: true,
       onDutyShift,
       isAbsent: Boolean(Number(facts.absent)), isBusyNow: Boolean(Number(facts.busy)),

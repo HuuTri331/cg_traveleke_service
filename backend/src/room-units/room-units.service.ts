@@ -97,12 +97,38 @@ export class RoomUnitsService {
       bedConfig: dto.bedConfig || null,
       isAccessible: Boolean(dto.isAccessible),
       isSmoking: Boolean(dto.isSmoking),
+      verificationStatus: 'UNVERIFIED',
       operationalStatus: dto.operationalStatus || RoomUnitOperationalStatus.ACTIVE,
       housekeepingState: dto.housekeepingState || RoomUnitHousekeepingState.READY,
       notes: dto.notes || null,
       version: 1,
     });
 
+    return this.roomUnitRepo.save(unit);
+  }
+
+  async verifyRoomUnit(
+    unitId: string,
+    actor: { id: string; role: string },
+    note?: string,
+  ): Promise<RoomUnit> {
+    const unit = await this.roomUnitRepo.findOne({ where: { id: String(unitId) } });
+    if (!unit) {
+      throw new NotFoundException(`Phòng vật lý #${unitId} không tồn tại.`);
+    }
+    await this.assertHotelStaffOrManager(actor, unit.hotelId, true);
+
+    if (!unit.roomNumber || !unit.roomTypeId) {
+      throw new BadRequestException('Phòng vật lý thiếu số phòng hoặc loại phòng thương mại.');
+    }
+
+    unit.verificationStatus = 'VERIFIED';
+    unit.lastInspectedAt = new Date();
+    unit.lastInspectedBy = String(actor.id);
+    if (note && note.trim()) {
+      unit.notes = unit.notes ? `${unit.notes} | [VERIFIED]: ${note.trim()}` : `[VERIFIED]: ${note.trim()}`;
+    }
+    unit.version = Number(unit.version || 1) + 1;
     return this.roomUnitRepo.save(unit);
   }
 
@@ -131,6 +157,7 @@ export class RoomUnitsService {
     patch: {
       operationalStatus?: RoomUnitOperationalStatus;
       housekeepingState?: RoomUnitHousekeepingState;
+      verificationStatus?: 'UNVERIFIED' | 'VERIFIED';
       notes?: string;
     },
     actor: { id: string; role: string },
@@ -139,9 +166,17 @@ export class RoomUnitsService {
     if (!unit) {
       throw new NotFoundException(`Phòng vật lý #${unitId} không tồn tại.`);
     }
-    await this.assertHotelStaffOrManager(actor, unit.hotelId, false);
+    const requireManager = patch.verificationStatus !== undefined;
+    await this.assertHotelStaffOrManager(actor, unit.hotelId, requireManager);
     if (patch.operationalStatus) unit.operationalStatus = patch.operationalStatus;
     if (patch.housekeepingState) unit.housekeepingState = patch.housekeepingState;
+    if (patch.verificationStatus) {
+      unit.verificationStatus = patch.verificationStatus;
+      if (patch.verificationStatus === 'VERIFIED') {
+        unit.lastInspectedAt = new Date();
+        unit.lastInspectedBy = String(actor.id);
+      }
+    }
     if (patch.notes !== undefined) unit.notes = patch.notes;
     unit.version = Number(unit.version || 1) + 1;
     return this.roomUnitRepo.save(unit);

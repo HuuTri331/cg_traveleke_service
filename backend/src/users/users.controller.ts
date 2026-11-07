@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 
@@ -44,23 +45,34 @@ export class UsersController {
    */
   @Get('customers')
   @Roles('ADMIN', 'EMPLOYEE')
-  async findAllCustomers() {
-    const data = await this.usersService.findAllCustomers();
+  async findAllCustomers(
+    @CurrentUser() user: User,
+    @Query('hotelId') hotelId?: string,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const data = await this.usersService.findAllCustomers(user, {
+      hotelId,
+      search,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
     return { success: true, data };
   }
 
   /**
    * PATCH /api/users/customers/:id/status
-   * Khoá / Mở khoá tài khoản khách hàng — ADMIN & EMPLOYEE.
+   * Khoá / Mở khoá tài khoản khách hàng toàn sàn — chỉ ADMIN.
    */
   @Patch('customers/:id/status')
-  @Roles('ADMIN', 'EMPLOYEE')
+  @Roles('ADMIN')
   async updateCustomerStatus(
     @Param('id') id: string,
     @Body() dto: UpdateStatusDto,
     @CurrentUser() user: User,
   ) {
-    const data = await this.usersService.updateCustomerStatus(id, dto, user.id);
+    const data = await this.usersService.updateCustomerStatus(id, dto, user.id, user);
     const label = dto.status === 'BLOCKED' ? 'Khoá' : 'Mở khoá';
     return {
       success: true,

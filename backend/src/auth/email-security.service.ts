@@ -1,5 +1,7 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import * as dns from 'dns';
+import Redis from 'ioredis';
+import { REDIS_CLIENT } from '../redis/redis.constants';
 
 // Danh sách các từ tục tĩu, thô tục hoặc phá hoại phổ biến
 const VULGAR_PATTERNS = [
@@ -58,8 +60,29 @@ interface LockoutRecord {
 export class EmailSecurityService {
   private readonly logger = new Logger(EmailSecurityService.name);
 
-  // Lưu trữ lịch sử vi phạm theo IP/Client: IP -> LockoutRecord
+  // Lưu trữ lịch sử vi phạm theo IP/Client: IP -> LockoutRecord (giới hạn kích thước + đồng bộ Redis TTL)
   private readonly lockoutMap = new Map<string, LockoutRecord>();
+  private static readonly MAX_LOCKOUT_MAP_SIZE = 5000;
+
+  constructor(
+    @Optional()
+    @Inject(REDIS_CLIENT)
+    private readonly redis?: Redis,
+  ) {}
+
+  private pruneExpiredLockouts(now = Date.now()): void {
+    if (this.lockoutMap.size < EmailSecurityService.MAX_LOCKOUT_MAP_SIZE) return;
+    for (const [ip, rec] of this.lockoutMap.entries()) {
+      if (rec.lockedUntil <= now) {
+        this.lockoutMap.delete(ip);
+      }
+    }
+    while (this.lockoutMap.size >= EmailSecurityService.MAX_LOCKOUT_MAP_SIZE) {
+      const oldestKey = this.lockoutMap.keys().next().value;
+      if (!oldestKey) break;
+      this.lockoutMap.delete(oldestKey);
+    }
+  }
 
   /**
    * Chuẩn hóa chuỗi (bỏ dấu tiếng Việt, ký tự đặc biệt) để phát hiện từ ngữ thô tục
@@ -128,11 +151,20 @@ export class EmailSecurityService {
     const durationMs = tier === 2 ? 10 * 60 * 60 * 1000 : 10 * 60 * 1000;
     const lockedUntil = now + durationMs;
 
-    this.lockoutMap.set(clientIp, {
+    this.pruneExpiredLockouts(now);
+    const record: LockoutRecord = {
       violationCount: count,
       lockedUntil,
       lastViolationAt: now,
-    });
+    };
+    this.lockoutMap.set(clientIp, record);
+
+    if (this.redis && typeof this.redis.set === 'function') {
+      const ttlSeconds = Math.ceil(durationMs / 1000);
+      void this.redis
+        .set(`rl:email_lockout:${clientIp}`, JSON.stringify(record), 'EX', ttlSeconds)
+        .catch(() => undefined);
+    }
 
     const message =
       tier === 2

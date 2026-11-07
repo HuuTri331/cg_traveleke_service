@@ -159,17 +159,67 @@ export class FolioService {
     return { folio: savedFolio, entry };
   }
 
-  async getBookingFolio(bookingId: string) {
+  async getBookingFolio(bookingId: string, actor?: { id: string; role: string }) {
     const booking = await this.dataSource.getRepository(Booking).findOne({
       where: { id: String(bookingId) },
     });
     if (!booking) throw new NotFoundException(`Booking #${bookingId} không tồn tại.`);
 
-    const folio = await this.getOrCreateFolio(booking.id, booking.hotelId);
+    if (actor) {
+      const role = String(actor.role || '').toUpperCase();
+      if (role === 'CUSTOMER' || role === 'USER') {
+        if (String(booking.userId) !== String(actor.id)) {
+          throw new ForbiddenException(
+            'BOLA_FORBIDDEN: Bạn không có quyền truy cập sổ tiền Folio của khách hàng khác.',
+          );
+        }
+      } else if (role === 'EMPLOYEE' || role === 'STAFF' || role === 'MANAGER') {
+        if (typeof this.dataSource?.query === 'function') {
+          const staffRows = await this.dataSource.query(
+            `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+            [booking.hotelId, actor.id],
+          );
+          if (!Array.isArray(staffRows) || staffRows.length === 0) {
+            throw new ForbiddenException(
+              'CROSS_HOTEL_FORBIDDEN: Nhân sự không thuộc khách sạn của đơn đặt phòng này.',
+            );
+          }
+        }
+      } else if (role !== 'ADMIN') {
+        throw new ForbiddenException('Không có quyền truy cập Folio.');
+      }
+    }
+
+    const folio = await this.folioRepo.findOne({
+      where: { bookingId: String(booking.id) },
+    });
+    if (!folio) {
+      return { folio: null, entries: [], settlements: [] };
+    }
+
     const [entries, settlements] = await Promise.all([
       this.entryRepo.find({ where: { folioId: String(folio.id) }, order: { postedAt: 'ASC', id: 'ASC' } }),
       this.settlementRepo.find({ where: { folioId: String(folio.id) }, order: { createdAt: 'ASC' } }),
     ]);
+
+    const actorRole = String(actor?.role || '').toUpperCase();
+    if (actorRole === 'CUSTOMER' || actorRole === 'USER') {
+      return {
+        folio,
+        entries: entries.map((e) => ({
+          ...e,
+          actorId: null,
+          approvedBy: null,
+        })),
+        settlements: settlements.map((s) => ({
+          ...s,
+          evidenceUrl: null,
+          recordedBy: null,
+          providerRef: s.providerRef ? `***${String(s.providerRef).slice(-4)}` : '',
+        })),
+      };
+    }
+
     return { folio, entries, settlements };
   }
 
@@ -181,18 +231,29 @@ export class FolioService {
       providerRef: string;
       evidenceUrl?: string;
       commandId: string;
+      approvalRequestId?: string;
+      verifiedByGateway?: boolean;
     },
     actor: { id: string; role: string },
   ) {
-    if (!dto.providerRef || !dto.providerRef.trim()) {
-      throw new BadRequestException('providerRef (chứng từ giao dịch) là bắt buộc khi ghi nhận thu tiền Folio.');
+    const actorRole = String(actor?.role || '').toUpperCase();
+    if (!actor?.id || actorRole === 'CUSTOMER' || actorRole === 'USER') {
+      throw new ForbiddenException('Khách hàng không được phép tự ghi nhận thu tiền Folio.');
     }
-    if (!dto.commandId || !dto.commandId.trim()) {
-      throw new BadRequestException('commandId là bắt buộc khi ghi nhận thu tiền Folio.');
+    if (!dto.providerRef?.trim()) {
+      throw new BadRequestException('providerRef là bắt buộc.');
+    }
+    if (!dto.commandId?.trim()) {
+      throw new BadRequestException('commandId là bắt buộc.');
     }
 
     const existing = await this.settlementRepo.findOne({ where: { commandId: dto.commandId.trim() } });
-    if (existing) return existing;
+    if (existing) {
+      if (String(existing.folioId) !== String(folioId)) {
+        throw new ConflictException('commandId đã được sử dụng cho sổ Folio khác.');
+      }
+      return existing;
+    }
 
     const folio = await this.folioRepo.findOne({ where: { id: String(folioId) } });
     if (!folio) throw new NotFoundException(`Folio #${folioId} không tồn tại.`);
@@ -202,34 +263,89 @@ export class FolioService {
     });
     if (!booking) throw new NotFoundException(`Booking #${folio.bookingId} không tồn tại.`);
 
-    await assertBookingOperator(
-      this.dataSource.manager,
-      booking,
-      actor,
-      'FOLIO_SETTLEMENT',
-    );
+    await assertBookingOperator(this.dataSource.manager, booking, actor, 'FOLIO_SETTLEMENT');
+
+    const cleanRef = dto.providerRef.trim();
+    const dupProvider = await this.settlementRepo.findOne({
+      where: { folioId: String(folio.id), providerRef: cleanRef },
+    });
+    if (dupProvider && dupProvider.commandId !== dto.commandId.trim()) {
+      throw new ConflictException(`DUPLICATE_PROVIDER_REF: Mã giao dịch "${cleanRef}" đã được sử dụng.`);
+    }
+
+    let isVerified = Boolean(dto.verifiedByGateway && actorRole === 'ADMIN');
+    if (!isVerified && typeof this.dataSource?.query === 'function') {
+      const paidTx = await this.dataSource.query(
+        `SELECT id FROM payment_transactions WHERE booking_id = ? AND status = 'PAID' AND (txn_ref = ? OR vnp_transaction_no = ?) LIMIT 1`,
+        [folio.bookingId, cleanRef, cleanRef],
+      );
+      isVerified = Array.isArray(paidTx) && paidTx.length > 0;
+      if (!isVerified && dto.approvalRequestId) {
+        const appRows = await this.dataSource.query(
+          `SELECT id FROM approval_requests WHERE id = ? AND hotel_id = ? AND status = 'APPROVED' LIMIT 1`,
+          [dto.approvalRequestId, folio.hotelId],
+        );
+        isVerified = Array.isArray(appRows) && appRows.length > 0;
+      }
+    }
 
     const now = new Date();
-    const settlement = await this.settlementRepo.save(
-      this.settlementRepo.create({
-        folioId: String(folio.id),
-        bookingId: String(folio.bookingId),
-        hotelId: String(folio.hotelId),
-        method: dto.method || 'VN_QR_TRANSFER',
-        amountVnd: this.propertyClock.assertValidVndAmount(dto.amountVnd, false),
-        providerRef: dto.providerRef.trim(),
-        evidenceUrl: dto.evidenceUrl || null,
-        status: 'VERIFIED',
-        paidAt: now,
-        verifiedAt: now,
-        recordedBy: String(actor.id),
-        commandId: dto.commandId.trim(),
-      }),
-    );
+    const settlementEntity = this.settlementRepo.create({
+      folioId: String(folio.id),
+      bookingId: String(folio.bookingId),
+      hotelId: String(folio.hotelId),
+      method: dto.method || 'VN_QR_TRANSFER',
+      amountVnd: this.propertyClock.assertValidVndAmount(dto.amountVnd, false),
+      providerRef: cleanRef,
+      evidenceUrl: dto.evidenceUrl || null,
+      status: isVerified ? 'VERIFIED' : 'PENDING_VERIFICATION',
+      paidAt: now,
+      verifiedAt: isVerified ? now : (null as any),
+      recordedBy: String(actor.id),
+      commandId: dto.commandId.trim(),
+    });
+    const settlement = await this.settlementRepo.save(settlementEntity);
 
+    if (isVerified) {
+      await this.postEntryOnce({
+        bookingId: folio.bookingId,
+        hotelId: folio.hotelId,
+        entryKind: FolioEntryKind.DESK_SETTLEMENT,
+        direction: 'PAYMENT',
+        amountVnd: Number(settlement.amountVnd),
+        sourceType: 'FOLIO_SETTLEMENT',
+        sourceId: String(settlement.id),
+        description: `Thanh toán tất toán Folio (${settlement.method} - ${settlement.providerRef})`,
+        actorId: actor.id,
+        idempotencyKey: `FOLIO_SETTLEMENT:${settlement.id}`,
+      });
+    }
+
+    return settlement;
+  }
+
+  async verifySettlement(settlementId: string, actor: { id: string; role: string }) {
+    const actorRole = String(actor?.role || '').toUpperCase();
+    if (!actor?.id || actorRole === 'CUSTOMER' || actorRole === 'USER') {
+      throw new ForbiddenException('Chỉ Quản lý khách sạn hoặc ADMIN mới có quyền xác nhận thu tiền.');
+    }
+    const settlement = await this.settlementRepo.findOne({ where: { id: String(settlementId) } });
+    if (!settlement) throw new NotFoundException(`Phiếu thu #${settlementId} không tồn tại.`);
+    if (actorRole !== 'ADMIN' && typeof this.dataSource?.query === 'function') {
+      const mgrRows = await this.dataSource.query(
+        `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND staff_role = 'MANAGER' AND status = 'ACTIVE' LIMIT 1`,
+        [settlement.hotelId, actor.id],
+      );
+      if (!Array.isArray(mgrRows) || mgrRows.length === 0) {
+        throw new ForbiddenException('Chỉ Quản lý khách sạn (MANAGER) mới có quyền xác minh phiếu thu Folio.');
+      }
+    }
+    settlement.status = 'VERIFIED';
+    settlement.verifiedAt = new Date();
+    await this.settlementRepo.save(settlement);
     await this.postEntryOnce({
-      bookingId: folio.bookingId,
-      hotelId: folio.hotelId,
+      bookingId: settlement.bookingId,
+      hotelId: settlement.hotelId,
       entryKind: FolioEntryKind.DESK_SETTLEMENT,
       direction: 'PAYMENT',
       amountVnd: Number(settlement.amountVnd),
@@ -237,9 +353,9 @@ export class FolioService {
       sourceId: String(settlement.id),
       description: `Thanh toán tất toán Folio (${settlement.method} - ${settlement.providerRef})`,
       actorId: actor.id,
+      approvedBy: actor.id,
       idempotencyKey: `FOLIO_SETTLEMENT:${settlement.id}`,
     });
-
     return settlement;
   }
 
@@ -249,13 +365,19 @@ export class FolioService {
       direction: 'CREDIT' | 'DEBIT' | 'REVERSAL';
       amountVnd: number;
       reason: string;
-      approvedByManagerId: string;
+      approvedByManagerId?: string;
+      approvalRequestId?: string;
       reversesEntryId?: string;
       commandId: string;
     },
     actor: { id: string; role: string },
   ) {
-    if (!dto.approvedByManagerId || String(dto.approvedByManagerId) === String(actor.id)) {
+    const actorRole = String(actor?.role || '').toUpperCase();
+    if (!actor?.id || actorRole === 'CUSTOMER' || actorRole === 'USER') {
+      throw new ForbiddenException('CUSTOMER_ADJUSTMENT_FORBIDDEN: Khách hàng không được tự điều chỉnh Folio.');
+    }
+    const mgrId = dto.approvedByManagerId?.trim();
+    if ((!mgrId && !dto.approvalRequestId) || (mgrId && String(mgrId) === String(actor.id))) {
       throw new ForbiddenException(
         'FOUR_EYES_ADJUSTMENT_REQUIRED: Điều chỉnh công nợ Folio bắt buộc phải có Quản lý phê duyệt độc lập (4-eyes).',
       );
@@ -263,17 +385,76 @@ export class FolioService {
     const folio = await this.folioRepo.findOne({ where: { id: String(folioId) } });
     if (!folio) throw new NotFoundException(`Folio #${folioId} không tồn tại.`);
 
+    let verifiedApproverId = mgrId || String(dto.approvalRequestId);
+    if (typeof this.dataSource?.query === 'function') {
+      if (actorRole !== 'ADMIN') {
+        const actorStaff = await this.dataSource.query(
+          `SELECT id FROM hotel_staff WHERE hotel_id = ? AND staff_user_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [folio.hotelId, actor.id],
+        );
+        if (!Array.isArray(actorStaff) || actorStaff.length === 0) {
+          throw new ForbiddenException('CROSS_HOTEL_FORBIDDEN: Nhân sự không thuộc khách sạn của sổ Folio này.');
+        }
+      }
+      if (dto.approvalRequestId) {
+        const [app] = await this.dataSource.query(
+          `SELECT id, hotel_id AS hotelId, booking_id AS bookingId, requested_by AS requestedBy,
+                  reviewed_by AS reviewedBy, amount, status FROM approval_requests WHERE id = ? LIMIT 1`,
+          [dto.approvalRequestId],
+        );
+        if (
+          !app || app.status !== 'APPROVED' || String(app.hotelId) !== String(folio.hotelId) ||
+          (app.bookingId && String(app.bookingId) !== String(folio.bookingId)) || !app.reviewedBy ||
+          String(app.reviewedBy) === String(actor.id) || String(app.requestedBy) === String(app.reviewedBy) ||
+          Math.round(Number(app.amount || 0)) !== Math.round(Number(dto.amountVnd || 0))
+        ) {
+          throw new ForbiddenException('INVALID_APPROVAL_DECISION: Quyết định phê duyệt không hợp lệ hoặc khác phạm vi.');
+        }
+        verifiedApproverId = String(app.reviewedBy);
+      } else if (mgrId) {
+        const mgrRows = await this.dataSource.query(
+          `SELECT hs.staff_user_id AS managerId FROM hotel_staff hs INNER JOIN users u ON u.id = hs.staff_user_id
+           WHERE hs.hotel_id = ? AND hs.staff_user_id = ? AND hs.staff_role = 'MANAGER'
+             AND hs.status = 'ACTIVE' AND u.status = 'ACTIVE' AND u.deleted_at IS NULL LIMIT 1`,
+          [folio.hotelId, mgrId],
+        );
+        if (!Array.isArray(mgrRows) || mgrRows.length === 0) {
+          throw new ForbiddenException('INVALID_MANAGER_APPROVAL: Người duyệt không phải Quản lý ACTIVE tại khách sạn này.');
+        }
+      }
+    }
+
+    let effectiveDirection: 'DEBIT' | 'CREDIT' = dto.direction === 'DEBIT' ? 'DEBIT' : 'CREDIT';
+    let effectiveAmount = dto.amountVnd;
+    if (dto.direction === 'REVERSAL') {
+      if (!dto.reversesEntryId) throw new BadRequestException('REVERSAL_REQUIRES_ENTRY_ID: Bắt buộc chỉ định reversesEntryId.');
+      const origEntry = await this.entryRepo.findOne({ where: { id: String(dto.reversesEntryId) } });
+      if (!origEntry || String(origEntry.folioId) !== String(folio.id)) {
+        throw new NotFoundException('Bút toán gốc cần đảo không tồn tại trong sổ Folio này.');
+      }
+      const priorReversal = await this.entryRepo.findOne({
+        where: { folioId: String(folio.id), reversesEntryId: String(origEntry.id), entryKind: FolioEntryKind.REVERSAL },
+      });
+      if (priorReversal && priorReversal.idempotencyKey !== `FOLIO_ADJ:${dto.commandId}`) {
+        throw new ConflictException('ENTRY_ALREADY_REVERSED: Bút toán gốc này đã được đảo trước đó.');
+      }
+      if (origEntry.direction === 'DEBIT') effectiveDirection = 'CREDIT';
+      else if (origEntry.direction === 'CREDIT') effectiveDirection = 'DEBIT';
+      else throw new ConflictException(`UNSUPPORTED_REVERSAL_DIRECTION: Không hỗ trợ đảo ${origEntry.direction}.`);
+      effectiveAmount = Number(origEntry.amountVnd);
+    }
+
     return this.postEntryOnce({
       bookingId: folio.bookingId,
       hotelId: folio.hotelId,
       entryKind: dto.direction === 'REVERSAL' ? FolioEntryKind.REVERSAL : FolioEntryKind.ADJUSTMENT,
-      direction: dto.direction === 'DEBIT' ? 'DEBIT' : 'CREDIT',
-      amountVnd: dto.amountVnd,
-      sourceType: 'MANUAL_ADJUSTMENT',
-      sourceId: dto.commandId,
+      direction: effectiveDirection,
+      amountVnd: effectiveAmount,
+      sourceType: dto.approvalRequestId ? 'MANUAL_ADJUSTMENT_APPROVAL' : 'MANUAL_ADJUSTMENT',
+      sourceId: dto.approvalRequestId ? String(dto.approvalRequestId) : dto.commandId,
       description: dto.reason,
       actorId: actor.id,
-      approvedBy: dto.approvedByManagerId,
+      approvedBy: verifiedApproverId,
       reversesEntryId: dto.reversesEntryId || null,
       idempotencyKey: `FOLIO_ADJ:${dto.commandId}`,
     });

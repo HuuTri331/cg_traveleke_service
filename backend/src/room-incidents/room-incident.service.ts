@@ -1,4 +1,10 @@
-import { ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { BookingCoverageService } from '../booking-coverage/booking-coverage.service';
@@ -39,6 +45,18 @@ export class RoomIncidentService {
   }
 
   async openIncidentOnce(input: OpenRoomIncidentInput, actor: { id: string; role: string }): Promise<RoomIncident> {
+    if (!input?.bookingId || typeof input.bookingId !== 'string' || !input.bookingId.trim() || input.bookingId === 'undefined') {
+      throw new BadRequestException('bookingId là bắt buộc khi mở biên bản sự cố phòng.');
+    }
+    if (
+      !input?.roomTypeId ||
+      typeof input.roomTypeId !== 'string' ||
+      !input.roomTypeId.trim() ||
+      input.roomTypeId === 'undefined' ||
+      !/^\d+$/.test(input.roomTypeId.trim())
+    ) {
+      throw new BadRequestException('roomTypeId là bắt buộc và phải là mã loại phòng thương mại hợp lệ.');
+    }
     const incidentType = input.incidentType || 'ROOM_NOT_READY';
     const sourceKey = (input.sourceKey || '').trim() || `${incidentType}:${input.bookingId}:${input.affectedUnitId || 'NONE'}`;
     const existing = await this.incidentRepo.findOne({ where: { sourceKey } });
@@ -82,6 +100,7 @@ export class RoomIncidentService {
       proposedRoomTypeId?: string;
       compensationVnd?: number;
       approvedByManagerId?: string;
+      approvalRequestId?: string;
       note?: string;
       commandId?: string;
     },
@@ -95,8 +114,48 @@ export class RoomIncidentService {
       dto.resolutionType === RoomIncidentResolutionType.COMPLIMENTARY_UPGRADE ||
       dto.resolutionType === RoomIncidentResolutionType.RELOCATION ||
       Number(dto.compensationVnd || 0) > 0;
-    if (requiresManager && !dto.approvedByManagerId && actor.role !== 'ADMIN') {
+    const managerId = dto.approvedByManagerId?.trim();
+    if (requiresManager && !managerId && !dto.approvalRequestId && actor.role !== 'ADMIN') {
       throw new ForbiddenException('Phương án nâng hạng miễn phí hoặc bồi thường bắt buộc có Quản lý phê duyệt.');
+    }
+
+    let verifiedManagerId: string | null = managerId || null;
+    if (requiresManager && actor.role !== 'ADMIN' && typeof this.dataSource?.query === 'function') {
+      if (dto.approvalRequestId) {
+        const [app] = await this.dataSource.query(
+          `SELECT id, hotel_id AS hotelId, booking_id AS bookingId, reviewed_by AS reviewedBy, status
+           FROM approval_requests WHERE id = ? LIMIT 1`,
+          [dto.approvalRequestId],
+        );
+        if (
+          !app ||
+          app.status !== 'APPROVED' ||
+          String(app.hotelId) !== String(incident.hotelId) ||
+          (app.bookingId && String(app.bookingId) !== String(incident.bookingId)) ||
+          !app.reviewedBy
+        ) {
+          throw new ForbiddenException(
+            'INVALID_MANAGER_APPROVAL: Quyết định phê duyệt phương án sự cố không hợp lệ hoặc không thuộc booking này.',
+          );
+        }
+        verifiedManagerId = String(app.reviewedBy);
+      } else if (managerId) {
+        const mgrRows = await this.dataSource.query(
+          `SELECT hs.staff_user_id AS managerId
+           FROM hotel_staff hs
+           INNER JOIN users u ON u.id = hs.staff_user_id
+           WHERE hs.hotel_id = ? AND hs.staff_user_id = ? AND hs.staff_role = 'MANAGER'
+             AND hs.status = 'ACTIVE' AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
+           LIMIT 1`,
+          [incident.hotelId, managerId],
+        );
+        if (!Array.isArray(mgrRows) || mgrRows.length === 0) {
+          throw new ForbiddenException(
+            'INVALID_MANAGER_APPROVAL: Người phê duyệt bồi thường/nâng hạng không phải là Quản lý (MANAGER) đang hoạt động tại khách sạn này.',
+          );
+        }
+        verifiedManagerId = String(mgrRows[0].managerId);
+      }
     }
 
     const prev = incident.status;
@@ -105,7 +164,7 @@ export class RoomIncidentService {
     incident.proposedUnitId = dto.proposedUnitId || null;
     incident.proposedRoomTypeId = dto.proposedRoomTypeId || null;
     incident.compensationVnd = Number(dto.compensationVnd || 0);
-    incident.managerUserId = dto.approvedByManagerId || null;
+    incident.managerUserId = verifiedManagerId;
     incident.version += 1;
     const saved = await this.incidentRepo.save(incident);
 

@@ -166,8 +166,13 @@ export class RoomMoveService {
     cmdId: string,
   ) {
     const isDifferentRoomType = String(fromUnit.roomTypeId) !== String(toUnit.roomTypeId);
+    if (toUnit.verificationStatus === 'UNVERIFIED') {
+      throw new ConflictException(
+        `TARGET_ROOM_UNVERIFIED: Phòng đích #${toUnit.roomNumber} chưa được xác minh (UNVERIFIED).`,
+      );
+    }
     if (isDifferentRoomType) {
-      if (!dto.approvedByManagerId && actor.role !== 'ADMIN') {
+      if (!dto.approvedByManagerId && !(dto as any).approvalRequestId && actor.role !== 'ADMIN') {
         throw new ForbiddenException(
           'Chuyển sang loại phòng thương mại khác bắt buộc có phê duyệt của Quản lý khách sạn.',
         );
@@ -176,6 +181,54 @@ export class RoomMoveService {
         throw new ConflictException(
           'PAID_UPGRADE_REQUIRES_AMENDMENT_SETTLEMENT: Nâng hạng có phí phải thanh toán Amendment trước khi chuyển phòng vật lý.',
         );
+      }
+      if (actor.role !== 'ADMIN' && typeof em?.query === 'function') {
+        const mgrId = dto.approvedByManagerId?.trim();
+        const appId = (dto as any).approvalRequestId?.trim();
+        if (appId) {
+          const [app] = await em.query(
+            `SELECT id, hotel_id AS hotelId, booking_id AS bookingId, status
+             FROM approval_requests WHERE id = ? LIMIT 1`,
+            [appId],
+          );
+          if (
+            !app ||
+            app.status !== 'APPROVED' ||
+            String(app.hotelId) !== String(booking.hotelId) ||
+            (app.bookingId && String(app.bookingId) !== String(booking.id))
+          ) {
+            throw new ForbiddenException(
+              'APPROVAL_BOOKING_MISMATCH: Quyết định phê duyệt không hợp lệ hoặc không thuộc booking này.',
+            );
+          }
+        } else if (mgrId) {
+          const mgrRows = await em.query(
+            `SELECT hs.staff_user_id AS managerId FROM hotel_staff hs
+             INNER JOIN users u ON u.id = hs.staff_user_id
+             WHERE hs.hotel_id = ? AND hs.staff_user_id = ? AND hs.staff_role = 'MANAGER'
+               AND hs.status = 'ACTIVE' AND u.status = 'ACTIVE' AND u.deleted_at IS NULL LIMIT 1`,
+            [booking.hotelId, mgrId],
+          );
+          if (!Array.isArray(mgrRows) || mgrRows.length === 0) {
+            throw new ForbiddenException(
+              'INVALID_MANAGER_APPROVAL: Người duyệt nâng hạng không phải Quản lý ACTIVE của khách sạn này.',
+            );
+          }
+          const approvalsForManager = await em.query(
+            `SELECT id, booking_id AS bookingId FROM approval_requests
+             WHERE hotel_id = ? AND reviewed_by = ? AND status = 'APPROVED'`,
+            [booking.hotelId, mgrId],
+          );
+          if (
+            Array.isArray(approvalsForManager) &&
+            approvalsForManager.length > 0 &&
+            !approvalsForManager.some((a: any) => !a.bookingId || String(a.bookingId) === String(booking.id))
+          ) {
+            throw new ForbiddenException(
+              'APPROVAL_BOOKING_MISMATCH: Quyết định phê duyệt của Quản lý thuộc về một đơn đặt phòng khác.',
+            );
+          }
+        }
       }
     }
 
